@@ -121,7 +121,7 @@ struct MyLibraryContentView: View {
             ArcAtmosphereBackground(
                 tint: libraryAtmosphereTint,
                 referenceImage: nil,
-                isLightMode: arcSettings.isLightMode,
+                isLightMode: false,
                 dotGridOpacity: arcSettings.dotGridOpacity,
                 useNoise: arcSettings.useNoiseTexture,
                 grainIntensity: arcSettings.grainIntensity,

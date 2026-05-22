@@ -65,8 +65,6 @@ struct WallpaperExploreContentView: View {
 
     /// 缓存筛选后的列表，避免每次 body 重绘时对 `wallpapers` 全表过滤（Wallhaven 分类）
     @State private var visibleWallpapers: [Wallpaper] = []
-    @StateObject private var columnCache = ExploreColumnDistributionCache<Wallpaper>()
-    @State private var columnLayoutVersion = 0
 
     private var shouldUseLightweightEffects: Bool {
         (videoWallpaperManager.isVideoWallpaperActive && !videoWallpaperManager.isPaused) ||
@@ -132,7 +130,6 @@ struct WallpaperExploreContentView: View {
         .onChange(of: isVisible) { _, visible in
             if !visible {
                 pauseActivity()
-                columnCache.invalidate()
             } else {
                 syncAtmosphereIfNeeded()
             }
@@ -223,68 +220,82 @@ struct WallpaperExploreContentView: View {
 
     @available(macOS 15.0, *)
     private func scrollViewModern(width: CGFloat, gridConfig: WallpaperGridConfig) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                ScrollToTopHelper(trigger: outerScrollToTopToken)
-                    .frame(height: 0)
-                gridHeaderStack
-                wallpaperGrid(config: gridConfig)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Color.clear
+                        .frame(height: 0)
+                        .id("wp-scroll-top")
+                    gridHeaderStack
+                    wallpaperGrid(config: gridConfig)
+                }
+                .padding(.horizontal, 28)
+                .frame(width: width, alignment: .leading)
+                .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
+                .environment(\.arcIsLightMode, arcSettings.isLightMode)
             }
-            .padding(.horizontal, 28)
-            .frame(width: width, alignment: .leading)
-            .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
-            .environment(\.arcIsLightMode, arcSettings.isLightMode)
-        }
-        .coordinateSpace(name: Self.scrollCoordinateSpaceName)
-        .onChange(of: viewModel.wallpapers.count) { _, count in
-            columnLayoutVersion &+= 1
-            if count > 60 { showScrollToTop = true }
-        }
-        .onScrollGeometryChange(for: CGFloat.self, of: { geometry in
-            let bottomOffset = geometry.contentOffset.y + geometry.containerSize.height
-            return geometry.contentSize.height - bottomOffset
-        }, action: { _, distanceFromBottom in
-            guard isVisible, distanceFromBottom.isFinite else { return }
-            if distanceFromBottom <= Self.loadMoreTriggerThreshold {
-                triggerLoadMore()
+            .coordinateSpace(name: Self.scrollCoordinateSpaceName)
+            .onChange(of: viewModel.wallpapers.count) { _, count in
+                if count > 60 { showScrollToTop = true }
             }
-        })
-        .scrollDisabled(!isVisible)
-        .disabled(isInitialLoading || !isVisible)
+            .onScrollGeometryChange(for: CGFloat.self, of: { geometry in
+                let bottomOffset = geometry.contentOffset.y + geometry.containerSize.height
+                return geometry.contentSize.height - bottomOffset
+            }, action: { _, distanceFromBottom in
+                guard isVisible, distanceFromBottom.isFinite else { return }
+                if distanceFromBottom <= Self.loadMoreTriggerThreshold {
+                    triggerLoadMore()
+                }
+            })
+            .scrollDisabled(!isVisible)
+            .disabled(isInitialLoading || !isVisible)
+            .onChange(of: outerScrollToTopToken) { _, _ in
+                withAnimation(nil) {
+                    proxy.scrollTo("wp-scroll-top", anchor: .top)
+                }
+            }
+        }
     }
 
     // MARK: - macOS 14：使用 PreferenceKey + 防抖
 
     private func scrollViewLegacy(width: CGFloat, viewportHeight: CGFloat, gridConfig: WallpaperGridConfig) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                ScrollToTopHelper(trigger: outerScrollToTopToken)
-                    .frame(height: 0)
-                gridHeaderStack
-                wallpaperGrid(config: gridConfig)
-                loadMoreSentinel
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Color.clear
+                        .frame(height: 0)
+                        .id("wp-scroll-top")
+                    gridHeaderStack
+                    wallpaperGrid(config: gridConfig)
+                    loadMoreSentinel
+                }
+                .padding(.horizontal, 28)
+                .frame(width: width, alignment: .leading)
+                .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
+                .environment(\.arcIsLightMode, arcSettings.isLightMode)
             }
-            .padding(.horizontal, 28)
-            .frame(width: width, alignment: .leading)
-            .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
-            .environment(\.arcIsLightMode, arcSettings.isLightMode)
-        }
-        .coordinateSpace(name: Self.scrollCoordinateSpaceName)
-        .onChange(of: viewModel.wallpapers.count) { _, count in
-            columnLayoutVersion &+= 1
-            if count > 60 { showScrollToTop = true }
-        }
-        .onPreferenceChange(WallpaperLoadMoreSentinelMinYPreferenceKey.self) { sentinelMinY in
-            sentinelDebounceTask?.cancel()
-            let task = DispatchWorkItem { [self] in
-                guard !Task.isCancelled else { return }
-                self.handleLoadMoreSentinelPosition(sentinelMinY, viewportHeight: viewportHeight)
+            .coordinateSpace(name: Self.scrollCoordinateSpaceName)
+            .onChange(of: viewModel.wallpapers.count) { _, count in
+                if count > 60 { showScrollToTop = true }
             }
-            sentinelDebounceTask = task
-            DispatchQueue.main.async(execute: task)
+            .onPreferenceChange(WallpaperLoadMoreSentinelMinYPreferenceKey.self) { sentinelMinY in
+                sentinelDebounceTask?.cancel()
+                let task = DispatchWorkItem { [self] in
+                    guard !Task.isCancelled else { return }
+                    self.handleLoadMoreSentinelPosition(sentinelMinY, viewportHeight: viewportHeight)
+                }
+                sentinelDebounceTask = task
+                DispatchQueue.main.async(execute: task)
+            }
+            .scrollDisabled(!isVisible)
+            .disabled(isInitialLoading || !isVisible)
+            .onChange(of: outerScrollToTopToken) { _, _ in
+                withAnimation(nil) {
+                    proxy.scrollTo("wp-scroll-top", anchor: .top)
+                }
+            }
         }
-        .scrollDisabled(!isVisible)
-        .disabled(isInitialLoading || !isVisible)
     }
 
     private var scrollToTopButton: some View {
@@ -320,8 +331,7 @@ struct WallpaperExploreContentView: View {
             Spacer()
             if loadMoreFailed {
                 BottomLoadingFailedCard {
-                    loadMoreFailed = false
-                    Task { await viewModel.loadMore() }
+                    triggerLoadMore()
                 }
                 .padding(.bottom, 60)
             } else if isLoadingMore || (viewModel.isLoading && !visibleWallpapers.isEmpty) {
@@ -618,7 +628,8 @@ struct WallpaperExploreContentView: View {
     // MARK: - Grid & Cards
 
     private func wallpaperGrid(config: WallpaperGridConfig) -> some View {
-        let columnItems = distributeItemsToColumns(config: config)
+        let items = visibleWallpapers
+        let columnItems = distributeWallpapersToColumns(items: items, config: config)
 
         return HStack(alignment: .top, spacing: config.spacing) {
             ForEach(0..<config.columnCount, id: \.self) { columnIndex in
@@ -641,18 +652,22 @@ struct WallpaperExploreContentView: View {
         }
     }
 
-    /// 瀑布流：将壁纸分配到最短列
-    private func distributeItemsToColumns(config: WallpaperGridConfig) -> [[Wallpaper]] {
-        columnCache.columns(
-            for: visibleWallpapers,
-            version: columnLayoutVersion,
-            columnCount: config.columnCount,
-            cardWidth: config.cardWidth,
-            spacing: config.spacing
-        ) { wallpaper in
+    /// 瀑布流：将所有壁纸项按最短列连续分配到各列。
+    private func distributeWallpapersToColumns(items: [Wallpaper], config: WallpaperGridConfig) -> [[Wallpaper]] {
+        let safeColumnCount = max(1, config.columnCount)
+        var columns: [[Wallpaper]] = Array(repeating: [], count: safeColumnCount)
+        var columnHeights: [CGFloat] = Array(repeating: 0, count: safeColumnCount)
+
+        for wallpaper in items {
             let aspectRatio = min(max(CGFloat(wallpaper.effectiveAspectRatioValue), 0.35), 3.6)
-            return config.cardWidth / aspectRatio + 46
+            let itemHeight = config.cardWidth / aspectRatio + 46
+            let minHeight = columnHeights.min() ?? 0
+            let column = columnHeights.firstIndex(of: minHeight) ?? 0
+            columns[column].append(wallpaper)
+            columnHeights[column] += itemHeight + config.spacing
         }
+
+        return columns
     }
 
     // MARK: - UI Components
@@ -939,6 +954,7 @@ struct WallpaperExploreContentView: View {
 
     private func reloadData() {
         AppLogger.info(.wallpaper, "重新搜索：用户操作触发")
+        prepareForFeedReplacement()
         lastSyncedFirstWallpaperID = nil
         loadMoreFailed = false
         viewModel.errorMessage = nil
@@ -973,16 +989,24 @@ struct WallpaperExploreContentView: View {
         lastSyncedFirstWallpaperID = nil
         loadMoreFailed = false
         viewModel.errorMessage = nil
+        prepareForFeedReplacement()
 
         if reloadData {
             // 不再手动清空 wallpapers，避免根视图切换导致的抖动
-            Task { await viewModel.search() }
+            Task {
+                await viewModel.search()
+                await MainActor.run {
+                    recomputeVisibleWallpapers()
+                    syncAtmosphereIfNeeded()
+                }
+            }
         } else {
             recomputeVisibleWallpapers()
         }
     }
 
     private func recomputeVisibleWallpapers() {
+        let oldIDs = visibleWallpapers.map(\.id)
         let newVisible: [Wallpaper]
         if viewModel.currentSourceSupportsWallhavenCategories {
             newVisible = viewModel.wallpapers.filter { matchesCategory($0, category: category) }
@@ -990,7 +1014,15 @@ struct WallpaperExploreContentView: View {
             newVisible = viewModel.wallpapers
         }
         visibleWallpapers = newVisible
-        columnLayoutVersion &+= 1
+    }
+
+    private func prepareForFeedReplacement() {
+        loadMoreTask?.cancel()
+        sentinelDebounceTask?.cancel()
+        isLoadingMore = false
+        loadMoreFailed = false
+        showScrollToTop = false
+        outerScrollToTopToken &+= 1
     }
 
     private func syncAtmosphereIfNeeded() {

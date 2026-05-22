@@ -981,7 +981,8 @@ struct KFMediaCoverImage: View {
         .task(id: url.absoluteString) {
             detectedGIF = false
             loadFailed = false
-            guard animated else { return }
+            // 探针始终运行以检测真实内容是否为 GIF，不依赖 URL 后缀启发式。
+            // animated 参数仅用于 shouldAnimate（控制动画播放），不影响检测逻辑。
             let result = await AnimatedImageProbeCache.shared.isAnimatedGIF(url, maxByteCount: maxAnimatedGIFBytes)
             guard !Task.isCancelled else { return }
             detectedGIF = result

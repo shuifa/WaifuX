@@ -48,6 +48,9 @@ final class MediaExploreViewModel: ObservableObject {
     // MARK: - 预加载支持
     private var preloadTask: Task<Void, Never>?
     private var preloadedItems: [MediaItem] = []
+    /// 预加载的页面路径（即被预加载的那个页面的 URL），用于和 nextPagePath 匹配。
+    private var preloadedPagePath: String?
+    /// 预加载页面的下一页路径（预加载页面返回的 nextPagePath）。
     private var preloadedNextPath: String?
 
     // MARK: - Workshop 分页状态
@@ -319,6 +322,7 @@ final class MediaExploreViewModel: ObservableObject {
         // 重置预加载状态
         preloadTask?.cancel()
         preloadedItems = []
+        preloadedPagePath = nil
         preloadedNextPath = nil
         cancelDetailPrefetchQueue()
 
@@ -377,11 +381,12 @@ final class MediaExploreViewModel: ObservableObject {
             let page: MediaListPage
 
             // 检查是否有预加载的数据
-            if preloadedNextPath == nextPagePath && !preloadedItems.isEmpty {
+            if preloadedPagePath == nextPagePath && !preloadedItems.isEmpty {
                 print("[MediaExploreViewModel] Using preloaded page")
-                page = MediaListPage(items: preloadedItems, nextPagePath: preloadedNextPath, sectionTitle: currentTitle)
+                page = MediaListPage(items: preloadedItems, nextPagePath: preloadedNextPath ?? preloadedPagePath, sectionTitle: currentTitle)
                 // 清空预加载数据
                 preloadedItems = []
+                preloadedPagePath = nil
                 preloadedNextPath = nil
             } else {
                 // 正常加载
@@ -421,10 +426,12 @@ final class MediaExploreViewModel: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
-                // 存储预加载的数据
+                // 存储预加载的数据：preloadedPagePath 是当前预加载的页面路径，
+                // preloadedNextPath 是该页面返回的下一页路径。
                 preloadedItems = Array(page.items.prefix(40))
+                preloadedPagePath = nextPath
                 preloadedNextPath = page.nextPagePath
-                print("[MediaExploreViewModel] Preloaded \(page.items.count) items")
+                print("[MediaExploreViewModel] Preloaded \(page.items.count) items at path \(nextPath)")
             } catch {
                 print("[MediaExploreViewModel] Preload failed: \(error)")
             }
@@ -556,6 +563,7 @@ final class MediaExploreViewModel: ObservableObject {
         preloadTask?.cancel()
         cancelDetailPrefetchQueue()
         preloadedItems = []
+        preloadedPagePath = nil
         preloadedNextPath = nil
         nextPagePath = nil
         currentQuery = ""
@@ -1257,6 +1265,7 @@ final class MediaExploreViewModel: ObservableObject {
         networkRecoveryTask?.cancel()
         preloadTask?.cancel()
         preloadedItems.removeAll()
+        preloadedPagePath = nil
         preloadedNextPath = nil
         cancelDetailPrefetchQueue()
         detailTasks.values.forEach { $0.cancel() }
@@ -1281,6 +1290,7 @@ final class MediaExploreViewModel: ObservableObject {
         networkMonitorSetupTask = nil
         preloadTask = nil
         preloadedItems.removeAll()
+        preloadedPagePath = nil
         preloadedNextPath = nil
         nextPagePath = nil
         cancelDetailPrefetchQueue()
