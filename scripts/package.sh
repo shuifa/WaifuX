@@ -49,7 +49,11 @@ require_packaged_file "$PROJECT_DIR/Resources/lib/libdxcompiler.dylib" "libdxcom
 # 实时设置壁纸仍走 wallpaper-wgpu。
 CLI_BIN="$PROJECT_DIR/Resources/wallpaperengine-cli"
 CLI_REBUILD_REASON=""
-if [[ ! -f "$CLI_BIN" ]]; then
+
+# CI 环境下若 CLI 二进制已存在且非强制重建，直接跳过（避免因时间戳差异误触发重建）
+if [[ -n "${CI:-}" ]] && [[ -f "$CLI_BIN" ]] && [[ -z "${WAIFUX_FORCE_CLI_REBUILD:-}" ]]; then
+  CLI_REBUILD_REASON=""
+elif [[ ! -f "$CLI_BIN" ]]; then
   CLI_REBUILD_REASON="missing binary"
 elif [[ -n "${WAIFUX_FORCE_CLI_REBUILD:-}" ]]; then
   CLI_REBUILD_REASON="WAIFUX_FORCE_CLI_REBUILD"
