@@ -10,12 +10,11 @@ if [[ -d "$DEST" ]] && [[ -n "$(ls -A "$DEST" 2>/dev/null)" ]]; then
   exit 0
 fi
 
+# 若 Assets 不可用，build-wallpaperengine-cli.sh 会自动创建空占位，因此此处仅警告不退出。
 URL="${WAIFUX_WE_ASSETS_PACK_URL:-}"
 if [[ -z "$URL" ]]; then
-  echo "error: 缺少 $DEST。请任选：" >&2
-  echo "  1) 本地放入完整材质树到 Resources/assets（已被 .gitignore，不会提交）" >&2
-  echo "  2) 设置 WAIFUX_WE_ASSETS_PACK_URL 指向 zip（zip 根目录含 assets/）" >&2
-  exit 1
+  echo "[ensure-assets] ⚠️ 本地无 $DEST 且未设置 WAIFUX_WE_ASSETS_PACK_URL，将使用空资源占位" >&2
+  exit 0
 fi
 
 echo "[ensure-assets] 下载材质包..."
