@@ -22,6 +22,7 @@ cd "$ROOT"
 
 DEST_DIR="$ROOT/Resources"
 DEST_LIB_DIR="$DEST_DIR/lib"
+RENDERER_ENTITLEMENTS="$ROOT/WallpaperRenderer.entitlements"
 mkdir -p "$DEST_DIR" "$DEST_LIB_DIR"
 
 echo "🔧 wallpaper-wgpu 部署开始..."
@@ -155,7 +156,12 @@ fi
 if command -v codesign >/dev/null 2>&1; then
   echo "  🔏 签名..."
   if [[ -f "$DEST_DIR/wallpaper-wgpu" ]]; then
-    codesign --force -s - "$DEST_DIR/wallpaper-wgpu" 2>/dev/null || true
+    if [[ -f "$RENDERER_ENTITLEMENTS" ]]; then
+      codesign --force --options runtime --entitlements "$RENDERER_ENTITLEMENTS" -s - "$DEST_DIR/wallpaper-wgpu" 2>/dev/null || \
+        codesign --force -s - "$DEST_DIR/wallpaper-wgpu" 2>/dev/null || true
+    else
+      codesign --force -s - "$DEST_DIR/wallpaper-wgpu" 2>/dev/null || true
+    fi
   fi
   if [[ -f "$DEST_DIR/dxc" ]]; then
     codesign --force -s - "$DEST_DIR/dxc" 2>/dev/null || true

@@ -90,14 +90,30 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" 2>/dev/null || true
 
           echo "Signing embedded binaries..."
-          find build/WaifuX.app -type f | while read -r f; do
+          sign_embedded_code() {
+            local f="$1"
+            SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
+            if [[ "$(basename "$f")" == "wallpaper-wgpu" && -f "WallpaperRenderer.entitlements" ]]; then
+              SIGN_ARGS+=(--entitlements "WallpaperRenderer.entitlements")
+            fi
+            codesign "${SIGN_ARGS[@]}" "$f"
+          }
+
+          find build/WaifuX.app/Contents/Resources -type f | while read -r f; do
             if file "$f" | grep -qE "Mach-O|ELF"; then
-              codesign --force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$f"
+              sign_embedded_code "$f"
             fi
           done
+          if [[ -d build/WaifuX.app/Contents/Frameworks ]]; then
+            find build/WaifuX.app/Contents/Frameworks -maxdepth 1 -type d -name "*.framework" | while read -r f; do
+              sign_embedded_code "$f"
+            done
+          fi
 
-          codesign --force --deep --options=runtime --timestamp \
+          codesign --force --options=runtime --timestamp \
+            --entitlements WaifuX.entitlements \
             --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" build/WaifuX.app
+          codesign --verify --deep --strict --verbose=2 build/WaifuX.app
 
           set +e
           create-dmg \

@@ -119,22 +119,38 @@ jobs:
                   security find-identity -v -p codesigning "$KEYCHAIN_PATH"
                   echo ""
 
-                  # 签名 app 内部所有二进制（--deep 不会递归处理 Resources 里的 dylib/可执行文件）
+                  # 先签名 app 内部代码，最后再签 App 本体，避免 --deep 覆盖 renderer 的 JIT entitlement。
                   echo "Signing embedded binaries..."
-                  find build/WaifuX.app -type f | while read -r f; do
+                  sign_embedded_code() {
+                    local f="$1"
+                    SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
+                    if [[ "$(basename "$f")" == "wallpaper-wgpu" && -f "WallpaperRenderer.entitlements" ]]; then
+                      SIGN_ARGS+=(--entitlements "WallpaperRenderer.entitlements")
+                    fi
+                    if codesign "${SIGN_ARGS[@]}" "$f" 2>&1; then
+                      echo "  ✅ $(basename "$f")"
+                    else
+                      echo "  ⚠️ Failed to sign: $f"
+                    fi
+                  }
+
+                  find build/WaifuX.app/Contents/Resources -type f | while read -r f; do
                     if file "$f" | grep -qE "Mach-O|ELF"; then
-                      if codesign --force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$f" 2>&1; then
-                        echo "  ✅ $(basename "$f")"
-                      else
-                        echo "  ⚠️ Failed to sign: $f"
-                      fi
+                      sign_embedded_code "$f"
                     fi
                   done
+                  if [[ -d build/WaifuX.app/Contents/Frameworks ]]; then
+                    find build/WaifuX.app/Contents/Frameworks -maxdepth 1 -type d -name "*.framework" | while read -r f; do
+                      sign_embedded_code "$f"
+                    done
+                  fi
 
                   # 最后签名整个 app bundle
                   echo "Signing app bundle..."
-                  codesign --force --deep --options=runtime --timestamp \
+                  codesign --force --options=runtime --timestamp \
+                    --entitlements WaifuX.entitlements \
                     --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" build/WaifuX.app
+                  codesign --verify --deep --strict --verbose=2 build/WaifuX.app
 
                   # 重新打包进 DMG
                   set +e

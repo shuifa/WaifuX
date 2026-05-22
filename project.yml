@@ -202,6 +202,19 @@ targets:
             fi
           }
 
+          sign_wgpu_if_present() {
+            local f="$1"
+            local entitlements="${SRCROOT}/WallpaperRenderer.entitlements"
+            if [[ -f "$f" ]]; then
+              if [[ -f "$entitlements" ]]; then
+                codesign --force --options runtime --entitlements "$entitlements" -s - "$f" 2>/dev/null || \
+                  codesign --force -s - "$f" 2>/dev/null || true
+              else
+                codesign --force -s - "$f" 2>/dev/null || true
+              fi
+            fi
+          }
+
           # Xcode folder reference 可能复制为 Contents/Resources/Resources/...；
           # 本地 Run 也要覆盖扁平与嵌套两种布局，避免只有打包脚本签名成功。
           for DXC_BIN in \
@@ -217,7 +230,7 @@ targets:
           for WGPU_BIN in \
             "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/wallpaper-wgpu" \
             "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/Resources/wallpaper-wgpu"; do
-            sign_file_if_present "$WGPU_BIN"
+            sign_wgpu_if_present "$WGPU_BIN"
           done
 
           for CLI_BIN in \

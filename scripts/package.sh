@@ -9,6 +9,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 ARCHIVE_NAME="WaifuX.xcarchive"
 DMG_NAME="WaifuX.dmg"
 APP_NAME="WaifuX.app"
+RENDERER_ENTITLEMENTS="$PROJECT_DIR/WallpaperRenderer.entitlements"
 
 echo "📦 WaifuX 打包开始..."
 echo "项目目录: $PROJECT_DIR"
@@ -101,7 +102,12 @@ for f in "$PROJECT_DIR"/Resources/wallpaper-wgpu \
          "$PROJECT_DIR"/Resources/lib/*.dylib \
          "$PROJECT_DIR"/Resources/lib/Python; do
   if [[ -f "$f" ]]; then
-    codesign --force -s - "$f" 2>/dev/null || true
+    if [[ "$(basename "$f")" == "wallpaper-wgpu" && -f "$RENDERER_ENTITLEMENTS" ]]; then
+      codesign --force --options runtime --entitlements "$RENDERER_ENTITLEMENTS" -s - "$f" 2>/dev/null || \
+        codesign --force -s - "$f" 2>/dev/null || true
+    else
+      codesign --force -s - "$f" 2>/dev/null || true
+    fi
   fi
 done
 echo "✅ 签名完成"
@@ -189,6 +195,7 @@ sign_exported_app() {
   local app_path="$1"
   local identity="$2"
   local entitlements="$PROJECT_DIR/WaifuX.entitlements"
+  local renderer_entitlements="$PROJECT_DIR/WallpaperRenderer.entitlements"
 
   echo "🔏 正在签名导出的 App..."
   if [[ "$identity" == "-" ]]; then
@@ -197,11 +204,22 @@ sign_exported_app() {
     echo "签名身份: $identity"
   fi
 
+  sign_nested_code() {
+    local code_path="$1"
+    if [[ "$(basename "$code_path")" == "wallpaper-wgpu" && -f "$renderer_entitlements" ]]; then
+      codesign --force --timestamp=none --options runtime --entitlements "$renderer_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
+        codesign --force --options runtime --entitlements "$renderer_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
+        codesign --force -s "$identity" "$code_path" 2>/dev/null || true
+    else
+      codesign --force --timestamp=none --options runtime -s "$identity" "$code_path" 2>/dev/null || \
+        codesign --force -s "$identity" "$code_path" 2>/dev/null || true
+    fi
+  }
+
   while IFS= read -r code_path; do
     # 某些 dylib（如 steamclient.dylib）在 ad-hoc 重签时可能 strict 验证失败，
     # 但实际运行不受影响。忽略单个签名失败，继续处理其余文件。
-    codesign --force --timestamp=none --options runtime -s "$identity" "$code_path" 2>/dev/null || \
-      codesign --force -s "$identity" "$code_path" 2>/dev/null || true
+    sign_nested_code "$code_path"
   done < <(
     find "$app_path/Contents/Resources" -type f \( -perm -111 -o -name "*.dylib" \) -print 2>/dev/null \
       | while IFS= read -r candidate; do
@@ -210,6 +228,12 @@ sign_exported_app() {
           fi
         done
   )
+
+  if [[ -d "$app_path/Contents/Frameworks" ]]; then
+    while IFS= read -r framework_path; do
+      sign_nested_code "$framework_path"
+    done < <(find "$app_path/Contents/Frameworks" -maxdepth 1 -type d -name "*.framework" -print 2>/dev/null)
+  fi
 
   if [[ -f "$entitlements" ]]; then
     codesign --force --timestamp=none --options runtime --entitlements "$entitlements" -s "$identity" "$app_path" 2>/dev/null || \
