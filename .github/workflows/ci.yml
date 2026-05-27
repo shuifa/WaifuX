@@ -126,6 +126,13 @@ jobs:
                     SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
                     if [[ "$(basename "$f")" == "wallpaper-wgpu" && -f "WallpaperRenderer.entitlements" ]]; then
                       SIGN_ARGS+=(--entitlements "WallpaperRenderer.entitlements")
+                    elif [[ "$f" == *.appex ]]; then
+                      # .appex 扩展需要各自的 entitlements（如 app-sandbox）
+                      local extension_name=$(basename "$f" .appex)
+                      local ext_entitlements="WaifuXWallpaperExtension/WaifuXWallpaperExtension.entitlements"
+                      if [[ -f "$ext_entitlements" ]]; then
+                        SIGN_ARGS+=(--entitlements "$ext_entitlements")
+                      fi
                     fi
                     if codesign "${SIGN_ARGS[@]}" "$f" 2>&1; then
                       echo "  ✅ $(basename "$f")"
