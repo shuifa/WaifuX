@@ -123,8 +123,22 @@ jobs:
 
                   # 先签名 app 内部代码，最后再签 App 本体，避免 --deep 覆盖 renderer 的 JIT entitlement。
                   echo "Signing embedded binaries..."
+                  should_skip_embedded_code() {
+                    local f="$1"
+                    case "$f" in
+                      */Contents/Resources/Resources/steamcmd/*|*/Contents/Resources/steamcmd/*)
+                        echo "  Skipping vendor-signed Steam runtime: ${f#build/WaifuX.app/Contents/Resources/}"
+                        return 0
+                        ;;
+                    esac
+                    return 1
+                  }
+
                   sign_embedded_code() {
                     local f="$1"
+                    if should_skip_embedded_code "$f"; then
+                      return 0
+                    fi
                     SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
                     if [[ "$(basename "$f")" == "wallpaper-wgpu" && -f "WallpaperRenderer.entitlements" ]]; then
                       SIGN_ARGS+=(--entitlements "WallpaperRenderer.entitlements")

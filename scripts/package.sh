@@ -211,6 +211,12 @@ sign_exported_app() {
   sign_nested_code() {
     local code_path="$1"
     local extension_entitlements="$PROJECT_DIR/WaifuXWallpaperExtension/WaifuXWallpaperExtension.entitlements"
+    case "$code_path" in
+      "$app_path"/Contents/Resources/Resources/steamcmd/*|"$app_path"/Contents/Resources/steamcmd/*)
+        echo "  跳过 Steam 供应商签名运行时: ${code_path#"$app_path/Contents/Resources/"}"
+        return 0
+        ;;
+    esac
     if [[ "$(basename "$code_path")" == "wallpaper-wgpu" && -f "$renderer_entitlements" ]]; then
       codesign --force --timestamp=none --options runtime --entitlements "$renderer_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
         codesign --force --options runtime --entitlements "$renderer_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
@@ -226,8 +232,6 @@ sign_exported_app() {
   }
 
   while IFS= read -r code_path; do
-    # 某些 dylib（如 steamclient.dylib）在 ad-hoc 重签时可能 strict 验证失败，
-    # 但实际运行不受影响。忽略单个签名失败，继续处理其余文件。
     sign_nested_code "$code_path"
   done < <(
     find "$app_path/Contents/Resources" -type f \( -perm -111 -o -name "*.dylib" \) -print 2>/dev/null \
