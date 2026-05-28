@@ -125,17 +125,34 @@ jobs:
             if should_skip_embedded_code "$f"; then
               return 0
             fi
-            SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
-            if [[ "$(basename "$f")" == "wallpaper-wgpu" && -f "WallpaperRenderer.entitlements" ]]; then
-              SIGN_ARGS+=(--entitlements "WallpaperRenderer.entitlements")
-            elif [[ "$f" == *.appex ]]; then
-              local ext_entitlements="WaifuXWallpaperExtension/WaifuXWallpaperExtension.entitlements"
-              if [[ -f "$ext_entitlements" ]]; then
-                SIGN_ARGS+=(--entitlements "$ext_entitlements")
-              fi
-            fi
-            codesign "${SIGN_ARGS[@]}" "$f"
+            # macOS 26: codesign --entitlements 对 .appex 不再生效（entitlements 被静默丢弃），
+            # 必须用 xcodebuild 重新签名扩展才能正确嵌入 entitlements。
             if [[ "$f" == *.appex ]]; then
+              echo "  Signing extension via xcodebuild: $(basename "$f")"
+              xcodebuild -project WaifuX.xcodeproj \
+                -target WaifuXWallpaperExtension \
+                -configuration Release \
+                CODE_SIGN_IDENTITY="${{ vars.APPLE_SIGNING_IDENTITY }}" \
+                DEVELOPMENT_TEAM="${{ vars.APPLE_TEAM_ID }}" \
+                CODE_SIGN_ENTITLEMENTS="WaifuXWallpaperExtension/WaifuXWallpaperExtension.entitlements" \
+                ENABLE_HARDENED_RUNTIME=YES \
+                CODE_SIGN_STYLE=Manual \
+                OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+                clean build 2>&1 | tail -5
+              local built_appex
+              built_appex=$(find ~/Library/Developer/Xcode/DerivedData -path "*/Build/Products/Release/WaifuXWallpaperExtension.appex" 2>/dev/null | head -1)
+              if [[ -n "$built_appex" && -f "$built_appex" ]]; then
+                cp -R "$built_appex" "$f"
+                echo "  ✅ $(basename "$f") (xcodebuild signed)"
+              else
+                echo "  ⚠️ xcodebuild did not produce .appex, falling back to codesign"
+                local SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
+                local ext_entitlements="WaifuXWallpaperExtension/WaifuXWallpaperExtension.entitlements"
+                if [[ -f "$ext_entitlements" ]]; then
+                  SIGN_ARGS+=(--entitlements "$ext_entitlements")
+                fi
+                codesign "${SIGN_ARGS[@]}" "$f"
+              fi
               local ent_check
               ent_check=$(codesign -d --entitlements - "$f" 2>/dev/null || true)
               if ! echo "$ent_check" | grep -q "com.apple.security.application-groups"; then
@@ -144,7 +161,13 @@ jobs:
                 echo "$ent_check" | head -20
                 exit 1
               fi
+              return 0
             fi
+            SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
+            if [[ "$(basename "$f")" == "wallpaper-wgpu" && -f "WallpaperRenderer.entitlements" ]]; then
+              SIGN_ARGS+=(--entitlements "WallpaperRenderer.entitlements")
+            fi
+            codesign "${SIGN_ARGS[@]}" "$f"
           }
 
           strip_unsupported_slices build/WaifuX.app/Contents/Resources/Resources/steamcmd

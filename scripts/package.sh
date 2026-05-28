@@ -240,9 +240,32 @@ sign_exported_app() {
       codesign --force --timestamp=none --options runtime --entitlements "$renderer_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
         codesign --force --options runtime --entitlements "$renderer_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
         codesign --force -s "$identity" "$code_path" 2>/dev/null || true
-    elif [[ "$code_path" == *.appex && -f "$extension_entitlements" ]]; then
-      codesign --force --timestamp=none --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path" || \
-        codesign --force --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path"
+    elif [[ "$code_path" == *.appex ]]; then
+      # macOS 26: codesign --entitlements 对 .appex 不再生效，必须用 xcodebuild
+      if [[ "$identity" != "-" ]]; then
+        echo "  签名扩展 (xcodebuild): $(basename "$code_path")"
+        xcodebuild -project "$PROJECT_DIR/WaifuX.xcodeproj" \
+          -target WaifuXWallpaperExtension \
+          -configuration Release \
+          CODE_SIGN_IDENTITY="$identity" \
+          CODE_SIGN_ENTITLEMENTS="$extension_entitlements" \
+          ENABLE_HARDENED_RUNTIME=YES \
+          CODE_SIGN_STYLE=Manual \
+          OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+          clean build 2>&1 | tail -5
+        local built_appex
+        built_appex=$(find ~/Library/Developer/Xcode/DerivedData -path "*/Build/Products/Release/WaifuXWallpaperExtension.appex" 2>/dev/null | head -1)
+        if [[ -n "$built_appex" && -f "$built_appex" ]]; then
+          cp -R "$built_appex" "$code_path"
+          echo "  ✅ $(basename "$code_path") (xcodebuild)"
+        else
+          echo "  ⚠️ xcodebuild 未产出 .appex，回退到 codesign"
+          codesign --force --timestamp=none --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path" || \
+            codesign --force --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path"
+        fi
+      else
+        codesign --force --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path" 2>/dev/null || true
+      fi
       local ent_check
       ent_check=$(codesign -d --entitlements - "$code_path" 2>/dev/null || true)
       if ! echo "$ent_check" | grep -q "com.apple.security.application-groups"; then
