@@ -62,7 +62,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION"
 
-      # macOS 26: .appex 必须用 xcodebuild + Automatic Signing 签名
+      # macOS 26: .appex 必须用 xcodebuild 签名，手动 codesign 可能丢 entitlements
       - name: Setup Certificate & Sign Extension
         env:
           APPLE_SIGNING_CERTIFICATE: ${{ secrets.APPLE_SIGNING_CERTIFICATE }}
@@ -91,7 +91,7 @@ jobs:
             -configuration Release \
             CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_STYLE=Manual \
             ENABLE_HARDENED_RUNTIME=YES \
             OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
             clean build 2>&1 | tail -30
@@ -180,7 +180,7 @@ jobs:
                   DEVELOPMENT_TEAM="${{ vars.APPLE_TEAM_ID }}" \
                   CODE_SIGN_ENTITLEMENTS="WaifuXWallpaperExtension/WaifuXWallpaperExtension.entitlements" \
                   ENABLE_HARDENED_RUNTIME=YES \
-                  CODE_SIGN_STYLE=Automatic \
+                  CODE_SIGN_STYLE=Manual \
                   OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
                   clean build 2>&1 | tail -20
                 local built_appex

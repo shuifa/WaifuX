@@ -11,12 +11,6 @@ struct WallpaperCardView: View {
 
     @Environment(\.arcIsLightMode) private var isLightMode
     @State private var isHovered = false
-    /// 缓存 coverImageURL 避免 body 重算
-    @State private var storedCoverImageURL: URL? = nil
-    /// 缓存 targetSize 避免 body 重算
-    @State private var storedTargetSize: CGSize? = nil
-    /// 跟踪 wallpaper id 以便在 wallpaper 变化时刷新缓存
-    @State private var lastWallpaperID: Wallpaper.ID? = nil
 
     private let bottomBarHeight: CGFloat = 46
     private let cornerRadius: CGFloat = 22
@@ -88,23 +82,7 @@ struct WallpaperCardView: View {
     }
 
     var body: some View {
-        // 缓存 coverImageURL 和 targetSize：当 wallpaper 变化时刷新
-        if lastWallpaperID != wallpaper.id {
-            lastWallpaperID = wallpaper.id
-            storedCoverImageURL = Self.computeCoverImageURL(wallpaper: wallpaper)
-            let scale = NSScreen.main?.backingScaleFactor ?? 2
-            let targetWidth = cardWidth * scale
-            let targetHeight = (cardWidth / effectiveAspectRatio) * scale
-            let maxEdge: CGFloat = 1280
-            let reduction = max(targetWidth, targetHeight) > maxEdge
-                ? maxEdge / max(targetWidth, targetHeight) : 1
-            storedTargetSize = CGSize(
-                width: targetWidth * reduction,
-                height: targetHeight * reduction
-            )
-        }
-
-        return ZStack(alignment: .topLeading) {
+        ZStack(alignment: .topLeading) {
             VStack(spacing: 0) {
                 coverImage
                     .frame(width: cardWidth, height: imageHeight)
@@ -136,8 +114,17 @@ struct WallpaperCardView: View {
 
     @ViewBuilder
     private var coverImage: some View {
-        let url = storedCoverImageURL
-        let targetSize = storedTargetSize ?? CGSize(width: cardWidth * 2, height: imageHeight * 2)
+        let url = Self.computeCoverImageURL(wallpaper: wallpaper)
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let targetWidth = cardWidth * scale
+        let targetHeight = (cardWidth / effectiveAspectRatio) * scale
+        let maxEdge: CGFloat = 1280
+        let reduction = max(targetWidth, targetHeight) > maxEdge
+            ? maxEdge / max(targetWidth, targetHeight) : 1
+        let targetSize = CGSize(
+            width: targetWidth * reduction,
+            height: targetHeight * reduction
+        )
         let processor = DownsamplingImageProcessor(size: targetSize)
 
         KFImage(url)

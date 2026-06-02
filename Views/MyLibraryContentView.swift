@@ -1173,27 +1173,20 @@ struct MyLibraryContentView: View {
                                      ? Color.accentColor
                                      : .white.opacity(0.3))
 
-                // 预览图
-                AsyncImage(url: item.previewURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    case .failure(_):
-                        Color.gray.opacity(0.3)
-                    case .empty:
-                        Color.gray.opacity(0.2)
-                    @unknown default:
+                // 预览图（使用 Kingfisher 缓存，避免滚动时重复加载）
+                KFImage(item.previewURL)
+                    .fade(duration: 0.2)
+                    .placeholder { _ in
                         Color.gray.opacity(0.2)
                     }
-                }
-                .frame(width: 48, height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                )
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 48, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                    )
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title)
