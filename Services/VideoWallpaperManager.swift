@@ -587,9 +587,9 @@ final class VideoWallpaperManager: ObservableObject {
     func setMuted(_ muted: Bool) {
         isMuted = muted
         for (screenID, player) in players {
-            player.isMuted = muted
             let screenVolume = volumeByScreen[screenID] ?? volume
-            player.volume = muted ? 0 : Float(screenVolume)
+            // 工具栏静音需要同时处理播放器音量和已排队 item 的音频轨，避免只静音音量仍唤醒 AirPods。
+            applyPlayerAudioPolicy(player, muted: muted, volume: screenVolume)
         }
         updateAudioSession()
         persistState()
@@ -1829,6 +1829,9 @@ final class VideoWallpaperManager: ObservableObject {
                             self.fadeInTimeouts[targetScreenID]?.cancel()
                             self.fadeInTimeouts.removeValue(forKey: targetScreenID)
 
+                            // AVPlayerLooper 可能在 ready 前后插入新的循环 item，播放前重新应用音频策略。
+                            let screenVolume = self.volumeByScreen[targetScreenID] ?? self.volume
+                            self.applyPlayerAudioPolicy(components.player, muted: self.isMuted, volume: screenVolume)
                             if !self.isPaused {
                                 components.player.play()
                             }
@@ -1851,6 +1854,9 @@ final class VideoWallpaperManager: ObservableObject {
                         self.fadeInTimeouts[targetScreenID]?.cancel()
                         self.fadeInTimeouts.removeValue(forKey: targetScreenID)
 
+                        // 超时兜底路径也要在 play() 前重新禁用静音状态下的音频轨。
+                        let screenVolume = self.volumeByScreen[targetScreenID] ?? self.volume
+                        self.applyPlayerAudioPolicy(components.player, muted: self.isMuted, volume: screenVolume)
                         if !self.isPaused {
                             components.player.play()
                         }
@@ -1867,6 +1873,9 @@ final class VideoWallpaperManager: ObservableObject {
                     containerView.cancelPlayerTransitionIfNeeded()
                     containerView.playerLayer.player = components.player
                     containerView.playerLayer.videoGravity = .resizeAspectFill
+                    // 非动画替换会立即播放，新播放器绑定到 layer 后先同步静音音频轨状态。
+                    let screenVolume = volumeByScreen[targetScreenID] ?? volume
+                    applyPlayerAudioPolicy(components.player, muted: isMuted, volume: screenVolume)
                     if !isPaused {
                         components.player.play()
                     }
@@ -2065,8 +2074,10 @@ final class VideoWallpaperManager: ObservableObject {
         let queuePlayer = AVQueuePlayer()
         queuePlayer.actionAtItemEnd = .none
         let screenVolume = volume(for: screen)
-        queuePlayer.isMuted = muted
-        queuePlayer.volume = muted ? 0 : Float(screenVolume)
+        // 先设置播放器级音量；此时队列通常为空，所以还需要单独处理模板 item。
+        applyPlayerAudioPolicy(queuePlayer, muted: muted, volume: screenVolume)
+        // AVPlayerLooper 会基于 templateItem 复制循环 item，模板本身必须先禁用音频轨。
+        applyPlayerItemAudioPolicy(playerItem, muted: muted)
         // 本地文件设为 false：循环切换时不等待缓冲，立即切到下一副本，减少停顿感
         queuePlayer.automaticallyWaitsToMinimizeStalling = !videoURL.isFileURL
         queuePlayer.preventsDisplaySleepDuringVideoPlayback = false
@@ -2079,6 +2090,37 @@ final class VideoWallpaperManager: ObservableObject {
         }
 
         return (queuePlayer, looper, playerItem)
+    }
+
+    private func applyPlayerAudioPolicy(_ player: AVQueuePlayer, muted: Bool, volume: Double) {
+        // 播放器级策略负责系统可见的静音/音量，以及当前已进入队列的 item。
+        player.isMuted = muted
+        player.volume = muted ? 0 : Float(volume)
+        for item in player.items() {
+            applyPlayerItemAudioPolicy(item, muted: muted)
+        }
+    }
+
+    private func applyPlayerItemAudioPolicy(_ item: AVPlayerItem, muted: Bool) {
+        // item 级策略负责直接禁用音频轨，避免静音壁纸仍建立音频输出链路。
+        setLoadedAudioTracksEnabled(!muted, for: item)
+
+        if muted {
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item else { return }
+                _ = try? await item.asset.loadTracks(withMediaType: .audio)
+                guard self.isMuted else { return }
+                // asset 音频轨可能稍后才加载完成，异步返回后再禁用一次 item tracks。
+                setLoadedAudioTracksEnabled(false, for: item)
+            }
+        }
+    }
+
+    private func setLoadedAudioTracksEnabled(_ enabled: Bool, for item: AVPlayerItem) {
+        // 只切换音频轨，不影响视频轨播放，确保静音壁纸仍能正常渲染画面。
+        for track in item.tracks where track.assetTrack?.mediaType == .audio {
+            track.isEnabled = enabled
+        }
     }
 
     /// 为 AVPlayerItem 应用优化视频合成：
@@ -2173,6 +2215,9 @@ final class VideoWallpaperManager: ObservableObject {
                 self.playerItemObserverTokens.removeValue(forKey: screenID)
                 self.fadeInTimeouts[screenID]?.cancel()
                 self.fadeInTimeouts.removeValue(forKey: screenID)
+                // 首帧 ready 后、真正播放前再次同步音频策略，覆盖 looper 后续插入的 item。
+                let screenVolume = self.volumeByScreen[screenID] ?? self.volume
+                self.applyPlayerAudioPolicy(player, muted: self.isMuted, volume: screenVolume)
                 // 仅在非暂停状态下播放（restoreIfNeeded 中可能已设为暂停）
                 if !self.isPaused {
                     player.play()
@@ -2194,6 +2239,9 @@ final class VideoWallpaperManager: ObservableObject {
             self.playerItemObservers.removeValue(forKey: screenID)
             self.playerItemObserverTokens.removeValue(forKey: screenID)
             self.fadeInTimeouts.removeValue(forKey: screenID)
+            // ready 超时时也会直接播放，所以这里同样要先禁用静音状态下的音频轨。
+            let screenVolume = self.volumeByScreen[screenID] ?? self.volume
+            self.applyPlayerAudioPolicy(player, muted: self.isMuted, volume: screenVolume)
             if !self.isPaused {
                 player.play()
             }
