@@ -1993,27 +1993,13 @@ final class VideoWallpaperManager: ObservableObject {
         setLoadedAudioTracksEnabled(!muted, for: item)
 
         if muted {
-            // 先放一个空 audioMix，防止同步阶段还没枚举到音频轨时出现短暂有声窗口。
-            item.audioMix = AVMutableAudioMix()
             Task { @MainActor [weak self, weak item] in
                 guard let self, let item else { return }
-                let audioTracks = (try? await item.asset.loadTracks(withMediaType: .audio)) ?? []
+                _ = try? await item.asset.loadTracks(withMediaType: .audio)
                 guard self.isMuted else { return }
                 // asset 音频轨可能稍后才加载完成，异步返回后再禁用一次 item tracks。
                 setLoadedAudioTracksEnabled(false, for: item)
-
-                // audioMix 是兜底静音层；核心仍是禁用 AVPlayerItemTrack，避免触发蓝牙音频路由。
-                let parameters = audioTracks.map { track in
-                    let input = AVMutableAudioMixInputParameters(track: track)
-                    input.setVolume(0, at: .zero)
-                    return input
-                }
-                let audioMix = AVMutableAudioMix()
-                audioMix.inputParameters = parameters
-                item.audioMix = audioMix
             }
-        } else {
-            item.audioMix = nil
         }
     }
 
