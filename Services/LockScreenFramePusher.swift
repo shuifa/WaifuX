@@ -330,6 +330,7 @@ extension LockScreenFramePusher {
         }
 
         /// 将源像素缓冲区缩放后写入目标 IOSurface。
+        /// 使用 aspect-fill 保持宽高比：视频填满整个 IOSurface，多余部分裁剪，与扩展端 VideoRenderer 行为一致。
         /// 双缓冲下同一 surface 每 2 帧被写入一次，缓存目标 CGContext 减少逐帧创建开销。
         private func scalePixelBuffer(
             _ src: CVPixelBuffer,
@@ -378,9 +379,23 @@ extension LockScreenFramePusher {
                 dstContext = ctx
             }
 
-            // 缩放绘制（.medium 而非 .high 降低 CPU）
+            // 缩放绘制 — aspect-fill：保持宽高比，填满目标，裁剪溢出
             dstContext.interpolationQuality = .medium
-            dstContext.draw(srcImage, in: CGRect(x: 0, y: 0, width: dstWidth, height: dstHeight))
+            let srcAspect = Double(srcWidth) / Double(srcHeight)
+            let dstAspect = Double(dstWidth) / Double(dstHeight)
+            let drawRect: CGRect
+            if srcAspect > dstAspect {
+                // 源更宽 → 按高度填满，宽度裁剪左右
+                let drawWidth = Int(Double(dstHeight) * srcAspect)
+                let drawX = (dstWidth - drawWidth) / 2
+                drawRect = CGRect(x: drawX, y: 0, width: drawWidth, height: dstHeight)
+            } else {
+                // 源更高或相等 → 按宽度填满，高度裁剪上下
+                let drawHeight = Int(Double(dstWidth) / srcAspect)
+                let drawY = (dstHeight - drawHeight) / 2
+                drawRect = CGRect(x: 0, y: drawY, width: dstWidth, height: drawHeight)
+            }
+            dstContext.draw(srcImage, in: drawRect)
         }
     }
 }
