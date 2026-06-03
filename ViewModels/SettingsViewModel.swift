@@ -44,8 +44,17 @@ class SettingsViewModel: ObservableObject {
     @Published var hdrEnabled = true { didSet { UserDefaults.standard.set(hdrEnabled, forKey: "hdr_enabled") } }
     @Published var showAllWorkshopContent = false { didSet { UserDefaults.standard.set(showAllWorkshopContent, forKey: "show_all_workshop_content") } }
     /// 动态锁屏壁纸开关（仅 macOS 26+ 可用，关闭后走旧逻辑）
-    @Published var dynamicLockScreenEnabled = true {
-        didSet { UserDefaults.standard.set(dynamicLockScreenEnabled, forKey: "dynamic_lock_screen_enabled") }
+    @Published var dynamicLockScreenEnabled = false {
+        didSet {
+            // 非 macOS 26+ 系统强制关闭，不允许开启
+            if #available(macOS 26.0, *) { } else {
+                if dynamicLockScreenEnabled {
+                    dynamicLockScreenEnabled = false
+                    return
+                }
+            }
+            UserDefaults.standard.set(dynamicLockScreenEnabled, forKey: "dynamic_lock_screen_enabled")
+        }
     }
 
     @Published var proxyEnabled = false { didSet { UserDefaults.standard.set(proxyEnabled, forKey: "proxy_enabled"); syncProxySettings() } }
@@ -143,7 +152,11 @@ class SettingsViewModel: ObservableObject {
         pauseOnBatteryPower = defaults.bool(forKey: "pause_on_battery_power")
         hdrEnabled = defaults.object(forKey: "hdr_enabled") as? Bool ?? true
         showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
-        dynamicLockScreenEnabled = defaults.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true
+        dynamicLockScreenEnabled = defaults.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? false
+        // 非 macOS 26+ 系统强制关闭动态锁屏
+        if #available(macOS 26.0, *) { } else {
+            dynamicLockScreenEnabled = false
+        }
 
         proxyEnabled = defaults.bool(forKey: "proxy_enabled")
         proxyHost = defaults.string(forKey: "proxy_host") ?? ""

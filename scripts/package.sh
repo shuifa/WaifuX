@@ -241,8 +241,8 @@ sign_exported_app() {
         codesign --force --options runtime --entitlements "$renderer_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
         codesign --force -s "$identity" "$code_path" 2>/dev/null || true
     elif [[ "$code_path" == *.appex ]]; then
-      # Xcode 直接签带 App Groups 的 Developer ID 扩展会要求 provisioning profile。
-      # 因此优先使用 CI 预签名 .appex；缺失时先无签名构建，再用 codesign 写入 entitlements。
+      # Developer ID + App Groups 需要 provisioning profile 授权。
+      # 因此优先使用 CI 预签名 .appex；缺失时有 profile 则交给 Xcode 签，否则才尝试直接 codesign。
       local pre_signed="$PROJECT_DIR/WaifuXWallpaperExtension.appex"
       if [[ -d "$pre_signed" ]]; then
         echo "  使用预签名扩展: $(basename "$pre_signed")"
@@ -252,13 +252,29 @@ sign_exported_app() {
       elif [[ "$identity" != "-" ]]; then
         echo "  签名扩展 (xcodebuild): $(basename "$code_path")"
         local extension_build_log="$BUILD_DIR/extension-build.log"
-        if ! xcodebuild -project "$PROJECT_DIR/WaifuX.xcodeproj" \
-          -target WaifuXWallpaperExtension \
-          -configuration Release \
-          CODE_SIGNING_ALLOWED=NO \
-          clean build > "$extension_build_log" 2>&1; then
-          tail -80 "$extension_build_log"
-          return 1
+        if [[ -n "${WAIFUX_EXTENSION_PROVISIONING_PROFILE_UUID:-}" ]]; then
+          if ! xcodebuild -project "$PROJECT_DIR/WaifuX.xcodeproj" \
+            -target WaifuXWallpaperExtension \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="$identity" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_ENTITLEMENTS="$extension_entitlements" \
+            PROVISIONING_PROFILE="$WAIFUX_EXTENSION_PROVISIONING_PROFILE_UUID" \
+            ENABLE_HARDENED_RUNTIME=YES \
+            OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+            clean build > "$extension_build_log" 2>&1; then
+            tail -80 "$extension_build_log"
+            return 1
+          fi
+        else
+          if ! xcodebuild -project "$PROJECT_DIR/WaifuX.xcodeproj" \
+            -target WaifuXWallpaperExtension \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build > "$extension_build_log" 2>&1; then
+            tail -80 "$extension_build_log"
+            return 1
+          fi
         fi
         tail -20 "$extension_build_log"
         local built_appex
@@ -268,8 +284,10 @@ sign_exported_app() {
         if [[ -n "$built_appex" && -d "$built_appex" ]]; then
           rm -rf "$code_path"
           cp -R "$built_appex" "$code_path"
-          codesign --force --timestamp=none --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
-            codesign --force --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path"
+          if [[ -z "${WAIFUX_EXTENSION_PROVISIONING_PROFILE_UUID:-}" ]]; then
+            codesign --force --timestamp=none --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
+              codesign --force --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path"
+          fi
           echo "  ✅ $(basename "$code_path") (xcodebuild)"
         else
           echo "  ⚠️ xcodebuild 未产出 .appex，回退到 codesign"
@@ -283,6 +301,7 @@ sign_exported_app() {
       ent_check=$(codesign -d --entitlements - "$code_path" 2>/dev/null || true)
       if ! echo "$ent_check" | grep -q "com.apple.security.application-groups"; then
         echo "❌ App Extension 签名缺少 application-groups entitlement: $code_path" >&2
+        echo "请配置 APPLE_EXTENSION_PROVISIONING_PROFILE / WAIFUX_EXTENSION_PROVISIONING_PROFILE_UUID 后再打包 Developer ID 版本。" >&2
         echo "Debug entitlements:" >&2
         echo "$ent_check" | head -20 >&2
         return 1
@@ -327,6 +346,10 @@ sign_exported_app() {
     done < <(find "$app_path/Contents/PlugIns" -name "*.appex" -print 2>/dev/null)
   fi
 
+  if [[ -n "${WAIFUX_APP_PROVISIONING_PROFILE_PATH:-}" && -f "$WAIFUX_APP_PROVISIONING_PROFILE_PATH" ]]; then
+    cp "$WAIFUX_APP_PROVISIONING_PROFILE_PATH" "$app_path/Contents/embedded.provisionprofile"
+  fi
+
   if [[ -f "$entitlements" ]]; then
     codesign --force --timestamp=none --options runtime --entitlements "$entitlements" -s "$identity" "$app_path" 2>/dev/null || \
       codesign --force --options runtime --entitlements "$entitlements" -s "$identity" "$app_path" 2>/dev/null || true
@@ -338,6 +361,14 @@ sign_exported_app() {
   # 验证签名；--strict 对某些第三方 dylib（steamclient.dylib）可能误报，
   # 但实际功能不受影响，因此不因验证失败而中断打包。
   codesign --verify --deep --strict --verbose=2 "$app_path" 2>/dev/null || true
+  local app_ent_check
+  app_ent_check=$(codesign -d --entitlements - "$app_path" 2>/dev/null || true)
+  if ! echo "$app_ent_check" | grep -q "com.apple.security.application-groups"; then
+    echo "❌ App 签名缺少 application-groups entitlement: $app_path" >&2
+    echo "请配置 APPLE_APP_PROVISIONING_PROFILE / WAIFUX_APP_PROVISIONING_PROFILE_PATH 后再打包 Developer ID 版本。" >&2
+    echo "$app_ent_check" | head -20 >&2
+    return 1
+  fi
   echo "✅ App 签名验证通过"
 }
 

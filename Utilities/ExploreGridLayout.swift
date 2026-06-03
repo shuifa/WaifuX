@@ -109,17 +109,18 @@ final class ExploreColumnDistributionCache<Item>: ObservableObject {
 // MARK: - 增量瀑布流分配器
 
 /// 保持 column 分配状态，追加新 items 时只分配新 item，不重算已有 item。
-/// 仅在列数/卡片宽度变化时触发全量重算，避免滚动加载时重复遍历全部 items。
+/// 仅在列数/卡片宽度变化或 feed 被替换时触发全量重算，避免滚动加载时重复遍历全部 items。
 @MainActor
 final class ExploreIncrementalDistributor<Item: Identifiable>: ObservableObject {
     private var columnItems: [[Item]] = []
     private var columnHeights: [CGFloat] = []
     private var itemIDs: Set<Item.ID> = []
+    private var linearItemIDs: [Item.ID] = []
     private var lastColumnCount = 0
     private var lastCardWidth: CGFloat = 0
     private var lastSpacing: CGFloat = 0
 
-    /// 增量追加新 items，返回完整的列分配结果
+    /// 接收当前完整 items 列表，只有确认是尾部追加时才增量分配。
     func append(
         items newItems: [Item],
         columnCount: Int,
@@ -129,12 +130,28 @@ final class ExploreIncrementalDistributor<Item: Identifiable>: ObservableObject 
     ) -> [[Item]] {
         let validColumnCount = max(1, columnCount)
         let validCardWidth = max(1, cardWidth)
+        let incomingIDs = newItems.map(\.id)
+
+        if incomingIDs.isEmpty {
+            invalidate()
+            return Array(repeating: [], count: validColumnCount)
+        }
 
         // 如果列数或卡片宽度变化（窗口缩放），全量重算
         if columnCount != lastColumnCount || abs(cardWidth - lastCardWidth) > 1 || abs(spacing - lastSpacing) > 0.5 {
-            let allItems = columnItems.flatMap { $0 } + newItems
-            reset(with: allItems, columnCount: validColumnCount, cardWidth: validCardWidth, spacing: spacing, height: height)
+            reset(with: newItems, columnCount: validColumnCount, cardWidth: validCardWidth, spacing: spacing, height: height)
             return columnItems
+        }
+
+        // 搜索/筛选/重置会替换整个 feed；此时不能沿用上一轮的列状态。
+        if !linearItemIDs.isEmpty {
+            let isAppendOnly = incomingIDs.count >= linearItemIDs.count &&
+                zip(linearItemIDs, incomingIDs).allSatisfy { $0 == $1 }
+
+            if !isAppendOnly {
+                reset(with: newItems, columnCount: validColumnCount, cardWidth: validCardWidth, spacing: spacing, height: height)
+                return columnItems
+            }
         }
 
         // 过滤出真正的新 items
@@ -155,6 +172,7 @@ final class ExploreIncrementalDistributor<Item: Identifiable>: ObservableObject 
             columnHeights[col] += h + spacing
             itemIDs.insert(item.id)
         }
+        linearItemIDs = incomingIDs
 
         return columnItems
     }
@@ -171,6 +189,7 @@ final class ExploreIncrementalDistributor<Item: Identifiable>: ObservableObject 
         columnItems = Array(repeating: [], count: validColumnCount)
         columnHeights = Array(repeating: 0, count: validColumnCount)
         itemIDs.removeAll()
+        linearItemIDs = items.map(\.id)
 
         for item in items {
             itemIDs.insert(item.id)
@@ -191,6 +210,7 @@ final class ExploreIncrementalDistributor<Item: Identifiable>: ObservableObject 
         columnItems = []
         columnHeights = []
         itemIDs = []
+        linearItemIDs = []
         lastColumnCount = 0
         lastCardWidth = 0
         lastSpacing = 0

@@ -91,6 +91,8 @@ jobs:
                   KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
                   APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
                   APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+                  APPLE_APP_PROVISIONING_PROFILE: ${{ secrets.APPLE_APP_PROVISIONING_PROFILE }}
+                  APPLE_EXTENSION_PROVISIONING_PROFILE: ${{ secrets.APPLE_EXTENSION_PROVISIONING_PROFILE }}
               run: |
                   # 创建专用 keychain 并导入证书
                   KEYCHAIN_PATH="$RUNNER_TEMP/sign.keychain-db"
@@ -107,18 +109,87 @@ jobs:
                   echo "=== 证书列表 ==="
                   security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-                  # 先无签名构建扩展，再用 codesign 写入应用组 entitlement。
-                  # Developer ID + App Groups 交给 Xcode 签名会要求 provisioning profile。
+                  install_profile_from_base64() {
+                    local profile_b64="$1"
+                    local label="$2"
+                    local require_app_group="$3"
+                    if [[ -z "$profile_b64" ]]; then
+                      return 1
+                    fi
+
+                    local profile_path="$RUNNER_TEMP/${label}.provisionprofile"
+                    local profile_plist="$RUNNER_TEMP/${label}.plist"
+                    mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+                    echo "$profile_b64" | base64 -d > "$profile_path"
+                    security cms -D -i "$profile_path" > "$profile_plist"
+
+                    local uuid
+                    local name
+                    uuid=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$profile_plist")
+                    name=$(/usr/libexec/PlistBuddy -c 'Print Name' "$profile_plist")
+                    cp "$profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.provisionprofile"
+                    echo "✅ 安装 provisioning profile: $name ($uuid)"
+
+                    if [[ "$require_app_group" == "1" ]] && ! /usr/libexec/PlistBuddy -c 'Print Entitlements:com.apple.security.application-groups' "$profile_plist" >/dev/null 2>&1; then
+                      echo "❌ $label provisioning profile 缺少 application-groups entitlement"
+                      exit 1
+                    fi
+
+                    if [[ "$label" == "app" ]]; then
+                      echo "WAIFUX_APP_PROVISIONING_PROFILE_UUID=$uuid" >> "$GITHUB_ENV"
+                      echo "WAIFUX_APP_PROVISIONING_PROFILE_PATH=$profile_path" >> "$GITHUB_ENV"
+                    else
+                      echo "WAIFUX_EXTENSION_PROVISIONING_PROFILE_UUID=$uuid" >> "$GITHUB_ENV"
+                      echo "WAIFUX_EXTENSION_PROVISIONING_PROFILE_PATH=$profile_path" >> "$GITHUB_ENV"
+                    fi
+                    PROFILE_UUID="$uuid"
+                  }
+
+                  PROFILE_UUID=""
+                  if install_profile_from_base64 "$APPLE_APP_PROVISIONING_PROFILE" "app" "1"; then
+                    APP_PROFILE_UUID="$PROFILE_UUID"
+                  else
+                    APP_PROFILE_UUID=""
+                    echo "❌ 未配置 APPLE_APP_PROVISIONING_PROFILE，Developer ID 签名会丢失 App application-groups entitlement"
+                    exit 1
+                  fi
+
+                  PROFILE_UUID=""
+                  if install_profile_from_base64 "$APPLE_EXTENSION_PROVISIONING_PROFILE" "extension" "1"; then
+                    EXT_PROFILE_UUID="$PROFILE_UUID"
+                  else
+                    EXT_PROFILE_UUID=""
+                    echo "❌ 未配置 APPLE_EXTENSION_PROVISIONING_PROFILE，Developer ID 签名会丢失扩展 application-groups entitlement"
+                    exit 1
+                  fi
+
                   echo "🔨 构建扩展..."
                   EXT_ENTITLEMENTS="WaifuXWallpaperExtension/WaifuXWallpaperExtension.entitlements"
                   EXT_BUILD_LOG="$RUNNER_TEMP/extension-build.log"
-                  if ! xcodebuild -project WaifuX.xcodeproj \
-                    -target WaifuXWallpaperExtension \
-                    -configuration Release \
-                    CODE_SIGNING_ALLOWED=NO \
-                    clean build > "$EXT_BUILD_LOG" 2>&1; then
-                    tail -80 "$EXT_BUILD_LOG"
-                    exit 1
+                  if [[ -n "$EXT_PROFILE_UUID" ]]; then
+                    if ! xcodebuild -project WaifuX.xcodeproj \
+                      -target WaifuXWallpaperExtension \
+                      -configuration Release \
+                      CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" \
+                      DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+                      CODE_SIGN_STYLE=Manual \
+                      CODE_SIGN_ENTITLEMENTS="$EXT_ENTITLEMENTS" \
+                      PROVISIONING_PROFILE="$EXT_PROFILE_UUID" \
+                      ENABLE_HARDENED_RUNTIME=YES \
+                      OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+                      clean build > "$EXT_BUILD_LOG" 2>&1; then
+                      tail -80 "$EXT_BUILD_LOG"
+                      exit 1
+                    fi
+                  else
+                    if ! xcodebuild -project WaifuX.xcodeproj \
+                      -target WaifuXWallpaperExtension \
+                      -configuration Release \
+                      CODE_SIGNING_ALLOWED=NO \
+                      clean build > "$EXT_BUILD_LOG" 2>&1; then
+                      tail -80 "$EXT_BUILD_LOG"
+                      exit 1
+                    fi
                   fi
                   tail -30 "$EXT_BUILD_LOG"
 
@@ -127,8 +198,10 @@ jobs:
                     \( -path "*/Release/WaifuXWallpaperExtension.appex" -o -path "*/Build/Products/Release/WaifuXWallpaperExtension.appex" \) \
                     -type d -print 2>/dev/null | head -1)
                   if [[ -n "$BUILT_APPEX" && -d "$BUILT_APPEX" ]]; then
-                    echo "🔏 签名扩展..."
-                    codesign --force --timestamp --options runtime --entitlements "$EXT_ENTITLEMENTS" -s "$APPLE_SIGNING_IDENTITY" "$BUILT_APPEX"
+                    if [[ -z "$EXT_PROFILE_UUID" ]]; then
+                      echo "🔏 签名扩展..."
+                      codesign --force --timestamp --options runtime --entitlements "$EXT_ENTITLEMENTS" -s "$APPLE_SIGNING_IDENTITY" "$BUILT_APPEX"
+                    fi
                     rm -rf ./WaifuXWallpaperExtension.appex
                     cp -R "$BUILT_APPEX" ./WaifuXWallpaperExtension.appex
                     echo "✅ 扩展签名成功"
@@ -137,6 +210,7 @@ jobs:
                     echo "$ENT_CHECK" | head -20
                     if ! echo "$ENT_CHECK" | grep -q "com.apple.security.application-groups"; then
                       echo "❌ 预签名扩展缺少 application-groups entitlement"
+                      echo "请在 GitHub Secrets 配置 APPLE_EXTENSION_PROVISIONING_PROFILE（base64 编码的 Developer ID provisioning profile）"
                       exit 1
                     fi
                   else
@@ -301,9 +375,18 @@ jobs:
 
                   # 最后签名整个 app bundle
                   echo "Signing app bundle..."
+                  if [[ -n "${WAIFUX_APP_PROVISIONING_PROFILE_PATH:-}" && -f "$WAIFUX_APP_PROVISIONING_PROFILE_PATH" ]]; then
+                    cp "$WAIFUX_APP_PROVISIONING_PROFILE_PATH" build/WaifuX.app/Contents/embedded.provisionprofile
+                  fi
                   codesign --force --options=runtime --timestamp \
                     --entitlements WaifuX.entitlements \
                     --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" build/WaifuX.app
+                  APP_ENT_CHECK=$(codesign -d --entitlements - build/WaifuX.app 2>/dev/null || true)
+                  if ! echo "$APP_ENT_CHECK" | grep -q "com.apple.security.application-groups"; then
+                    echo "  ❌ App missing application-groups entitlement"
+                    echo "$APP_ENT_CHECK" | head -20
+                    exit 1
+                  fi
                   # --strict 对某些第三方 dylib（steamclient.dylib）可能误报，
                   # 但实际功能不受影响，因此不因验证失败而中断构建。
                   codesign --verify --deep --strict --verbose=2 build/WaifuX.app 2>/dev/null || true

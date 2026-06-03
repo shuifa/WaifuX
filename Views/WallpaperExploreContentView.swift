@@ -41,6 +41,8 @@ struct WallpaperExploreContentView: View {
     @State private var category: CategoryFilter = .all
     @State private var fourKCategory: FourKCategory?
     @State private var fourKSorting: FourKSortingOption = .latest
+    @State private var konachanSorting: KonachanSorting = .dateAdded
+    @State private var konachanTag: KonachanService.PresetTag?
     @State private var hotTag: HotTag?
     @State private var searchText = ""
     @State private var isLoadingMore = false
@@ -159,6 +161,7 @@ struct WallpaperExploreContentView: View {
         .onChange(of: hotTag) { _, _ in handleHotTagChange() }
         .onChange(of: viewModel.sortingOption) { _, _ in handleSortingChange() }
         .onChange(of: fourKSorting) { _, _ in handle4KSortingChange() }
+        .onChange(of: konachanSorting) { _, _ in handleKonachanSortingChange() }
         .onChange(of: viewModel.wallpapers) { _, _ in recomputeVisibleWallpapers(); syncAtmosphereIfNeeded() }
         .overlay(alertOverlay)
         .sheet(isPresented: $showWallpaperURLSheet) {
@@ -371,8 +374,43 @@ struct WallpaperExploreContentView: View {
             headerTitle
             searchRow
             hotTagsRow
+            konachanPresetTagsRow
         }
         .frame(maxWidth: 700, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var konachanPresetTagsRow: some View {
+        if WallpaperSourceManager.shared.activeSource == .konachan {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(t("hotWallpaper") + ":")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(arcSettings.secondaryText.opacity(0.65))
+
+                FlowLayout(spacing: 8) {
+                    ForEach(KonachanService.presetTags, id: \.id) { tag in
+                        TagChip(
+                            title: tag.name,
+                            isSelected: konachanTag?.id == tag.id
+                        ) {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                if konachanTag?.id == tag.id {
+                                    konachanTag = nil
+                                    searchText = ""
+                                    viewModel.searchQuery = ""
+                                    reloadData()
+                                } else {
+                                    konachanTag = tag
+                                    searchText = tag.query
+                                    viewModel.searchQuery = tag.query
+                                    reloadData()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private var headerTitle: some View {
@@ -472,43 +510,46 @@ struct WallpaperExploreContentView: View {
         }
     }
 
+    @ViewBuilder
     private var categorySection: some View {
-        FlowLayout(spacing: 12) {
-            if viewModel.currentSourceSupportsWallhavenCategories {
-                ForEach(CategoryFilter.allCases) { cat in
-                    CategoryChip(
-                        icon: cat.icon,
-                        title: cat.title,
-                        accentColors: cat.accentColors,
-                        isSelected: category == cat
-                    ) {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            category = cat
+        if viewModel.currentSourceSupportsCategories {
+            FlowLayout(spacing: 12) {
+                if viewModel.currentSourceSupportsWallhavenCategories {
+                    ForEach(CategoryFilter.allCases) { cat in
+                        CategoryChip(
+                            icon: cat.icon,
+                            title: cat.title,
+                            accentColors: cat.accentColors,
+                            isSelected: category == cat
+                        ) {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                category = cat
+                            }
                         }
                     }
-                }
-            } else {
-                FourKCategoryChip(
-                    category: nil,
-                    name: t("tab.all"),
-                    isSelected: fourKCategory == nil
-                ) { fourKCategory = nil; handle4KCategoryChange() }
-
-                ForEach(FourKWallpapersParser.categories) { cat in
+                } else {
                     FourKCategoryChip(
-                        category: cat,
-                        name: t("4k.category.\(cat.id)"),
-                        isSelected: fourKCategory?.id == cat.id
-                    ) {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            fourKCategory = cat
+                        category: nil,
+                        name: t("tab.all"),
+                        isSelected: fourKCategory == nil
+                    ) { fourKCategory = nil; handle4KCategoryChange() }
+
+                    ForEach(FourKWallpapersParser.categories) { cat in
+                        FourKCategoryChip(
+                            category: cat,
+                            name: t("4k.category.\(cat.id)"),
+                            isSelected: fourKCategory?.id == cat.id
+                        ) {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                fourKCategory = cat
+                            }
+                            handle4KCategoryChange()
                         }
-                        handle4KCategoryChange()
                     }
                 }
             }
+            .padding(.vertical, 2)
         }
-        .padding(.vertical, 2)
     }
 
     @ViewBuilder
@@ -614,6 +655,8 @@ struct WallpaperExploreContentView: View {
 
             if viewModel.currentSourceSupportsWallhavenSorting {
                 SortMenu(options: SortingOption.allCases, selected: $viewModel.sortingOption, tint: exploreAtmosphere.tint.primary)
+            } else if WallpaperSourceManager.shared.activeSource == .konachan {
+                SortMenu(options: KonachanSorting.allCases, selected: $konachanSorting, tint: exploreAtmosphere.tint.primary)
             } else {
                 SortMenu(options: FourKSortingOption.allCases, selected: $fourKSorting, tint: exploreAtmosphere.tint.primary)
             }
@@ -830,6 +873,8 @@ struct WallpaperExploreContentView: View {
             viewModel.purityNSFW = false
         }
         fourKCategory = nil
+        konachanSorting = .dateAdded
+        konachanTag = nil
         category = .all
         // 数据源切换时必须清空旧数据，避免新旧源内容混在一起显示
         viewModel.wallpapers.removeAll()
@@ -882,6 +927,12 @@ struct WallpaperExploreContentView: View {
     private func handle4KSortingChange() {
         AppLogger.info(.wallpaper, "4K 排序方式变化", metadata: ["排序": fourKSorting.rawValue])
         viewModel.selected4KSorting = fourKSorting
+        reloadData()
+    }
+
+    private func handleKonachanSortingChange() {
+        AppLogger.info(.wallpaper, "Konachan 排序方式变化", metadata: ["排序": konachanSorting.rawValue])
+        viewModel.selectedKonachanSorting = konachanSorting
         reloadData()
     }
 
@@ -1444,4 +1495,24 @@ extension SortingOption: CaseIterable, SortOptionProtocol, Identifiable {
 extension FourKSortingOption: SortOptionProtocol {
     public var title: String { displayName }
     public var menuTitle: String { displayName }
+}
+
+// MARK: - KonachanSorting Extension
+
+extension KonachanSorting: SortOptionProtocol {
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .dateAdded: return t("sort.latest")
+        case .score: return t("sort.toplist")
+        case .favcount: return t("sort.likes")
+        case .landscape: return "Landscape"
+        case .portrait: return "Portrait"
+        case .random: return t("sort.random")
+        case .mpixels: return "Resolution"
+        }
+    }
+
+    public var menuTitle: String { title }
 }

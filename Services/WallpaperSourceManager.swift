@@ -18,11 +18,13 @@ class WallpaperSourceManager: ObservableObject {
     enum SourceType: String, CaseIterable {
         case wallhaven = "wallhaven"
         case fourKWallpapers = "4kwallpapers"
+        case konachan = "konachan"
 
         var displayName: String {
             switch self {
             case .wallhaven: return "WallHaven"
             case .fourKWallpapers: return "4K Wallpapers"
+            case .konachan: return "Konachan"
             }
         }
 
@@ -30,6 +32,7 @@ class WallpaperSourceManager: ObservableObject {
             switch self {
             case .wallhaven: return t("source.official")
             case .fourKWallpapers: return t("source.fallback")
+            case .konachan: return t("source.konachan")
             }
         }
 
@@ -37,7 +40,8 @@ class WallpaperSourceManager: ObservableObject {
         var fallbackSource: SourceType {
             switch self {
             case .wallhaven: return .fourKWallpapers
-            case .fourKWallpapers: return .fourKWallpapers  // 已是最后一级
+            case .fourKWallpapers: return .konachan
+            case .konachan: return .konachan  // 已是最后一级
             }
         }
 
@@ -46,6 +50,7 @@ class WallpaperSourceManager: ObservableObject {
             switch self {
             case .wallhaven: return true
             case .fourKWallpapers: return false   // 4KWallpapers 不支持 NSFW
+            case .konachan: return true
             }
         }
 
@@ -54,6 +59,7 @@ class WallpaperSourceManager: ObservableObject {
             switch self {
             case .wallhaven: return true
             case .fourKWallpapers: return false   // 4K 只支持 Recent / Popular
+            case .konachan: return false
             }
         }
 
@@ -62,6 +68,7 @@ class WallpaperSourceManager: ObservableObject {
             switch self {
             case .wallhaven: return true
             case .fourKWallpapers: return false
+            case .konachan: return false
             }
         }
 
@@ -70,6 +77,7 @@ class WallpaperSourceManager: ObservableObject {
             switch self {
             case .wallhaven: return true
             case .fourKWallpapers: return false
+            case .konachan: return false
             }
         }
 
@@ -78,6 +86,7 @@ class WallpaperSourceManager: ObservableObject {
             switch self {
             case .wallhaven: return true
             case .fourKWallpapers: return false   // 4K 使用自己的 30 个分类
+            case .konachan: return false
             }
         }
 
@@ -86,6 +95,7 @@ class WallpaperSourceManager: ObservableObject {
             switch self {
             case .wallhaven: return "blue"
             case .fourKWallpapers: return "orange"
+            case .konachan: return "pink"
             }
         }
     }
@@ -177,6 +187,14 @@ class WallpaperSourceManager: ObservableObject {
     /// 当前活跃源是否使用 WallHaven 风格分类
     var currentSourceSupportsWallhavenCategories: Bool {
         activeSource.supportsWallhavenCategories
+    }
+
+    /// 当前活跃源是否支持分类筛选（任何形式的分类）
+    var currentSourceSupportsCategories: Bool {
+        switch activeSource {
+        case .wallhaven, .fourKWallpapers: return true
+        case .konachan: return false
+        }
     }
 
     /// 获取当前活跃的数据源类型

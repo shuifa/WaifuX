@@ -121,9 +121,11 @@
 		89EEB736ABDCD8B3BFE22D2D /* AuthorMediaSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F77E22AE7AF053C03A811E31 /* AuthorMediaSheet.swift */; };
 		8A3EDCCC779455C4CF13E9C3 /* Kanna in Frameworks */ = {isa = PBXBuildFile; productRef = BC19BD96AF0FA90F9C5AEE8E /* Kanna */; };
 		8A8ED8229FA48E7F289F409A /* LibraryFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED321504BADDC0FCBA8515DB /* LibraryFolder.swift */; };
+		8B2DB13A3F14D6F4C6FC1744 /* KonachanModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9827C9AD0A31F5C1ADB95A7 /* KonachanModels.swift */; };
 		8BD71B61A3E07060DA16E6C0 /* AnimePortraitCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14DDF91A608069837E8FF492 /* AnimePortraitCard.swift */; };
 		8D2BD782AB1A4774207D5804 /* GuessYouLikeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E6D95488469530050E4E91 /* GuessYouLikeViewModel.swift */; };
 		8D578500A676505D3EC9AB41 /* ArcBackgroundPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34088609B67C582BB4C80973 /* ArcBackgroundPanel.swift */; };
+		90DBCEBC49179263DCEDD8BF /* KonachanService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7191D30E898DA37452A716 /* KonachanService.swift */; };
 		940C5C019DEA74617741A6E7 /* WallpaperSourceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1105A3D2BD988D514CE5D6F1 /* WallpaperSourceManager.swift */; };
 		9479E46D5ADC2991CFA13194 /* DownloadTaskViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD06550D464D22FB55D951EA /* DownloadTaskViewModel.swift */; };
 		9551290223A87345F1B7EB43 /* WebViewCookieSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82778D3A307A22A7032D5B6 /* WebViewCookieSync.swift */; };
@@ -373,9 +375,11 @@
 		A4DDC7B4B549EF77A606796C /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		A66BCEAF473D8316F61C67BB /* UserLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserLibrary.swift; sourceTree = "<group>"; };
 		A71F280593ACA1323B52459B /* DirectoryMigrationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectoryMigrationService.swift; sourceTree = "<group>"; };
+		A9827C9AD0A31F5C1ADB95A7 /* KonachanModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KonachanModels.swift; sourceTree = "<group>"; };
 		AB8B239A357D0A8869892193 /* LiquidGlassModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiquidGlassModifier.swift; sourceTree = "<group>"; };
 		AC15DF5976DAADAFA1145BC7 /* LiquidGlassComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiquidGlassComponents.swift; sourceTree = "<group>"; };
 		AC6136D9FACBC166FFE1B697 /* MediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaItem.swift; sourceTree = "<group>"; };
+		AC7191D30E898DA37452A716 /* KonachanService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KonachanService.swift; sourceTree = "<group>"; };
 		ACE8000798FEE18A01F02B13 /* DynamicBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DynamicBackground.swift; sourceTree = "<group>"; };
 		AE72EA3D3C60701569EEF7C9 /* SnapshotCreation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotCreation.swift; sourceTree = "<group>"; };
 		B15A8B186373E1E4F65348F7 /* SearchTranslationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchTranslationService.swift; sourceTree = "<group>"; };
@@ -643,6 +647,7 @@
 				F0C58CFDFB69A95820165F4F /* WorkshopService.swift */,
 				6F9A4187FED2F381BE10E4B5 /* WorkshopSourceManager.swift */,
 				686561141BAEE0C03E5992F1 /* NotchOverlayManager.swift */,
+				AC7191D30E898DA37452A716 /* KonachanService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -770,6 +775,7 @@
 				EE9C4EA78094E6C55FED9BED /* WallpaperCategory.swift */,
 				D8ECA0848CB3A1A6723C3F6F /* WallpaperOption.swift */,
 				C0D92ABFFA9F5E05DBC00891 /* WorkshopWallpaper.swift */,
+				A9827C9AD0A31F5C1ADB95A7 /* KonachanModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -1142,6 +1148,8 @@
 				A94EFF8A717771D2010002A7 /* WorkshopWallpaper.swift in Sources */,
 				CFADBE4BA2BDF780AD94EE42 /* FileIO.swift in Sources */,
 				7CBFCC3D0B6CE3E540C2589B /* NotchOverlayManager.swift in Sources */,
+				8B2DB13A3F14D6F4C6FC1744 /* KonachanModels.swift in Sources */,
+				90DBCEBC49179263DCEDD8BF /* KonachanService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

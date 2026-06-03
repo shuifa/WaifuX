@@ -68,6 +68,7 @@ class WallpaperViewModel: ObservableObject {
     @Published var atleastResolution: String? = nil  // 最小分辨率，如 "3840x2160"
     @Published var selected4KCategorySlug: String? = nil  // 4K 源的分类 slug（如 "anime", "nature"）
     @Published var selected4KSorting: FourKSortingOption = .latest  // 4K 源的排序方式
+    @Published var selectedKonachanSorting: KonachanSorting = .dateAdded  // Konachan 源的排序方式
 
     // MARK: - 本地收藏与下载记录
     private let wallpaperLibrary = WallpaperLibraryService.shared
@@ -820,6 +821,8 @@ class WallpaperViewModel: ObservableObject {
             return try await fetchFromWallhaven(parameters: parameters)
         case .fourKWallpapers:
             return try await fetchFromFallbackSource(.fourKWallpapers, parameters: parameters)
+        case .konachan:
+            return try await fetchFromKonachan(parameters: parameters)
         }
     }
 
@@ -890,7 +893,32 @@ class WallpaperViewModel: ObservableObject {
         case .wallhaven:
             // 不应该走到这里，但以防万一
             fatalError("fetchFromFallbackSource called with wallhaven source")
+
+        case .konachan:
+            // Konachan 不作为回退源的一部分
+            throw NetworkError.invalidResponse
         }
+    }
+
+    /// 从 Konachan 源获取数据
+    private func fetchFromKonachan(parameters: WallhavenAPI.SearchParameters) async throws -> WallpaperSearchResponse {
+        // 映射 purity: Wallhaven 位掩码 → KonachanPuritySelection
+        var puritySelection: KonachanPuritySelection = []
+        if parameters.purity.first == "1" { puritySelection.insert(.safe) }
+        if parameters.purity.count > 1 && parameters.purity[parameters.purity.index(parameters.purity.startIndex, offsetBy: 1)] == "1" { puritySelection.insert(.questionable) }
+        if parameters.purity.count > 2 && parameters.purity[parameters.purity.index(parameters.purity.startIndex, offsetBy: 2)] == "1" { puritySelection.insert(.explicit) }
+
+        if puritySelection.isEmpty {
+            puritySelection = .safeOnly
+        }
+
+        return try await KonachanService.shared.search(
+            query: parameters.query,
+            page: parameters.page,
+            perPage: parameters.perPage,
+            purity: puritySelection,
+            sorting: selectedKonachanSorting
+        )
     }
 
     /// 给 WallHaven 请求加上短超时保护，超时后立即取消并抛错以便触发降级
@@ -935,6 +963,11 @@ class WallpaperViewModel: ObservableObject {
     /// 当前数据源是否使用 WallHaven 风格分类（general/anime/people）
     var currentSourceSupportsWallhavenCategories: Bool {
         sourceManager.currentSourceSupportsWallhavenCategories
+    }
+
+    /// 当前数据源是否支持分类筛选
+    var currentSourceSupportsCategories: Bool {
+        sourceManager.currentSourceSupportsCategories
     }
 
     private func normalizedCategoryMask() -> String {
@@ -1220,6 +1253,8 @@ class WallpaperViewModel: ObservableObject {
             return try await FourKWallpapersService.shared.fetchFeatured(limit: 24)
         case .wallhaven:
             return try await featuredFromMainSource()
+        case .konachan:
+            return try await KonachanService.shared.fetchFeatured(limit: 24)
         }
     }
 
@@ -1246,6 +1281,8 @@ class WallpaperViewModel: ObservableObject {
             return try await FourKWallpapersService.shared.fetchTop(limit: 8)
         case .wallhaven:
             return try await topFromMainSource()
+        case .konachan:
+            return try await KonachanService.shared.fetchTop(limit: 8)
         }
     }
 
@@ -1271,6 +1308,8 @@ class WallpaperViewModel: ObservableObject {
             return try await FourKWallpapersService.shared.fetchLatest(limit: 8)
         case .wallhaven:
             return try await latestFromMainSource()
+        case .konachan:
+            return try await KonachanService.shared.fetchLatest(limit: 8)
         }
     }
 

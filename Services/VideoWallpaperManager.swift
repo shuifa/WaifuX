@@ -117,7 +117,7 @@ final class VideoWallpaperManager: ObservableObject {
     /// - 返回 false：用户已关闭或从未配置 → 正常清理
     var isLockScreenEnabled: Bool {
         if #available(macOS 26.0, *) {
-            return UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true
+            return UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? false
         }
         return false
     }

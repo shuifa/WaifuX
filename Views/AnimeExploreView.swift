@@ -45,6 +45,7 @@ struct AnimeExploreView: View {
     @State private var loadMoreFailed = false
     @State private var searchTask: Task<Void, Never>?
     @State private var isTagSearchActive = false
+    @State private var suppressNextSearchChange = false
     @State private var lastSyncedFirstAnimeID: String?
     @State private var sentinelDebounceTask: DispatchWorkItem?
     /// 增量瀑布流分配器
@@ -598,6 +599,11 @@ struct AnimeExploreView: View {
     private func handleSearchChange(_ newValue: String) {
         viewModel.searchText = newValue
 
+        if suppressNextSearchChange {
+            suppressNextSearchChange = false
+            return
+        }
+
         if isTagSearchActive {
             isTagSearchActive = false
             return
@@ -633,10 +639,11 @@ struct AnimeExploreView: View {
 
     private func clearSearch() {
         prepareForFeedReplacement()
-        searchText = ""
+        setSearchTextSilently("")
         selectedHotTag = nil
+        selectedCategory = .all
         Task {
-            await viewModel.search()
+            await viewModel.fetchPopular()
         }
     }
 
@@ -665,7 +672,7 @@ struct AnimeExploreView: View {
     }
 
     private func resetAllFilters(reloadData: Bool = false) {
-        searchText = ""
+        setSearchTextSilently("")
         selectedHotTag = nil
         selectedCategory = .all
         selectedSort = .newest
@@ -698,12 +705,20 @@ struct AnimeExploreView: View {
         if cancelSearchTask {
             searchTask?.cancel()
         }
+        viewModel.prepareForFeedReplacement()
         sentinelDebounceTask?.cancel()
         isLoadingMore = false
         loadMoreFailed = false
         showScrollToTop = false
         outerScrollToTopToken &+= 1
         columnDistributor.invalidate()
+    }
+
+    private func setSearchTextSilently(_ value: String) {
+        viewModel.searchText = value
+        guard searchText != value else { return }
+        suppressNextSearchChange = true
+        searchText = value
     }
 
     private func syncAtmosphereIfNeeded() {
