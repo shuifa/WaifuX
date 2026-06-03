@@ -284,7 +284,18 @@ sign_exported_app() {
         if [[ -n "$built_appex" && -d "$built_appex" ]]; then
           rm -rf "$code_path"
           cp -R "$built_appex" "$code_path"
-          if [[ -z "${WAIFUX_EXTENSION_PROVISIONING_PROFILE_UUID:-}" ]]; then
+          if [[ -n "${WAIFUX_EXTENSION_PROVISIONING_PROFILE_PATH:-}" && -f "$WAIFUX_EXTENSION_PROVISIONING_PROFILE_PATH" ]]; then
+            local extension_profile_plist="$BUILD_DIR/extension-profile.plist"
+            local extension_resign_entitlements="$BUILD_DIR/extension-resign-entitlements.plist"
+            security cms -D -i "$WAIFUX_EXTENSION_PROVISIONING_PROFILE_PATH" > "$extension_profile_plist"
+            /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$extension_profile_plist" > "$extension_resign_entitlements"
+            /usr/libexec/PlistBuddy -c 'Add :com.apple.security.app-sandbox bool true' "$extension_resign_entitlements" 2>/dev/null || \
+              /usr/libexec/PlistBuddy -c 'Set :com.apple.security.app-sandbox true' "$extension_resign_entitlements"
+            mkdir -p "$code_path/Contents"
+            cp "$WAIFUX_EXTENSION_PROVISIONING_PROFILE_PATH" "$code_path/Contents/embedded.provisionprofile"
+            codesign --force --timestamp=none --options runtime --entitlements "$extension_resign_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
+              codesign --force --options runtime --entitlements "$extension_resign_entitlements" -s "$identity" "$code_path"
+          elif [[ -z "${WAIFUX_EXTENSION_PROVISIONING_PROFILE_UUID:-}" ]]; then
             codesign --force --timestamp=none --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path" 2>/dev/null || \
               codesign --force --options runtime --entitlements "$extension_entitlements" -s "$identity" "$code_path"
           fi

@@ -42,7 +42,8 @@ struct WallpaperExploreContentView: View {
     @State private var fourKCategory: FourKCategory?
     @State private var fourKSorting: FourKSortingOption = .latest
     @State private var konachanSorting: KonachanSorting = .dateAdded
-    @State private var konachanTag: KonachanService.PresetTag?
+    @State private var konachanCategory: KonachanService.KonachanCategory?
+    @State private var konachanHotTag: KonachanService.HotTag?
     @State private var hotTag: HotTag?
     @State private var searchText = ""
     @State private var isLoadingMore = false
@@ -373,43 +374,75 @@ struct WallpaperExploreContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             headerTitle
             searchRow
+            konachanHotTagsRow
             hotTagsRow
-            konachanPresetTagsRow
+            konachanCategoriesRow
         }
         .frame(maxWidth: 700, alignment: .leading)
     }
 
     @ViewBuilder
-    private var konachanPresetTagsRow: some View {
+    private var konachanHotTagsRow: some View {
         if WallpaperSourceManager.shared.activeSource == .konachan {
-            VStack(alignment: .leading, spacing: 10) {
+            // 热门标签（紧接搜索框下方，不换行）
+            HStack(alignment: .center, spacing: 10) {
                 Text(t("hotWallpaper") + ":")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(arcSettings.secondaryText.opacity(0.65))
 
-                FlowLayout(spacing: 8) {
-                    ForEach(KonachanService.presetTags, id: \.id) { tag in
-                        TagChip(
-                            title: tag.name,
-                            isSelected: konachanTag?.id == tag.id
-                        ) {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                if konachanTag?.id == tag.id {
-                                    konachanTag = nil
-                                    searchText = ""
-                                    viewModel.searchQuery = ""
-                                    reloadData()
-                                } else {
-                                    konachanTag = tag
-                                    searchText = tag.query
-                                    viewModel.searchQuery = tag.query
-                                    reloadData()
-                                }
+                ForEach(KonachanService.hotTags) { tag in
+                    TagChip(
+                        title: tag.name,
+                        isSelected: konachanHotTag?.id == tag.id
+                    ) {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            if konachanHotTag?.id == tag.id {
+                                konachanHotTag = nil
+                                searchText = ""
+                                viewModel.searchQuery = ""
+                            } else {
+                                konachanHotTag = tag
+                                konachanCategory = nil
+                                searchText = tag.query
+                                viewModel.searchQuery = tag.query
                             }
+                            reloadData()
                         }
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var konachanCategoriesRow: some View {
+        if WallpaperSourceManager.shared.activeSource == .konachan {
+            // 分类（可换行，与 Wallhaven 风格一致）
+            FlowLayout(spacing: 10) {
+                ForEach(KonachanService.categories) { cat in
+                    CategoryChip(
+                        icon: cat.icon,
+                        title: cat.name,
+                        accentColors: cat.accentColors,
+                        isSelected: konachanCategory?.id == cat.id
+                    ) {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            if konachanCategory?.id == cat.id {
+                                konachanCategory = nil
+                                searchText = ""
+                                viewModel.searchQuery = ""
+                            } else {
+                                konachanCategory = cat
+                                konachanHotTag = nil
+                                searchText = cat.query
+                                viewModel.searchQuery = cat.query
+                            }
+                            reloadData()
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 2)
         }
     }
 
@@ -874,7 +907,8 @@ struct WallpaperExploreContentView: View {
         }
         fourKCategory = nil
         konachanSorting = .dateAdded
-        konachanTag = nil
+        konachanCategory = nil
+        konachanHotTag = nil
         category = .all
         // 数据源切换时必须清空旧数据，避免新旧源内容混在一起显示
         viewModel.wallpapers.removeAll()

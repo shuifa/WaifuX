@@ -227,62 +227,78 @@ actor KonachanService {
     }
 }
 
-// MARK: - Konachan 预设热门标签
+// MARK: - Konachan 分类与热门标签
 
 extension KonachanService {
-    /// 预设热门标签（适用于 Konachan 源探索页展示）
-    /// 按主题分类，用户可直接点击搜索
-    struct PresetTag: Identifiable, Hashable {
+    /// 分类标签（类似 4K 的分类，按作品/风格分类）
+    struct KonachanCategory: Identifiable, Hashable {
         let id: String
         let name: String
-        /// 发送给 API 的完整查询字符串
+        /// 发送给 API 的查询字符串
+        let query: String
+
+        /// SF Symbol 图标名
+        var icon: String {
+            switch id {
+            case "genshin": return "sparkles"
+            case "hsr": return "star.fill"
+            case "zzz": return "bolt.fill"
+            case "fgo": return "shield.fill"
+            case "touhou": return "cloud.fill"
+            case "blue_archive": return "book.fill"
+            case "azur_lane": return "anchor.fill"
+            case "vocaloid": return "music.mic"
+            case "landscape": return "mountain.2.fill"
+            case "cyberpunk": return "cpu.fill"
+            default: return "square.grid.2x2.fill"
+            }
+        }
+
+        /// 渐变强调色
+        var accentColors: [String] {
+            switch id {
+            case "genshin": return ["4FC3F7", "29B6F6"]
+            case "hsr": return ["CE93D8", "AB47BC"]
+            case "zzz": return ["FFE082", "FFA726"]
+            case "fgo": return ["EF5350", "C62828"]
+            case "touhou": return ["81D4FA", "4FC3F7"]
+            case "blue_archive": return ["81C784", "388E3C"]
+            case "azur_lane": return ["64B5F6", "1976D2"]
+            case "vocaloid": return ["F06292", "EC407A"]
+            case "landscape": return ["A5D6A7", "43A047"]
+            case "cyberpunk": return ["FF8A65", "E64A19"]
+            default: return ["FF9B58", "F54E42"]
+            }
+        }
+    }
+
+    /// 分类列表（≈ 10 个，类似 4K 源的分类）
+    static let categories: [KonachanCategory] = [
+        KonachanCategory(id: "genshin", name: "原神", query: "genshin_impact"),
+        KonachanCategory(id: "hsr", name: "星穹铁道", query: "honkai_star_rail"),
+        KonachanCategory(id: "zzz", name: "绝区零", query: "zenless_zone_zero"),
+        KonachanCategory(id: "fgo", name: "Fate", query: "fate_grand_order"),
+        KonachanCategory(id: "touhou", name: "东方", query: "touhou"),
+        KonachanCategory(id: "blue_archive", name: "蔚蓝档案", query: "blue_archive"),
+        KonachanCategory(id: "azur_lane", name: "碧蓝航线", query: "azur_lane"),
+        KonachanCategory(id: "vocaloid", name: "VOCALOID", query: "vocaloid"),
+        KonachanCategory(id: "landscape", name: "风景", query: "landscape"),
+        KonachanCategory(id: "cyberpunk", name: "赛博朋克", query: "cyberpunk"),
+    ]
+
+    /// 热门标签（仅少数，不换行展示）
+    struct HotTag: Identifiable, Hashable {
+        let id: String
+        let name: String
         let query: String
     }
 
-    /// 预设热门标签列表
-    static let presetTags: [PresetTag] = [
-        // 作品
-        PresetTag(id: "genshin", name: "原神", query: "genshin_impact"),
-        PresetTag(id: "honkai3", name: "崩坏3", query: "honkai_impact_3rd"),
-        PresetTag(id: "hsr", name: "崩坏：星穹铁道", query: "honkai_star_rail"),
-        PresetTag(id: "zzz", name: "绝区零", query: "zenless_zone_zero"),
-        PresetTag(id: "fgo", name: "Fate/Grand Order", query: "fate_grand_order"),
-        PresetTag(id: "blue_archive", name: "蔚蓝档案", query: "blue_archive"),
-        PresetTag(id: "gfl", name: "少女前线", query: "girls_frontline"),
-        PresetTag(id: "azur_lane", name: "碧蓝航线", query: "azur_lane"),
-        PresetTag(id: "nikke", name: "NIKKE", query: "nikke"),
-        PresetTag(id: "vocaloid", name: "VOCALOID", query: "vocaloid"),
-        PresetTag(id: "touhou", name: "东方Project", query: "touhou"),
-        // 风格
-        PresetTag(id: "landscape", name: "风景", query: "landscape"),
-        PresetTag(id: "sunset", name: "夕阳", query: "sunset"),
-        PresetTag(id: "night", name: "夜景", query: "night"),
-        PresetTag(id: "water", name: "水", query: "water"),
-        PresetTag(id: "sky", name: "天空", query: "sky"),
-        PresetTag(id: "clouds", name: "云", query: "clouds"),
-        PresetTag(id: "flower", name: "花", query: "flower"),
-        PresetTag(id: "stars", name: "星空", query: "stars"),
-        PresetTag(id: "city", name: "城市", query: "cityscape"),
-        // 角色特征
-        PresetTag(id: "1girl", name: "单人少女", query: "1girl"),
-        PresetTag(id: "1boy", name: "单人少年", query: "1boy"),
-        PresetTag(id: "long_hair", name: "长发", query: "long_hair"),
-        PresetTag(id: "short_hair", name: "短发", query: "short_hair"),
-        PresetTag(id: "blonde", name: "金发", query: "blonde_hair"),
-        PresetTag(id: "blue_eyes", name: "蓝瞳", query: "blue_eyes"),
-        PresetTag(id: "glasses", name: "眼镜", query: "glasses"),
-        PresetTag(id: "uniform", name: "制服", query: "school_uniform"),
-        PresetTag(id: "swimsuit", name: "泳装", query: "swimsuit"),
-        PresetTag(id: "maid", name: "女仆", query: "maid"),
-        PresetTag(id: "witch", name: "魔女", query: "witch"),
-        // 场景/情绪
-        PresetTag(id: "smile", name: "微笑", query: "smile"),
-        PresetTag(id: "sad", name: "悲伤", query: "sad"),
-        PresetTag(id: "rain", name: "雨", query: "rain"),
-        PresetTag(id: "snow", name: "雪", query: "snow"),
-        PresetTag(id: "cherry_blossoms", name: "樱花", query: "cherry_blossoms"),
-        PresetTag(id: "beach", name: "海滩", query: "beach"),
-        PresetTag(id: "fantasy", name: "幻想", query: "fantasy"),
-        PresetTag(id: "cyberpunk", name: "赛博朋克", query: "cyberpunk"),
+    static let hotTags: [HotTag] = [
+        HotTag(id: "1girl", name: "少女", query: "1girl"),
+        HotTag(id: "long_hair", name: "长发", query: "long_hair"),
+        HotTag(id: "uniform", name: "制服", query: "school_uniform"),
+        HotTag(id: "swimsuit", name: "泳装", query: "swimsuit"),
+        HotTag(id: "glasses", name: "眼镜", query: "glasses"),
+        HotTag(id: "smile", name: "微笑", query: "smile"),
     ]
 }

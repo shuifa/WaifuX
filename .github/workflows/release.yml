@@ -175,7 +175,16 @@ jobs:
             \( -path "*/Release/WaifuXWallpaperExtension.appex" -o -path "*/Build/Products/Release/WaifuXWallpaperExtension.appex" \) \
             -type d -print 2>/dev/null | head -1)
           if [[ -n "$BUILT_APPEX" && -d "$BUILT_APPEX" ]]; then
-            if [[ -z "$EXT_PROFILE_UUID" ]]; then
+            if [[ -n "$EXT_PROFILE_UUID" ]]; then
+              echo "🔏 使用 provisioning profile entitlements 重签扩展..."
+              EXT_RESIGN_ENTITLEMENTS="$RUNNER_TEMP/extension-resign-entitlements.plist"
+              /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$RUNNER_TEMP/extension.plist" > "$EXT_RESIGN_ENTITLEMENTS"
+              /usr/libexec/PlistBuddy -c 'Add :com.apple.security.app-sandbox bool true' "$EXT_RESIGN_ENTITLEMENTS" 2>/dev/null || \
+                /usr/libexec/PlistBuddy -c 'Set :com.apple.security.app-sandbox true' "$EXT_RESIGN_ENTITLEMENTS"
+              mkdir -p "$BUILT_APPEX/Contents"
+              cp "$RUNNER_TEMP/extension.provisionprofile" "$BUILT_APPEX/Contents/embedded.provisionprofile"
+              codesign --force --timestamp --options runtime --entitlements "$EXT_RESIGN_ENTITLEMENTS" -s "$APPLE_SIGNING_IDENTITY" "$BUILT_APPEX"
+            else
               echo "🔏 签名扩展..."
               codesign --force --timestamp --options runtime --entitlements "$EXT_ENTITLEMENTS" -s "$APPLE_SIGNING_IDENTITY" "$BUILT_APPEX"
             fi

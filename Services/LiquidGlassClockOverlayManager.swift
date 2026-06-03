@@ -153,10 +153,16 @@ public final class LiquidGlassClockOverlayManager {
         return WallpaperDynamicTextParser.loadSidecar(for: videoURL)
     }
 
-    /// 视频壁纸激活状态变化 → 检查 sidecar JSON，仅当烘焙壁纸有动态文本时才创建时钟
+    /// 视频壁纸激活状态变化 → 检查 sidecar JSON + 总开关，仅当允许时才创建时钟
     private func onVideoWallpaperStateChanged() {
         let videoActive = VideoWallpaperManager.shared.isVideoWallpaperActive
         let config = LiquidGlassClockSettings.shared.config
+
+        // 总开关关闭时，不显示任何桌面动态元素
+        guard config.enabled else {
+            destroyAllWindows()
+            return
+        }
 
         if videoActive {
             // 仅当烘焙视频有关联的动态文本 sidecar 时才显示时钟
@@ -183,14 +189,15 @@ public final class LiquidGlassClockOverlayManager {
     }
 
     private func shouldShowClock(config: LiquidGlassClockConfiguration) -> Bool {
-        // 如果有视频壁纸在播放，检查 sidecar
+        // 总开关：如果用户关闭了桌面动态元素，任何情况都不显示
+        guard config.enabled else { return false }
+        // 有视频壁纸时，检查 sidecar 动态文本补偿层
         if VideoWallpaperManager.shared.isVideoWallpaperActive,
            let videoURL = VideoWallpaperManager.shared.currentVideoURL {
-            // sidecar 动态文本属于壁纸内容补偿层，不受用户时钟挂件开关控制。
             return WallpaperDynamicTextParser.hasDynamicText(for: videoURL)
         }
-        // 无视频壁纸时才受用户“纯桌面时钟”开关控制。
-        return config.enabled
+        // 无视频壁纸时显示纯桌面时钟
+        return true
     }
 
     // MARK: - 定时器管理
@@ -241,16 +248,8 @@ public final class LiquidGlassClockOverlayManager {
                 }
                 startClockTimer()
             } else {
-                // 关闭用户时钟挂件时，不关闭视频 sidecar 动态文本补偿层。
-                if currentVideoHasDynamicText() {
-                    if clockWindows.isEmpty {
-                        createWindowsForAllScreens(config: newConfig)
-                    } else {
-                        updateAllWindows(config: newConfig)
-                    }
-                } else {
-                    destroyAllWindows()
-                }
+                // 关闭桌面动态元素时，销毁所有窗口（包括 sidecar 补偿层）
+                destroyAllWindows()
                 stopClockTimer()
                 // 关闭时钟时也停止音频捕获
                 SystemAudioCaptureService.shared.stop()
