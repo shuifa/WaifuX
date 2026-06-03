@@ -394,7 +394,7 @@ struct AnimeExploreView: View {
 
     private var loadingState: some View {
         ExploreLoadingStateView(
-            message: "加载中...",
+            message: t("loading"),
             tint: arcSettings.primaryText
         )
         .exploreFrostedPanel(cornerRadius: 30, tint: exploreAtmosphere.tint.primary)

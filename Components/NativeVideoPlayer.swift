@@ -12,11 +12,11 @@ enum PlaybackState: Equatable {
     case buffering
     case finished
     case failed(String)
-    
+
     var isPlaying: Bool {
         self == .playing || self == .buffering
     }
-    
+
     var isReady: Bool {
         self == .readyToPlay || self == .playing || self == .paused || self == .buffering || self == .finished
     }
@@ -53,11 +53,11 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
     }
     @Published var isLoading: Bool = false
     @Published var isSeeking: Bool = false
-    
+
     // 保持与 KSPlayer Coordinator 兼容的属性名
     var timemodel: PlayerTimeModel { timeModel }
     var playerLayer: NativeVideoPlayer? { self }
-    
+
     // MARK: - 内部
     let avPlayer = AVPlayer()
     private let timeModel = PlayerTimeModel()
@@ -68,22 +68,22 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
     private var cancellables = Set<AnyCancellable>()
     private var currentURL: URL?
     private var pendingStartTime: TimeInterval = 0
-    
+
     // MARK: - 回调（兼容 KSPlayer 风格）
     var onStateChanged: ((PlaybackState) -> Void)?
     var onBufferChanged: ((Int, TimeInterval) -> Void)?
     var onFinish: ((Error?) -> Void)?
     var onReady: (() -> Void)?
-    
+
     // MARK: - 初始化
     init() {
         setupPlayerObservers()
     }
-    
+
     deinit {
         tearDownPlayerResources(invalidateRateObserver: true)
     }
-    
+
     // MARK: - 播放器控制
     @MainActor
     func load(url: URL, startTime: TimeInterval = 0) {
@@ -92,14 +92,14 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
         state = .loading
         isLoading = true
         onStateChanged?(.loading)
-        
+
         let asset = AVAsset(url: url)
         let item = AVPlayerItem(asset: asset)
-        
+
         // 清理旧观察者
         itemObservers.forEach { $0.invalidate() }
         itemObservers.removeAll()
-        
+
         // 观察 item 状态
         itemObservers.append(item.observe(\.status, options: [.new, .old]) { [weak self] item, _ in
             guard let self else { return }
@@ -125,7 +125,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
                         self.avPlayer.play()
                     }
                 case .failed:
-                    let errorMsg = item.error?.localizedDescription ?? "未知错误"
+                    let errorMsg = item.error?.localizedDescription ?? t("common.unknownError")
                     self.state = .failed(errorMsg)
                     self.isLoading = false
                     self.onStateChanged?(.failed(errorMsg))
@@ -135,7 +135,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
                 }
             }
         })
-        
+
         // 观察缓冲状态
         itemObservers.append(item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] item, _ in
             guard let self else { return }
@@ -152,7 +152,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
                 }
             }
         })
-        
+
         itemObservers.append(item.observe(\.isPlaybackBufferEmpty, options: [.new]) { [weak self] item, _ in
             guard let self else { return }
             DispatchQueue.main.async {
@@ -162,7 +162,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
                 }
             }
         })
-        
+
         // 观察 loadedTimeRanges
         itemObservers.append(item.observe(\.loadedTimeRanges, options: [.new]) { [weak self] item, _ in
             guard let self else { return }
@@ -174,17 +174,17 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
                 }
             }
         })
-        
+
         avPlayer.replaceCurrentItem(with: item)
-        
+
         // 设置播放速率
         avPlayer.rate = Float(playbackRate)
         avPlayer.volume = Float(playbackVolume)
         avPlayer.isMuted = isMuted
-        
+
         // 设置时间观察
         setupTimeObserver()
-        
+
         // 监听播放完成
         NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)
             .compactMap { $0.object as? AVPlayerItem }
@@ -199,7 +199,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
             }
             .store(in: &cancellables)
     }
-    
+
     func play() {
         guard state == .readyToPlay || state == .paused || state == .buffering || state == .finished else { return }
         avPlayer.play()
@@ -207,7 +207,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
         state = .playing
         onStateChanged?(.playing)
     }
-    
+
     func pause() {
         avPlayer.pause()
         if state == .playing || state == .buffering {
@@ -215,7 +215,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
             onStateChanged?(.paused)
         }
     }
-    
+
     func seek(to time: TimeInterval, resumeAfterSeek: Bool = false, completion: (@Sendable () -> Void)? = nil) {
         isSeeking = true
         let cmTime = CMTime(seconds: time, preferredTimescale: 600)
@@ -237,12 +237,12 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
             completion?()
         }
     }
-    
+
     func skip(by interval: TimeInterval) {
         let newTime = max(0, min(totalDuration, currentTime + interval))
         seek(to: newTime)
     }
-    
+
     func stop() {
         tearDownPlayerResources(invalidateRateObserver: false)
         resetPlaybackState()
@@ -291,7 +291,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
         timeModel.totalTime = 0
         timeModel.bufferedTime = 0
     }
-    
+
     // MARK: - 内部方法
     private func setupPlayerObservers() {
         // 观察 rate 变化
@@ -308,7 +308,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
             }
         }
     }
-    
+
     private func setupTimeObserver() {
         if let observer = timeObserver {
             avPlayer.removeTimeObserver(observer)
@@ -320,7 +320,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
             let seconds = CMTimeGetSeconds(time)
             self.currentTime = seconds
             self.timeModel.currentTime = seconds
-            
+
             // 报告缓冲变化
             if let item = self.avPlayer.currentItem,
                let range = item.loadedTimeRanges.first?.timeRangeValue {
@@ -335,21 +335,21 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
 // MARK: - SwiftUI 视图
 struct NativeVideoPlayerView: NSViewRepresentable {
     @ObservedObject var player: NativeVideoPlayer
-    
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         view.wantsLayer = true
         view.layer?.masksToBounds = true // 防止视频内容渲染超出容器边界
-        
+
         let playerLayer = AVPlayerLayer(player: player.avPlayer)
         playerLayer.videoGravity = .resizeAspect
         playerLayer.frame = view.bounds
         playerLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         view.layer?.addSublayer(playerLayer)
-        
+
         return view
     }
-    
+
     func updateNSView(_ nsView: NSView, context: Context) {
         // 确保 AVPlayerLayer 始终与 NSView bounds 同步，防止动画/快速切换时 frame 异常
         if let playerLayer = nsView.layer?.sublayers?.first as? AVPlayerLayer {

@@ -25,7 +25,7 @@ struct AnimePlayerWindow: View {
         case sources = "选集"
         case danmaku = "弹幕"
         case enhancement = "设置"
-        
+
         var title: String {
             switch self {
             case .sources: return t("player.episodes")
@@ -40,7 +40,7 @@ struct AnimePlayerWindow: View {
             ZStack {
                 // 统一背景
                 AnimeCoverBackground(viewModel: viewModel)
-                
+
                 HStack(alignment: .top, spacing: 0) {
                     // 左侧播放器区域 (动态宽度)
                     PlayerSection(
@@ -54,7 +54,7 @@ struct AnimePlayerWindow: View {
                             height: geometry.size.height
                         )
                         .zIndex(1)
-                    
+
                     // 右侧面板 (动态宽度)
                     if !isPlayerFullscreen {
                         RightPanel(viewModel: viewModel, selectedTab: $selectedTab)
@@ -99,12 +99,12 @@ struct AnimePlayerWindow: View {
 // MARK: - 动漫封面背景
 private struct AnimeCoverBackground: View {
     @ObservedObject var viewModel: AnimeDetailViewModel
-    
+
     var body: some View {
         ZStack {
             // 深色基础背景
             Color(hex: "0A0A0C")
-            
+
             // 封面图模糊背景
             if let coverURL = viewModel.anime.coverURL,
                let url = URL(string: coverURL) {
@@ -121,7 +121,7 @@ private struct AnimeCoverBackground: View {
                     .brightness(-0.3)
                     .opacity(0.6)
             }
-            
+
             // 渐变叠加层
             LinearGradient(
                 colors: [
@@ -145,7 +145,7 @@ private struct PlayerSection: View {
     @StateObject var player: NativeVideoPlayer
     @State private var isControlBarVisible = true
     @State private var hideControlBarWorkItem: DispatchWorkItem?
-    
+
     /// 是否需要自动隐藏控制栏：全屏 或 侧边栏收起时，播放器占满窗口，控件会挡视频
     private var shouldAutoHideControlBar: Bool {
         isPlayerFullscreen || isRightPanelCollapsed
@@ -206,12 +206,12 @@ private struct PlayerSection: View {
             if viewModel.isBuffering {
                 BufferingOverlay()
             }
-            
+
             // 错误提示覆盖层
             if let error = viewModel.videoError {
                 ErrorOverlay(error: error)
             }
-            
+
             // 自定义标题栏（播放器左上角，不遮挡主要内容）
             if !isPlayerFullscreen {
                 VStack(spacing: 0) {
@@ -246,7 +246,7 @@ private struct PlayerSection: View {
         .onChange(of: isPlayerFullscreen) { _, _ in syncControlBarMode() }
         .onChange(of: isRightPanelCollapsed) { _, _ in syncControlBarMode() }
     }
-    
+
     private func showControlBar() {
         isControlBarVisible = true
         // 取消之前的隐藏任务
@@ -258,12 +258,12 @@ private struct PlayerSection: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: hideControlBarWorkItem!)
     }
-    
+
     private func hideControlBar() {
         isControlBarVisible = false
         hideControlBarWorkItem?.cancel()
     }
-    
+
     private func syncControlBarMode() {
         if shouldAutoHideControlBar {
             // 切换到自动隐藏模式：立即隐藏，等鼠标移动再显示
@@ -285,13 +285,13 @@ private struct PlayerControlOverlay: View {
     @State private var sliderValue: Float = 0
     @State private var wasPlayingBeforeDrag = false
     @State private var isDraggingSlider = false
-    
+
     init(player: NativeVideoPlayer, isPlayerFullscreen: Bool, isControlBarVisible: Bool) {
         self.player = player
         self.isPlayerFullscreen = isPlayerFullscreen
         self.isControlBarVisible = isControlBarVisible
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -301,7 +301,7 @@ private struct PlayerControlOverlay: View {
                     Text(formatPlayerTime(player.currentTime))
                         .font(.system(size: 12, weight: .medium).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.9))
-                    
+
                     Slider(
                         value: $sliderValue,
                         in: 0...Float(max(player.totalDuration, 1))
@@ -334,12 +334,12 @@ private struct PlayerControlOverlay: View {
                             }
                         }
                     }
-                    
+
                     Text(formatPlayerTime(player.totalDuration))
                         .font(.system(size: 12, weight: .medium).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.9))
                 }
-                
+
                 // 控制按钮行（播放控制绝对居中）
                 ZStack {
                     // 播放控制绝对居中
@@ -352,7 +352,7 @@ private struct PlayerControlOverlay: View {
                         }
                         .buttonStyle(.plain)
                         .focusable(false)
-                        
+
                         Button {
                             togglePlayPause()
                         } label: {
@@ -361,7 +361,7 @@ private struct PlayerControlOverlay: View {
                         }
                         .buttonStyle(.plain)
                         .focusable(false)
-                        
+
                         Button {
                             player.skip(by: 15)
                         } label: {
@@ -371,7 +371,7 @@ private struct PlayerControlOverlay: View {
                         .buttonStyle(.plain)
                         .focusable(false)
                     }
-                    
+
                     // 右侧控件
                     HStack {
                         Spacer()
@@ -394,7 +394,7 @@ private struct PlayerControlOverlay: View {
                             .menuStyle(.borderlessButton)
                             .frame(width: 38, height: 22)
                             .focusable(false)
-                            
+
                             // 音量控制（滑块始终显示）
                             HStack(spacing: 6) {
                                 Button {
@@ -405,14 +405,14 @@ private struct PlayerControlOverlay: View {
                                 }
                                 .buttonStyle(.plain)
                                 .focusable(false)
-                                
+
                                 Slider(value: $player.playbackVolume, in: 0...1)
                                     .tint(.white)
                                     .frame(width: 70)
                                     .focusable(false)
                             }
                             .frame(height: 22)
-                            
+
                             // 全屏（系统全屏）
                             Button {
                                 NotificationCenter.default.post(name: .togglePlayerFullScreen, object: nil)
@@ -449,7 +449,7 @@ private struct PlayerControlOverlay: View {
             currentState = newState
         }
     }
-    
+
     private func togglePlayPause() {
         if currentState.isPlaying {
             player.pause()
@@ -457,14 +457,14 @@ private struct PlayerControlOverlay: View {
             player.play()
         }
     }
-    
+
     private var playPauseIconName: String {
         if case .failed = currentState {
             return "play.slash.fill"
         }
         return currentState.isPlaying ? "pause.circle.fill" : "play.circle.fill"
     }
-    
+
     private var volumeIconName: String {
         if player.isMuted || player.playbackVolume == 0 {
             return "speaker.slash.fill"
@@ -666,7 +666,7 @@ private struct PanelToggleButton: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color.black.opacity(isHovered ? 0.5 : 0.35))
                     .frame(width: 28, height: 56)
-                
+
                 // 箭头图标
                 Image(systemName: isCollapsed ? "chevron.left" : "chevron.right")
                     .font(.system(size: 13, weight: .semibold))
@@ -693,7 +693,7 @@ private struct RightPanel: View {
 
     var activeSources: [SourceSearchResult] {
         let sources = viewModel.sourceResults.filter { !$0.rule.deprecated }
-        
+
         // 如果初始排序已冻结，按冻结顺序排列；否则实时排序
         if viewModel.isInitialLoadComplete, !viewModel.frozenSourceOrder.isEmpty {
             return sources.sorted { a, b in
@@ -710,7 +710,7 @@ private struct RightPanel: View {
             }
         }
     }
-    
+
     // 排序优先级: 数字越小越靠前
     private func sortPriority(for status: SourceQueryStatus) -> Int {
         switch status {
@@ -730,17 +730,17 @@ private struct RightPanel: View {
             VideoInfoHeader(viewModel: viewModel)
                 .padding(.horizontal, 20)
                 .padding(.top, 44)
-            
+
             // 标签切换（简介/选集/设置）
             BilibiliStyleTabBar(selectedTab: $selectedTab)
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
-            
+
             // 分隔线
             GlassDivider()
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
-            
+
             // 内容区域
             Group {
                 switch selectedTab {
@@ -760,7 +760,7 @@ private struct RightPanel: View {
 // MARK: - 播放器自定义标题栏
 private struct PlayerCustomTitleBar: View {
     let title: String
-    
+
     var body: some View {
         HStack(spacing: 12) {
             // 左侧：自定义红绿灯按钮
@@ -769,13 +769,13 @@ private struct PlayerCustomTitleBar: View {
                 onMinimize: { NSApp.keyWindow?.performMiniaturize(nil) },
                 onMaximize: { NotificationCenter.default.post(name: .togglePlayerFullScreen, object: nil) }
             )
-            
+
             // 窗口标题
             Text(title)
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(1)
-            
+
             Spacer()
         }
         .frame(height: 28)
@@ -797,9 +797,9 @@ private struct VideoInfoHeader: View {
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                
+
                 Spacer(minLength: 8)
-                
+
                 // 追番/收藏按钮
                 Button {
                     viewModel.toggleFavorite()
@@ -830,7 +830,7 @@ private struct VideoInfoHeader: View {
                     }
                 }
             }
-            
+
             // 元数据行（播放量、弹幕、评分等）
             HStack(spacing: 16) {
                 if let rating = viewModel.anime.rating, let score = Double(rating) {
@@ -843,26 +843,26 @@ private struct VideoInfoHeader: View {
                             .foregroundStyle(Color(hex: "FFB800"))
                     }
                 }
-                
+
                 if let rank = viewModel.anime.rank {
                     Label("#\(rank)", systemImage: "trophy.fill")
                         .font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.6))
                 }
-                
+
                 if let airDate = viewModel.anime.airDate {
                     Label(String(airDate.prefix(4)), systemImage: "calendar")
                         .font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.6))
                 }
-                
+
                 Label(viewModel.anime.typeDisplayName, systemImage: "tv")
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.6))
             }
             .labelStyle(.titleAndIcon)
             .imageScale(.small)
-            
+
             // 简介（可展开/收起）
             ExpandableSummary(
                 summary: viewModel.bangumiDetail?.summary ?? viewModel.anime.summary,
@@ -877,7 +877,7 @@ private struct ExpandableSummary: View {
     let summary: String?
     @Binding var isExpanded: Bool
     @State private var isHovered = false
-    
+
     var body: some View {
         if let summary = summary, !summary.isEmpty {
             // 展开按钮放在行尾，节省空间
@@ -893,7 +893,7 @@ private struct ExpandableSummary: View {
                         .lineSpacing(4)
                         .lineLimit(isExpanded ? nil : 2)
                         .multilineTextAlignment(.leading)
-                    
+
                     if summary.count > 40 {
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                             .font(.system(size: 10, weight: .medium))
@@ -917,10 +917,10 @@ private struct ExpandableSummary: View {
 private struct BilibiliStyleTabBar: View {
     @Binding var selectedTab: AnimePlayerWindow.Tab
     @State private var hoveredTab: AnimePlayerWindow.Tab?
-    
+
     private let controlHeight: CGFloat = 34
     @Namespace private var selectionNamespace
-    
+
     var body: some View {
         HStack(spacing: 6) {
             ForEach(AnimePlayerWindow.Tab.allCases, id: \.self) { tab in
@@ -957,7 +957,7 @@ private struct BilibiliStyleTabBar: View {
         .liquidGlassSurface(.prominent, in: Capsule(style: .continuous))
         .glassContainer(spacing: 10)
     }
-    
+
     private func labelColor(for tab: AnimePlayerWindow.Tab) -> Color {
         if selectedTab == tab {
             return .white.opacity(0.96)
@@ -967,7 +967,7 @@ private struct BilibiliStyleTabBar: View {
         }
         return .white.opacity(0.72)
     }
-    
+
     private var selectedTabBackground: some View {
         Capsule(style: .continuous)
             .liquidGlassSurface(.max, in: Capsule(style: .continuous))
@@ -1000,10 +1000,10 @@ private struct SourcesContentView: View {
         VStack(spacing: 0) {
             // 规则加载中显示加载动画，避免用户看到突然变化
             if viewModel.isLoadingRules {
-                LoadingStateView(message: "正在加载源...")
+                LoadingStateView(message: t("animePlayer.loadingSources"))
             } else if !viewModel.isInitialLoadComplete {
                 // 初始排序尚未冻结：所有源还在搜索或解析集数中，显示统一加载状态
-                LoadingStateView(message: "正在分析来源...")
+                LoadingStateView(message: t("animePlayer.parsingSources"))
             } else if sources.isEmpty {
                 EmptyStateView(
                     icon: "exclamationmark.triangle.fill",
@@ -1209,10 +1209,10 @@ private struct SourceDetailView: View {
     var body: some View {
         switch source.status {
         case .idle:
-            StatusView(message: "准备搜索...", color: LiquidGlassColors.textQuaternary)
+            StatusView(message: t("animePlayer.preparingSearch"), color: LiquidGlassColors.textQuaternary)
 
         case .loading:
-            StatusView(message: "正在搜索...", color: LiquidGlassColors.warningOrange, isLoading: true)
+            StatusView(message: t("animePlayer.searching"), color: LiquidGlassColors.warningOrange, isLoading: true)
 
         case .success:
             if let episodes = source.detail?.episodes, !episodes.isEmpty {
@@ -1225,7 +1225,7 @@ private struct SourceDetailView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
                     }
-                    
+
                     EpisodeListView(
                         episodes: episodes,
                         viewModel: viewModel,
@@ -1304,20 +1304,20 @@ private struct StatusView: View {
 private struct LoadingStateView: View {
     let message: String
     @State private var isAnimating = false
-    
+
     var body: some View {
         VStack(spacing: 20) {
             Spacer()
-            
+
             // 现代化加载动画
             ProgressView()
                 .scaleEffect(1.2)
                 .tint(LiquidGlassColors.primaryPink)
-            
+
             Text(message)
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(Color.white.opacity(0.7))
-            
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1337,7 +1337,7 @@ private struct EpisodeListView: View {
                 // 添加上边距，避免与 tabs 贴在一起
                 Color.clear
                     .frame(height: 12)
-                
+
                 ForEach(Array(episodes.enumerated()), id: \.element.id) { index, episode in
                     EpisodeRow(
                         episode: episode,
@@ -1364,7 +1364,7 @@ private struct EpisodeRow: View {
     @ObservedObject var viewModel: AnimeDetailViewModel
     let onSelect: () -> Void
     @State private var isHovered = false
-    
+
     /// 是否正在播放当前剧集
     private var isPlaying: Bool {
         viewModel.currentEpisode?.id == episode.id
@@ -1395,7 +1395,7 @@ private struct EpisodeRow: View {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(Color(hex: "00AEEC").opacity(0.2))
                             .frame(width: 36, height: 28)
-                        
+
                         Image(systemName: "play.fill")
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(Color(hex: "00AEEC"))
@@ -1406,7 +1406,7 @@ private struct EpisodeRow: View {
                             .frame(width: 36, alignment: .center)
                     }
                 }
-                
+
                 // 剧集标题（左边集数，右边标题）
                 if !displayTitle.isEmpty {
                     Text(displayTitle)
@@ -1414,9 +1414,9 @@ private struct EpisodeRow: View {
                         .foregroundStyle(isPlaying ? Color(hex: "00AEEC") : (isHovered ? .white : .white.opacity(0.85)))
                         .lineLimit(1)
                 }
-                
+
                 Spacer()
-                
+
                 // 播放状态
                 if isPlaying {
                     HStack(spacing: 6) {
@@ -1430,7 +1430,7 @@ private struct EpisodeRow: View {
                             }
                         }
                         .frame(height: 14)
-                        
+
                         Text(t("player.playing"))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(Color(hex: "00AEEC"))
@@ -1470,14 +1470,14 @@ private struct DanmakuSettingsView: View {
                     subtitle: t("danmaku.showRealtimeComments"),
                     isOn: binding(for: \.isEnabled)
                 )
-                
+
                 // 外观设置
                 VStack(alignment: .leading, spacing: 12) {
                     Text(t("player.appearance"))
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
-                    
+
                     VStack(spacing: 0) {
                         BilibiliSliderRow(
                             title: t("player.opacity"),
@@ -1485,14 +1485,14 @@ private struct DanmakuSettingsView: View {
                             range: 0.1...1.0,
                             format: { "\(Int($0 * 100))%" }
                         )
-                        
+
                         BilibiliSliderRow(
                             title: t("danmaku.fontSize"),
                             value: binding(for: \.fontSize),
                             range: 12...24,
                             format: { "\(Int($0))" }
                         )
-                        
+
                         BilibiliSliderRow(
                             title: t("player.scrollSpeed"),
                             value: binding(for: \.speed),
@@ -1520,7 +1520,7 @@ private struct DanmakuSettingsView: View {
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
-                    
+
                     VStack(spacing: 0) {
                         BilibiliToggleRow(title: t("danmaku.top"), isOn: binding(for: \.enableTop))
                         BilibiliToggleRow(title: t("danmaku.bottom"), isOn: binding(for: \.enableBottom))
@@ -1573,7 +1573,7 @@ private struct EnhancementSettingsView: View {
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
-                    
+
                     VStack(spacing: 0) {
                         BilibiliToggleRow(title: t("player.superResolution"), isOn: binding(for: \.superResolution))
                         BilibiliToggleRow(title: t("player.aiDenoise"), isOn: binding(for: \.aiDenoise))
@@ -1590,7 +1590,7 @@ private struct EnhancementSettingsView: View {
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
-                    
+
                     VStack(spacing: 0) {
                         BilibiliToggleRow(title: t("player.autoPlayNext"), isOn: binding(for: \.autoPlayNext))
                         BilibiliToggleRow(title: t("player.skipOpEd"), isOn: binding(for: \.skipOpeningEnding), isLast: true)
@@ -1638,20 +1638,20 @@ private struct BilibiliStyleToggleCard: View {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(iconColor.opacity(0.15))
                 )
-            
+
             // 文字
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
-                
+
                 Text(subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.5))
             }
-            
+
             Spacer()
-            
+
             // 开关
             BilibiliToggle(isOn: $isOn)
         }
@@ -1683,15 +1683,15 @@ private struct BilibiliSliderRow: View {
                 Text(title)
                     .font(.system(size: 14))
                     .foregroundStyle(.white.opacity(0.8))
-                
+
                 Spacer()
-                
+
                 Text(format(value))
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(Color(hex: "00AEEC"))
                     .monospacedDigit()
             }
-            
+
             Slider(value: $value, in: range)
                 .tint(Color(hex: "00AEEC"))
                 .focusable(false)
@@ -1712,9 +1712,9 @@ private struct BilibiliToggleRow: View {
             Text(title)
                 .font(.system(size: 14))
                 .foregroundStyle(.white.opacity(0.85))
-            
+
             Spacer()
-            
+
             BilibiliToggle(isOn: $isOn)
         }
         .padding(.horizontal, 16)
@@ -1748,7 +1748,7 @@ private struct BilibiliToggle: View {
                 Capsule()
                     .fill(isOn ? Color(hex: "00AEEC") : Color.white.opacity(0.2))
                     .frame(width: 48, height: 26)
-                
+
                 // 滑块
                 Circle()
                     .fill(.white)
@@ -1928,13 +1928,13 @@ private struct NeedsSelectionView: View {
                 Image(systemName: "list.bullet.indent")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color(hex: "00AEEC"))
-                
+
                 Text(t("player.selectMatch"))
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(LiquidGlassColors.textPrimary)
-                
+
                 Spacer()
-                
+
                 Text("\(items.count) \(t("player.options"))")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(LiquidGlassColors.textTertiary)
@@ -1948,11 +1948,11 @@ private struct NeedsSelectionView: View {
             .padding(.horizontal, 20)
             .padding(.top, 16)
             .padding(.bottom, 12)
-            
+
             // 分隔线
             GlassDivider()
                 .padding(.horizontal, 20)
-            
+
             // 列表内容
             ScrollView(showsIndicators: true) {
                 LazyVStack(spacing: 0) {
@@ -1968,7 +1968,7 @@ private struct NeedsSelectionView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
             }
-            
+
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -1991,14 +1991,14 @@ private struct SelectionRow: View {
                     .font(.system(size: 13, weight: .bold, design: .rounded))
                     .foregroundStyle(isHovered ? Color(hex: "00AEEC") : LiquidGlassColors.textQuaternary)
                     .frame(width: 28, alignment: .center)
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.name)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(LiquidGlassColors.textPrimary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
-                    
+
                     Text(t("player.clickToSelect"))
                         .font(.system(size: 11))
                         .foregroundStyle(LiquidGlassColors.textTertiary)
@@ -2009,7 +2009,7 @@ private struct SelectionRow: View {
                 Image(systemName: "chevron.right.circle.fill")
                     .font(.system(size: 22))
                     .foregroundStyle(
-                        isHovered 
+                        isHovered
                             ? Color(hex: "00AEEC")
                             : LiquidGlassColors.textQuaternary
                     )
@@ -2044,7 +2044,7 @@ private struct NoResultWithManualSearchView: View {
     @State private var isHovered = false
     @State private var customSearchText: String = ""
     @FocusState private var isTextFieldFocused: Bool
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // 图标
@@ -2052,20 +2052,20 @@ private struct NoResultWithManualSearchView: View {
                 Circle()
                     .fill(LiquidGlassColors.textQuaternary.opacity(0.15))
                     .frame(width: 80, height: 80)
-                
+
                 Image(systemName: "magnifyingglass.circle.fill")
                     .font(.system(size: 32))
                     .foregroundStyle(LiquidGlassColors.textQuaternary)
             }
             .padding(.top, 60)
             .padding(.bottom, 20)
-            
+
             // 文字
             VStack(spacing: 8) {
                 Text(t("player.noResults"))
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(LiquidGlassColors.textPrimary)
-                
+
                 Text(t("player.noSearchResults"))
                     .font(.system(size: 13))
                     .foregroundStyle(LiquidGlassColors.textSecondary)
@@ -2073,7 +2073,7 @@ private struct NoResultWithManualSearchView: View {
                     .frame(maxWidth: 260)
             }
             .padding(.bottom, 20)
-            
+
             // 自定义搜索输入框
             VStack(spacing: 12) {
                 // 搜索输入框
@@ -2081,7 +2081,7 @@ private struct NoResultWithManualSearchView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 14))
                         .foregroundStyle(LiquidGlassColors.textSecondary)
-                    
+
                     TextField(t("player.enterSearchKeyword"), text: $customSearchText)
                         .font(.system(size: 14))
                         .foregroundStyle(LiquidGlassColors.textPrimary)
@@ -2099,7 +2099,7 @@ private struct NoResultWithManualSearchView: View {
                         .stroke(isTextFieldFocused ? Color.white.opacity(0.3) : Color.white.opacity(0.15), lineWidth: 1)
                 )
                 .frame(width: 260)
-                
+
                 // 搜索按钮
                 Button {
                     Task {
@@ -2133,7 +2133,7 @@ private struct NoResultWithManualSearchView: View {
                 .opacity(customSearchText.isEmpty ? 0.6 : 1.0)
             }
             .padding(.bottom, 8)
-            
+
             // 重新搜索按钮（使用原标题）
             Button {
                 Task {
@@ -2234,13 +2234,13 @@ private struct LiquidGlassCaptchaSheet: View {
                 VStack(spacing: 0) {
                     // 标题栏
                     captchaHeader
-                    
+
                     // 信息提示区
                     captchaInfoBanner
-                    
+
                     // WebView 容器
                     webviewContainer(in: geometry)
-                    
+
                     // 底部操作栏
                     captchaFooter
                 }
@@ -2248,7 +2248,7 @@ private struct LiquidGlassCaptchaSheet: View {
         }
         .frame(minWidth: 900, minHeight: 700)
     }
-    
+
     // MARK: - 标题栏
     private var captchaHeader: some View {
         HStack(spacing: 16) {
@@ -2259,17 +2259,17 @@ private struct LiquidGlassCaptchaSheet: View {
                     Circle()
                         .fill(Color(hex: "F59E0B").opacity(0.15))
                         .frame(width: 36, height: 36)
-                    
+
                     Image(systemName: "lock.fill")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Color(hex: "F59E0B"))
                 }
-                
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text(t("player.securityVerification"))
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white)
-                    
+
                     Text(session.rule.name)
                         .font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.5))
@@ -2299,18 +2299,18 @@ private struct LiquidGlassCaptchaSheet: View {
         .padding(.top, 16)
         .padding(.bottom, 12)
     }
-    
+
     // MARK: - 信息横幅
     private var captchaInfoBanner: some View {
         HStack(spacing: 10) {
             Image(systemName: "info.circle.fill")
                 .font(.system(size: 13))
                 .foregroundStyle(Color(hex: "00AEEC"))
-            
+
             Text(t("player.completeVerificationInstructions"))
                 .font(.system(size: 12))
                 .foregroundStyle(.white.opacity(0.7))
-            
+
             Spacer()
         }
         .padding(.horizontal, 12)
@@ -2320,7 +2320,7 @@ private struct LiquidGlassCaptchaSheet: View {
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
     }
-    
+
     // MARK: - WebView 容器
     private func webviewContainer(in geometry: GeometryProxy) -> some View {
         VStack(spacing: 0) {
@@ -2330,20 +2330,20 @@ private struct LiquidGlassCaptchaSheet: View {
                     Image(systemName: "globe")
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.4))
-                    
+
                     Text(session.startURL.host ?? t("player.verificationPage"))
                         .font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.7))
                 }
-                
+
                 Spacer()
-                
+
                 // 安全指示器
                 HStack(spacing: 4) {
                     Circle()
                         .fill(Color(hex: "22C55E"))
                         .frame(width: 5, height: 5)
-                    
+
                     Text(t("player.secureConnection"))
                         .font(.system(size: 11))
                         .foregroundStyle(Color(hex: "22C55E"))
@@ -2356,7 +2356,7 @@ private struct LiquidGlassCaptchaSheet: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(Color(hex: "1A1A20"))
-            
+
             // WebView
             CaptchaVerificationWebView(
                 url: session.startURL,
@@ -2372,7 +2372,7 @@ private struct LiquidGlassCaptchaSheet: View {
         )
         .padding(.horizontal, 20)
     }
-    
+
     // MARK: - 底部操作栏
     private var captchaFooter: some View {
         HStack(spacing: 12) {

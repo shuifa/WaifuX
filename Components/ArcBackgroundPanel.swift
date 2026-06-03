@@ -49,7 +49,7 @@ struct ArcBackgroundPanel: View {
     @Binding var grainIntensity: Double
     let onRandomize: () -> Void
     @ObservedObject private var settings = ArcBackgroundSettings.shared
-    
+
     /// 弹窗配色固定跟随 macOS 系统强调色，不再跟随页面或自定义随机色变化。
     private var systemAccentColor: Color {
         Color(nsColor: .controlAccentColor)
@@ -170,7 +170,7 @@ struct ArcBackgroundPanel: View {
             HStack(spacing: 8) {
                 Image(systemName: "dice")
                     .font(.system(size: 13, weight: .semibold))
-                Text("随机背景")
+                Text(t("common.randomBackground"))
                     .font(.system(size: 13, weight: .semibold))
             }
             .foregroundStyle(settings.primaryText)

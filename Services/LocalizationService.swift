@@ -310,7 +310,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "sceneBake.progressSubtitle": "This can take a few minutes — please wait. It will be applied as wallpaper when done.",
         "sceneBake.progressSubtitleMultiDisplay": "This can take a few minutes — please wait. On multiple displays, the baked MP4 will not be applied until you choose a display.",
         "sceneBake.rendererDialog.title": "Choose bake renderer",
-        "sceneBake.rendererDialog.message": "This only affects offline baking. Setting a live wallpaper still uses wallpaper-wgpu.",
+        "sceneBake.rendererDialog.message": "This only affects offline baking. Setting a live wallpaper defaults to the legacy renderer for baking.",
         "sceneBake.renderer.wgpu": "1. New renderer (wallpaper-wgpu)",
         "sceneBake.renderer.legacy": "2. Legacy renderer (wallpaperengine-cli)",
         "sceneBake.preview": "Preview",
@@ -1152,7 +1152,72 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "media": "Media",
         "authorWallpapers": "Wallpapers by Author",
         "totalWallpapers": "wallpapers",
-        "noWallpapers": "No wallpapers found"
+        "noWallpapers": "No wallpapers found",
+        // Rule Market
+        "ruleMarket.all": "All",
+        "ruleMarket.wallpaper": "Wallpaper",
+        "ruleMarket.anime": "Anime",
+        "ruleMarket.video": "Video",
+        "ruleMarket.install": "Install",
+        "ruleMarket.update": "Update",
+        "ruleMarket.remove": "Remove",
+        "ruleMarket.searchPlaceholder": "Search rules...",
+        "ruleMarket.configureRepoFirst": "Please configure the rule repository URL in Settings first.",
+        // Source Rules
+        "sourceRules.owner": "Repository Owner",
+        "sourceRules.repo": "Repository Name",
+        "sourceRules.path": "File Path",
+        "sourceRules.branch": "Branch",
+        "sourceRules.ownerPlaceholder": "e.g. Predidit",
+        "sourceRules.repoPlaceholder": "e.g. KazumiRules",
+        "sourceRules.pathPlaceholder": "e.g. aowu.json",
+        // Wallpaper Detail
+        "wallpaperDetail.linkCopied": "Link copied",
+        "wallpaperDetail.copyLink": "Copy link",
+        "wallpaperDetail.moreOptions": "More options",
+        // Anime Detail
+        "animeDetail.continueWatching": "Continue Watching",
+        "animeDetail.startWatching": "Start Watching",
+        "animeDetail.captcha": "Captcha",
+        "animeDetail.episodes": "Episodes",
+        "animeDetail.availableSources": "Available Sources",
+        // Anime Player
+        "animePlayer.episodes": "Episodes",
+        "animePlayer.danmaku": "Danmaku",
+        "animePlayer.settings": "Settings",
+        "animePlayer.loadingSources": "Loading sources...",
+        "animePlayer.parsingSources": "Parsing sources...",
+        "animePlayer.preparingSearch": "Preparing search...",
+        "animePlayer.searching": "Searching...",
+        // Anime Rules Market
+        "animeRules.error": "Error",
+        "animeRules.ok": "OK",
+        "animeRules.noDescription": "No description",
+        "animeRules.needsVerification": "Needs verification",
+        "animeRules.installFailed": "Install rule %@ failed",
+        "animeRules.uninstallFailed": "Uninstall rule failed: %@",
+        // Steam Login
+        "steamLogin.title": "Steam Login",
+        "steamLogin.loading": "Loading...",
+        "steamLogin.reachedSubPage": "Reached subscription page",
+        "steamLogin.loggedInGoSub": "Logged in, please go to the subscription page",
+        "steamLogin.pleaseLoginAbove": "Please log in to Steam on the page above",
+        "steamLogin.confirmSync": "Confirm and start syncing",
+        "steamLogin.goToSubPage": "Go to subscription page",
+        // Display Selector
+        "displaySelector.title": "Set Wallpaper",
+        "displaySelector.message": "Multiple displays detected. Please select the display to set.",
+        // Common
+        "common.next": "Next",
+        "common.unknownError": "Unknown error",
+        "common.randomBackground": "Random Background",
+        "common.gotIt": "Got it",
+        "common.allSources": "All Sources",
+        "common.youMayLike": "You May Like",
+        // Common - Enter URL
+        "common.enterURL": "Please enter a URL",
+        // LiquidGlass
+        "liquidGlass.browseFavorites": "%lld views · %lld favorites"
     ],
     .chinese: [
         // Launch at Login
@@ -1385,7 +1450,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "sceneBake.progressSubtitle": "可能需要数分钟，界面会像卡住一样，请稍候。完成后会自动设为壁纸。",
         "sceneBake.progressSubtitleMultiDisplay": "可能需要数分钟，界面会像卡住一样，请稍候。多屏幕时只生成烘焙视频，不会自动设为壁纸。",
         "sceneBake.rendererDialog.title": "选择烘焙渲染器",
-        "sceneBake.rendererDialog.message": "这里只影响离线烘焙；设为动态壁纸仍然走 wallpaper-wgpu 新流程。",
+        "sceneBake.rendererDialog.message": "这里只影响离线烘焙；设为动态壁纸默认为旧渲染器烘焙。",
         "sceneBake.renderer.wgpu": "1. 新渲染器（wallpaper-wgpu）",
         "sceneBake.renderer.legacy": "2. 旧渲染器（wallpaperengine-cli）",
         "sceneBake.preview": "预览",
@@ -2227,7 +2292,72 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "media": "媒体",
         "authorWallpapers": "作者壁纸",
         "totalWallpapers": "张壁纸",
-        "noWallpapers": "暂无壁纸"
+        "noWallpapers": "暂无壁纸",
+        // Rule Market
+        "ruleMarket.all": "全部",
+        "ruleMarket.wallpaper": "壁纸",
+        "ruleMarket.anime": "动漫",
+        "ruleMarket.video": "视频",
+        "ruleMarket.install": "安装",
+        "ruleMarket.update": "更新",
+        "ruleMarket.remove": "移除",
+        "ruleMarket.searchPlaceholder": "搜索规则...",
+        "ruleMarket.configureRepoFirst": "请先在设置中配置规则仓库地址。",
+        // Source Rules
+        "sourceRules.owner": "仓库所有者",
+        "sourceRules.repo": "仓库名称",
+        "sourceRules.path": "文件路径",
+        "sourceRules.branch": "分支",
+        "sourceRules.ownerPlaceholder": "例如: Predidit",
+        "sourceRules.repoPlaceholder": "例如: KazumiRules",
+        "sourceRules.pathPlaceholder": "例如: aowu.json",
+        // Wallpaper Detail
+        "wallpaperDetail.linkCopied": "链接已复制",
+        "wallpaperDetail.copyLink": "复制链接",
+        "wallpaperDetail.moreOptions": "更多选项",
+        // Anime Detail
+        "animeDetail.continueWatching": "继续观看",
+        "animeDetail.startWatching": "开始观看",
+        "animeDetail.captcha": "验证码",
+        "animeDetail.episodes": "集数",
+        "animeDetail.availableSources": "可用源",
+        // Anime Player
+        "animePlayer.episodes": "选集",
+        "animePlayer.danmaku": "弹幕",
+        "animePlayer.settings": "设置",
+        "animePlayer.loadingSources": "正在加载源...",
+        "animePlayer.parsingSources": "正在分析来源...",
+        "animePlayer.preparingSearch": "准备搜索...",
+        "animePlayer.searching": "正在搜索...",
+        // Anime Rules Market
+        "animeRules.error": "错误",
+        "animeRules.ok": "确定",
+        "animeRules.noDescription": "无描述",
+        "animeRules.needsVerification": "需验证",
+        "animeRules.installFailed": "安装规则 %@ 失败",
+        "animeRules.uninstallFailed": "卸载规则失败: %@",
+        // Steam Login
+        "steamLogin.title": "Steam 登录",
+        "steamLogin.loading": "正在加载...",
+        "steamLogin.reachedSubPage": "已到达订阅页面",
+        "steamLogin.loggedInGoSub": "已登录，请前往订阅页面",
+        "steamLogin.pleaseLoginAbove": "请在上方页面登录 Steam 账号",
+        "steamLogin.confirmSync": "确认开始同步",
+        "steamLogin.goToSubPage": "前往订阅页面",
+        // Display Selector
+        "displaySelector.title": "设置壁纸",
+        "displaySelector.message": "检测到多个显示器，请选择要设置的显示器。",
+        // Common
+        "common.next": "下一张",
+        "common.unknownError": "未知错误",
+        "common.randomBackground": "随机背景",
+        "common.gotIt": "知道了",
+        "common.allSources": "全部源",
+        "common.youMayLike": "猜你喜欢",
+        // Common - Enter URL
+        "common.enterURL": "请输入链接",
+        // LiquidGlass
+        "liquidGlass.browseFavorites": "%lld 浏览 · %lld 收藏"
     ],
     .japanese: [
         // Launch at Login
@@ -2460,7 +2590,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "sceneBake.progressSubtitle": "数分かかることがあります。完了後に壁紙として適用されます。",
         "sceneBake.progressSubtitleMultiDisplay": "数分かかることがあります。複数ディスプレイでは、ディスプレイを選択するまで自動適用されません。",
         "sceneBake.rendererDialog.title": "ベイク用レンダラーを選択",
-        "sceneBake.rendererDialog.message": "ここでの選択はオフラインベイクのみに影響します。ライブ壁紙の設定は引き続き wallpaper-wgpu を使用します。",
+        "sceneBake.rendererDialog.message": "ここでの選択はオフラインベイクのみに影響します。ライブ壁紙の設定はデフォルトで旧レンダラーを使用します。",
         "sceneBake.renderer.wgpu": "1. 新レンダラー (wallpaper-wgpu)",
         "sceneBake.renderer.legacy": "2. 旧レンダラー (wallpaperengine-cli)",
         "sceneBake.preview": "プレビュー",
@@ -3301,7 +3431,72 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "media": "メディア",
         "authorWallpapers": "作者の壁紙",
         "totalWallpapers": "枚の壁紙",
-        "noWallpapers": "壁紙が見つかりません"
+        "noWallpapers": "壁紙が見つかりません",
+        // Rule Market
+        "ruleMarket.all": "すべて",
+        "ruleMarket.wallpaper": "壁紙",
+        "ruleMarket.anime": "アニメ",
+        "ruleMarket.video": "ビデオ",
+        "ruleMarket.install": "インストール",
+        "ruleMarket.update": "更新",
+        "ruleMarket.remove": "削除",
+        "ruleMarket.searchPlaceholder": "ルールを検索...",
+        "ruleMarket.configureRepoFirst": "先に設定でルールリポジトリURLを設定してください。",
+        // Source Rules
+        "sourceRules.owner": "リポジトリ所有者",
+        "sourceRules.repo": "リポジトリ名",
+        "sourceRules.path": "ファイルパス",
+        "sourceRules.branch": "ブランチ",
+        "sourceRules.ownerPlaceholder": "例: Predidit",
+        "sourceRules.repoPlaceholder": "例: KazumiRules",
+        "sourceRules.pathPlaceholder": "例: aowu.json",
+        // Wallpaper Detail
+        "wallpaperDetail.linkCopied": "リンクをコピーしました",
+        "wallpaperDetail.copyLink": "リンクをコピー",
+        "wallpaperDetail.moreOptions": "その他のオプション",
+        // Anime Detail
+        "animeDetail.continueWatching": "続きを視聴",
+        "animeDetail.startWatching": "視聴を開始",
+        "animeDetail.captcha": "認証コード",
+        "animeDetail.episodes": "話数",
+        "animeDetail.availableSources": "利用可能なソース",
+        // Anime Player
+        "animePlayer.episodes": "エピソード",
+        "animePlayer.danmaku": "弾幕",
+        "animePlayer.settings": "設定",
+        "animePlayer.loadingSources": "ソースを読み込み中...",
+        "animePlayer.parsingSources": "ソースを解析中...",
+        "animePlayer.preparingSearch": "検索を準備中...",
+        "animePlayer.searching": "検索中...",
+        // Anime Rules Market
+        "animeRules.error": "エラー",
+        "animeRules.ok": "OK",
+        "animeRules.noDescription": "説明なし",
+        "animeRules.needsVerification": "要確認",
+        "animeRules.installFailed": "ルール %@ のインストールに失敗しました",
+        "animeRules.uninstallFailed": "ルールのアンインストールに失敗: %@",
+        // Steam Login
+        "steamLogin.title": "Steam ログイン",
+        "steamLogin.loading": "読み込み中...",
+        "steamLogin.reachedSubPage": "サブスクリプションページに到達しました",
+        "steamLogin.loggedInGoSub": "ログインしました。サブスクリプションページへ",
+        "steamLogin.pleaseLoginAbove": "上のページでSteamにログインしてください",
+        "steamLogin.confirmSync": "確認して同期を開始",
+        "steamLogin.goToSubPage": "サブスクリプションページへ",
+        // Display Selector
+        "displaySelector.title": "壁紙を設定",
+        "displaySelector.message": "複数のディスプレイが検出されました。設定するディスプレイを選択してください。",
+        // Common
+        "common.next": "次へ",
+        "common.unknownError": "不明なエラー",
+        "common.randomBackground": "ランダム背景",
+        "common.gotIt": "了解",
+        "common.allSources": "すべてのソース",
+        "common.youMayLike": "おすすめ",
+        // Common - Enter URL
+        "common.enterURL": "URLを入力してください",
+        // LiquidGlass
+        "liquidGlass.browseFavorites": "%lld 閲覧 · %lld お気に入り"
     ]
 ]
 

@@ -43,7 +43,7 @@ struct RuleMarketView: View {
 
             HStack(spacing: 12) {
                 // 搜索框
-                LiquidGlassSearchField("搜索规则...", text: $viewModel.searchQuery)
+                LiquidGlassSearchField(t("ruleMarket.searchPlaceholder"), text: $viewModel.searchQuery)
                     .frame(width: 180)
 
                 // 刷新按钮
@@ -262,19 +262,19 @@ struct RuleMarketItemView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Label("安装", systemImage: "plus.circle")
+                            Label(t("ruleMarket.install"), systemImage: "plus.circle")
                         }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isInstalling)
                 } else {
                     Button(action: onUpdate) {
-                        Label("更新", systemImage: "arrow.clockwise")
+                        Label(t("ruleMarket.update"), systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.bordered)
 
                     Button(action: onRemove) {
-                        Label("移除", systemImage: "trash")
+                        Label(t("ruleMarket.remove"), systemImage: "trash")
                     }
                     .buttonStyle(.bordered)
                     .tint(.red)
@@ -315,10 +315,10 @@ enum RuleCategory: String, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .all: return "全部"
-        case .wallpaper: return "壁纸"
-        case .anime: return "动漫"
-        case .video: return "视频"
+        case .all: return t("ruleMarket.all")
+        case .wallpaper: return t("ruleMarket.wallpaper")
+        case .anime: return t("ruleMarket.anime")
+        case .video: return t("ruleMarket.video")
         }
     }
 
@@ -397,7 +397,7 @@ class RuleMarketViewModel: ObservableObject {
             do {
                 // 检查是否已配置仓库
                 guard await ruleRepository.isConfigured() else {
-                    errorMessage = "请先在设置中配置规则仓库地址"
+                    errorMessage = t("ruleMarket.configureRepoFirst")
                     isLoading = false
                     return
                 }

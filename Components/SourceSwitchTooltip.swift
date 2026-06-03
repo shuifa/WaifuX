@@ -6,11 +6,11 @@ struct SourceSwitchTooltip: ViewModifier {
     let tooltipKey: String
     let message: String
     @State private var isVisible: Bool = false
-    
+
     private var hasBeenDismissed: Bool {
         UserDefaults.standard.bool(forKey: tooltipKey)
     }
-    
+
     func body(content: Content) -> some View {
         content
             .overlay {
@@ -34,27 +34,27 @@ struct SourceSwitchTooltip: ViewModifier {
                 }
             }
     }
-    
+
     private var tooltipBubble: some View {
         HStack(spacing: 0) {
             // 向左箭头（指向按钮）
             Triangle(direction: .left)
                 .fill(Color.black.opacity(0.82))
                 .frame(width: 6, height: 10)
-            
+
             VStack(spacing: 10) {
                 Text(message)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.92))
                     .multilineTextAlignment(.center)
-                
+
                 Button {
                     UserDefaults.standard.set(true, forKey: tooltipKey)
                     withAnimation(.easeOut(duration: 0.25)) {
                         isVisible = false
                     }
                 } label: {
-                    Text("知道了")
+                    Text(t("common.gotIt"))
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16)
@@ -82,7 +82,7 @@ struct SourceSwitchTooltip: ViewModifier {
 private struct Triangle: Shape {
     enum Direction { case up, down, left, right }
     var direction: Direction = .up
-    
+
     func path(in rect: CGRect) -> Path {
         var path = Path()
         switch direction {

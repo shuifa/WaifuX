@@ -217,7 +217,7 @@ struct WallpaperDetailSheet: View {
             }
             .overlay(alignment: .bottom) {
                 if showCopyLinkToast {
-                    Text("链接已复制")
+                    Text(t("wallpaperDetail.linkCopied"))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
@@ -441,7 +441,7 @@ struct WallpaperDetailSheet: View {
     private var floatingBackButton: some View {
         Button {
             if isSettingWallpaper {
-                AppLogger.warn(.ui, "返回被阻止：设置壁纸进行中",
+                    AppLogger.warn(.ui, "返回被阻止：设置壁纸进行中",
                     metadata: ["isSettingWallpaper": isSettingWallpaper])
                 return
             }
@@ -656,7 +656,7 @@ struct WallpaperDetailSheet: View {
                         .detailGlassCircleChrome()
                 }
                 .buttonStyle(.plain)
-                .help("更多选项")
+                .help(t("wallpaperDetail.moreOptions"))
                 .background(
                     SharePickerAnchorReader { anchor in
                         sharePickerAnchorView = anchor
@@ -712,7 +712,7 @@ struct WallpaperDetailSheet: View {
                 } label: {
                     HStack {
                         Image(systemName: "link")
-                        Text("复制链接")
+                        Text(t("wallpaperDetail.copyLink"))
                         Spacer()
                     }
                     .padding(.horizontal, 12)
@@ -732,7 +732,7 @@ struct WallpaperDetailSheet: View {
                 } label: {
                     HStack {
                         Image(systemName: "link")
-                        Text("复制链接")
+                        Text(t("wallpaperDetail.copyLink"))
                         Spacer()
                     }
                     .padding(.horizontal, 12)

@@ -9,7 +9,7 @@ struct AnimeSourcePicker: View {
 
     var body: some View {
         Menu {
-            Button("全部源") {
+            Button(t("common.allSources")) {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     selectedRule = nil
                 }
@@ -39,7 +39,7 @@ struct AnimeSourcePicker: View {
                 Image(systemName: "globe")
                     .font(.system(size: 13, weight: .semibold))
 
-                Text(selectedRule?.name ?? "全部源")
+                Text(selectedRule?.name ?? t("common.allSources"))
                     .font(.system(size: 13, weight: .semibold))
 
                 Image(systemName: "chevron.down")

@@ -295,7 +295,7 @@ struct SteamLoginSheet: View {
         VStack(spacing: 0) {
             // 标题栏
             HStack {
-                Text("Steam 登录")
+                Text(t("steamLogin.title"))
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
 
@@ -333,7 +333,7 @@ struct SteamLoginSheet: View {
                     VStack {
                         ProgressView()
                             .controlSize(.large)
-                        Text("正在加载...")
+                        Text(t("steamLogin.loading"))
                             .font(.system(size: 13))
                             .foregroundStyle(.white.opacity(0.6))
                             .padding(.top, 8)
@@ -352,7 +352,7 @@ struct SteamLoginSheet: View {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
-                        Text("已到达订阅页面")
+                        Text(t("steamLogin.reachedSubPage"))
                             .font(.system(size: 12))
                             .foregroundStyle(.white.opacity(0.7))
                     }
@@ -360,7 +360,7 @@ struct SteamLoginSheet: View {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
-                        Text("已登录，请前往订阅页面")
+                        Text(t("steamLogin.loggedInGoSub"))
                             .font(.system(size: 12))
                             .foregroundStyle(.white.opacity(0.7))
                     }
@@ -368,7 +368,7 @@ struct SteamLoginSheet: View {
                     HStack(spacing: 6) {
                         Image(systemName: "info.circle")
                             .foregroundStyle(.orange)
-                        Text("请在上方页面登录 Steam 账号")
+                        Text(t("steamLogin.pleaseLoginAbove"))
                             .font(.system(size: 12))
                             .foregroundStyle(.white.opacity(0.7))
                     }
@@ -378,7 +378,7 @@ struct SteamLoginSheet: View {
 
                 if isOnSubscriptionPage {
                     // 第二步：确认开始同步
-                    Button("确认开始同步") {
+                    Button(t("steamLogin.confirmSync")) {
                         Task {
                             await transferSteamCookiesToSharedStorage()
                             if !steamID.isEmpty {
@@ -399,7 +399,7 @@ struct SteamLoginSheet: View {
                     )
                 } else if isLoggedIn {
                     // 第一步：前往订阅页面
-                    Button("前往订阅页面") {
+                    Button(t("steamLogin.goToSubPage")) {
                         navigateToSubscriptionCount += 1
                     }
                     .buttonStyle(.plain)

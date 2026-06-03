@@ -8,44 +8,44 @@ struct AnimeDetailView: View {
     let anime: AnimeSearchResult
     @Binding var isPresented: Bool
     @StateObject private var viewModel: AnimeDetailViewModel
-    
+
     @State private var isVisible = false
     @State private var scrollOffset: CGFloat = 0
-    
+
     // 挤压动画配置
     private let squeezeThreshold: CGFloat = 80
     private let maxSqueezeOffset: CGFloat = 120
-    
+
     init(anime: AnimeSearchResult, isPresented: Binding<Bool>) {
         self.anime = anime
         self._isPresented = isPresented
         self._viewModel = StateObject(wrappedValue: AnimeDetailViewModel(anime: anime))
     }
-    
+
     var body: some View {
         GeometryReader { geometry in
             let topBarTopInset = max(geometry.safeAreaInsets.top, 18)
             let bottomSafeInset = max(geometry.safeAreaInsets.bottom, 28)
             let viewW = geometry.size.width
             let viewH = geometry.size.height
-            
+
             ZStack(alignment: .topLeading) {
                 Color(hex: "0A0A0C")
                     .ignoresSafeArea()
                     .coordinateSpace(name: "scroll")
-                
+
                 if isVisible {
                     fixedAnimeBackground(width: viewW, height: viewH)
                 }
-                
+
                 // 顶部和底部渐变遮罩
                 gradientOverlays(viewH: viewH)
-                
+
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 0) {
                         Color.clear
                             .frame(height: detailScrollTopInset(viewportHeight: viewH))
-                        
+
                         Color.clear
                             .frame(height: 1)
                             .padding(.bottom, bottomSafeInset + 88)
@@ -67,7 +67,7 @@ struct AnimeDetailView: View {
                 .overlay(alignment: .top) {
                     fixedHeroChrome(viewportWidth: viewW, topBarTopInset: topBarTopInset)
                 }
-                
+
                 floatingBackButton
                     .padding(.top, topBarTopInset + 18)
                     .padding(.leading, 28)
@@ -83,7 +83,7 @@ struct AnimeDetailView: View {
         }
         .navigationBarBackButtonHidden(true)
     }
-    
+
     // MARK: - 背景
     private func fixedAnimeBackground(width: CGFloat, height viewH: CGFloat) -> some View {
         ZStack {
@@ -94,7 +94,7 @@ struct AnimeDetailView: View {
                 .placeholder { _ in Color(hex: "1A1A1E") }
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-            
+
             // 渐变遮罩
             LinearGradient(
                 colors: [
@@ -105,7 +105,7 @@ struct AnimeDetailView: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-            
+
             Rectangle()
                 .fill(
                     RadialGradient(
@@ -124,7 +124,7 @@ struct AnimeDetailView: View {
         .clipped()
         .ignoresSafeArea()
     }
-    
+
     // MARK: - 渐变遮罩
     private func gradientOverlays(viewH: CGFloat) -> some View {
         ZStack {
@@ -149,21 +149,21 @@ struct AnimeDetailView: View {
         }
         .allowsHitTesting(false)
     }
-    
+
     // MARK: - Hero 区域
     private func fixedHeroChrome(viewportWidth: CGFloat, topBarTopInset: CGFloat) -> some View {
         let squeezeProgress = min(max(-scrollOffset / squeezeThreshold, 0), 1)
         let scaleY = 1 - (squeezeProgress * 0.15)
         let offsetY = -squeezeProgress * maxSqueezeOffset * 0.3
         let opacity = 1 - (squeezeProgress * 0.3)
-        
+
         return VStack(spacing: 0) {
             Spacer()
                 .frame(height: max(topBarTopInset + 44, 68))
-            
+
             VStack(spacing: 18) {
                 detailCategoryBadge
-                
+
                 Text(anime.title)
                     .font(.system(size: 52, weight: .bold, design: .serif))
                     .tracking(-1.3)
@@ -171,12 +171,12 @@ struct AnimeDetailView: View {
                     .lineLimit(2)
                     .frame(maxWidth: 980)
                     .detailGlassTitleChrome()
-                
+
                 HStack(spacing: 0) {
                     metadataCapsules
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
-                
+
                 buttonRowWithDividers
             }
             .frame(maxWidth: 920)
@@ -188,7 +188,7 @@ struct AnimeDetailView: View {
         .opacity(opacity)
         .animation(.easeOut(duration: 0.15), value: scrollOffset)
     }
-    
+
     // MARK: - 返回按钮
     private var floatingBackButton: some View {
         Button { isPresented = false } label: {
@@ -201,13 +201,13 @@ struct AnimeDetailView: View {
         .buttonStyle(.plain)
         .contentShape(Circle())
     }
-    
+
     // MARK: - 分类徽章
     private var detailCategoryBadge: some View {
         let typeText = viewModel.bangumiDetail?.typeDisplayName ?? "TV"
         let yearText = viewModel.bangumiDetail?.airDate?.prefix(4) ?? ""
-        
-        return Text("\(typeText) · \(yearText.isEmpty ? "动漫" : String(yearText))")
+
+        return Text("\(typeText) · \(yearText.isEmpty ? t("animeDetail.episodes") : String(yearText))")
             .font(.system(size: 13, weight: .bold))
             .foregroundStyle(.white.opacity(0.85))
             .tracking(2)
@@ -215,11 +215,11 @@ struct AnimeDetailView: View {
             .frame(height: 34)
             .detailGlassCapsuleChrome(level: .prominent)
     }
-    
+
     // MARK: - 元数据胶囊
     private var metadataCapsules: some View {
         let items = metadataItems
-        
+
         return ForEach(Array(items.enumerated()), id: \.offset) { index, item in
             HStack(spacing: 4) {
                 Text(item.label)
@@ -235,37 +235,37 @@ struct AnimeDetailView: View {
             .padding(.trailing, index == items.count - 1 ? 0 : 8)
         }
     }
-    
+
     private var metadataItems: [(label: String, value: String)] {
         var items: [(String, String)] = []
-        
+
         if let score = viewModel.bangumiDetail?.rating?.score {
             items.append(("评分", String(format: "%.1f", score)))
         }
-        
+
         if let episodes = viewModel.bangumiDetail?.totalEpisodes, episodes > 0 {
-            items.append(("集数", "\(episodes) 集"))
+            items.append((t("animeDetail.episodes"), "\(episodes) 集"))
         }
-        
+
         // 使用来源数量作为额外信息
         let availableSources = viewModel.sourceResults.filter { $0.status == .success }.count
         if availableSources > 0 {
-            items.append(("可用源", "\(availableSources)"))
+            items.append((t("animeDetail.availableSources"), "\(availableSources)"))
         }
-        
+
         if let sourceCount = viewModel.sourceResults.filter({ $0.status == .success }).count as Int?, sourceCount > 0 {
             items.append(("来源", "\(sourceCount) 个源"))
         }
-        
+
         return items
     }
-    
+
     // MARK: - 按钮行
     private var buttonRowWithDividers: some View {
         HStack(spacing: 16) {
             HStack(spacing: 16) {
                 dividerLine.frame(width: 70)
-                
+
                 // 收藏按钮
                 Button {
                     viewModel.toggleFavorite()
@@ -279,7 +279,7 @@ struct AnimeDetailView: View {
                 .buttonStyle(.plain)
                 .contentShape(Circle())
             }
-            
+
             // 开始观看/继续观看按钮
             Button {
                 // 使用 AnimeWindowManager 打开独立窗口（传入当前 ViewModel）
@@ -288,7 +288,7 @@ struct AnimeDetailView: View {
                 HStack(spacing: 10) {
                     Image(systemName: viewModel.lastPlayedEpisode != nil ? "play.circle.fill" : "play.fill")
                         .font(.system(size: 13, weight: .medium))
-                    Text(viewModel.lastPlayedEpisode != nil ? "继续观看" : "开始观看")
+                    Text(viewModel.lastPlayedEpisode != nil ? t("animeDetail.continueWatching") : t("animeDetail.startWatching"))
                         .font(.system(size: 15, weight: .semibold))
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -300,7 +300,7 @@ struct AnimeDetailView: View {
             }
             .buttonStyle(.plain)
             .contentShape(Capsule(style: .continuous))
-            
+
             HStack(spacing: 16) {
                 // 别名搜索按钮
                 Button {
@@ -316,7 +316,7 @@ struct AnimeDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .contentShape(Circle())
-                
+
                 dividerLine.frame(width: 70)
             }
         }
@@ -324,7 +324,7 @@ struct AnimeDetailView: View {
         .padding(.top, 12)
         .glassContainer(spacing: 16)
     }
-    
+
     private var dividerLine: some View {
         Rectangle()
             .fill(
@@ -336,7 +336,7 @@ struct AnimeDetailView: View {
             )
             .frame(height: 1)
     }
-    
+
 
     private func detailScrollTopInset(viewportHeight: CGFloat) -> CGFloat {
         return max(min(viewportHeight * 0.58, 520), 420)
@@ -350,25 +350,25 @@ struct AnimeDetailView: View {
 private struct AliasSearchSheet: View {
     @ObservedObject var viewModel: AnimeDetailViewModel
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         VStack(spacing: 24) {
             HStack(spacing: 10) {
                 Image(systemName: "text.magnifyingglass")
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(Color(hex: "3B8BFF"))
-                
+
                 Text(t("anime.aliasSearch"))
                     .font(.system(size: 20, weight: .bold))
                     .foregroundStyle(.white)
             }
-            
+
             if !viewModel.bangumiAliases.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(t("anime.selectAlias"))
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.white.opacity(0.7))
-                    
+
                     FlowLayout(spacing: 10) {
                         ForEach(viewModel.bangumiAliases.prefix(5), id: \.self) { alias in
                             Button(action: {
@@ -391,24 +391,24 @@ private struct AliasSearchSheet: View {
                     }
                 }
             }
-            
+
             Divider()
                 .background(.white.opacity(0.1))
-            
+
             VStack(alignment: .leading, spacing: 12) {
                 Text(t("anime.orManualInput"))
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.white.opacity(0.7))
-                
+
                 LiquidGlassTextField(
                     t("anime.aliasInputPlaceholder"),
                     text: $viewModel.aliasSearchText,
                     icon: "textformat"
                 )
             }
-            
+
             Spacer()
-            
+
             HStack(spacing: 16) {
                 Button(action: { dismiss() }) {
                     Text(t("cancel"))
@@ -419,7 +419,7 @@ private struct AliasSearchSheet: View {
                         .contentShape(Capsule())
                 }
                 .detailGlassCapsuleChrome(level: .regular)
-                
+
                 Button(action: {
                     if let rule = viewModel.aliasSearchRule {
                         let keyword = viewModel.aliasSearchText.trimmingCharacters(in: .whitespaces)
@@ -460,27 +460,27 @@ struct CaptchaInputSheet: View {
     let captchaImageURL: String
     let onSubmit: (String) -> Void
     let onCancel: () -> Void
-    
+
     @State private var captchaCode: String = ""
     @State private var isLoading: Bool = false
-    
+
     var body: some View {
         VStack(spacing: 24) {
             HStack(spacing: 10) {
                 Image(systemName: "lock.shield")
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(Color(hex: "3B8BFF"))
-                
+
                 Text(t("captcha.pleaseEnter"))
                     .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(.white)
             }
-            
+
             Text(t("captcha.sourceRequires"))
                 .font(.system(size: 13))
                 .foregroundStyle(.white.opacity(0.7))
                 .multilineTextAlignment(.center)
-            
+
             // 验证码图片
             if let url = URL(string: captchaImageURL) {
                 AsyncImage(url: url) { phase in
@@ -504,15 +504,15 @@ struct CaptchaInputSheet: View {
                 .background(.white.opacity(0.05))
                 .cornerRadius(8)
             }
-            
+
             HStack(spacing: 12) {
                 LiquidGlassTextField(
-                    "验证码",
+                    t("animeDetail.captcha"),
                     text: $captchaCode,
                     icon: "number",
                     onSubmit: submit
                 )
-                
+
                 Button(action: { captchaCode = "" }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 14))
@@ -522,9 +522,9 @@ struct CaptchaInputSheet: View {
                 }
                 .detailGlassCircleChrome()
             }
-            
+
             Spacer()
-            
+
             HStack(spacing: 16) {
                 Button(action: onCancel) {
                     Text(t("cancel"))
@@ -535,7 +535,7 @@ struct CaptchaInputSheet: View {
                         .contentShape(Capsule())
                 }
                 .detailGlassCapsuleChrome(level: .regular)
-                
+
                 Button(action: submit) {
                     HStack(spacing: 6) {
                         if isLoading {
@@ -563,7 +563,7 @@ struct CaptchaInputSheet: View {
                 .background(.ultraThinMaterial)
         )
     }
-    
+
     private func submit() {
         let code = captchaCode.trimmingCharacters(in: .whitespaces)
         guard !code.isEmpty else { return }

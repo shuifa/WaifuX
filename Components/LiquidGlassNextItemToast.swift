@@ -26,7 +26,7 @@ public extension NextItemPreviewable {
 extension Wallpaper: NextItemPreviewable {
     public var previewId: String { id }
     public var previewTitle: String { resolution }
-    public var previewSubtitle: String { "\(views) 浏览 · \(favorites) 收藏" }
+    public var previewSubtitle: String { String(format: t("liquidGlass.browseFavorites"), views, favorites) }
     public var previewThumbnailURL: URL? { thumbURL }
     public var previewResolution: String { resolution }
     public var previewBadge: String? { categoryDisplayName }
@@ -195,7 +195,7 @@ public struct LiquidGlassNextItemToast: View {
 
                     // 文字信息
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("下一张")
+                        Text(t("common.next"))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.5))
 

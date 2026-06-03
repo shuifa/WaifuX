@@ -40,7 +40,7 @@ struct GuessYouLikeOverlay: View {
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ))
-                        Text("猜你喜欢")
+                        Text(t("common.youMayLike"))
                             .font(.system(size: 24, weight: .bold))
                             .foregroundStyle(.white)
                     }

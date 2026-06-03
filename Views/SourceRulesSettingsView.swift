@@ -453,10 +453,10 @@ struct GitHubImportSheet: View {
 
             // 输入表单
             VStack(spacing: 12) {
-                GitHubInputField(title: "仓库所有者", text: $owner, placeholder: "例如: Predidit")
-                GitHubInputField(title: "仓库名称", text: $repo, placeholder: "例如: KazumiRules")
-                GitHubInputField(title: "文件路径", text: $path, placeholder: "例如: aowu.json")
-                GitHubInputField(title: "分支", text: $branch, placeholder: "main")
+                GitHubInputField(title: t("sourceRules.owner"), text: $owner, placeholder: t("sourceRules.ownerPlaceholder"))
+                GitHubInputField(title: t("sourceRules.repo"), text: $repo, placeholder: t("sourceRules.repoPlaceholder"))
+                GitHubInputField(title: t("sourceRules.path"), text: $path, placeholder: t("sourceRules.pathPlaceholder"))
+                GitHubInputField(title: t("sourceRules.branch"), text: $branch, placeholder: "main")
             }
 
             if let error = errorMessage {

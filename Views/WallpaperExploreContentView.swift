@@ -702,7 +702,7 @@ struct WallpaperExploreContentView: View {
 
     private var loadingState: some View {
         ExploreLoadingStateView(
-            message: "加载中...",
+            message: t("loading"),
             tint: arcSettings.primaryText
         )
         .exploreFrostedPanel(cornerRadius: 30, tint: exploreAtmosphere.tint.primary)
@@ -800,7 +800,7 @@ struct WallpaperExploreContentView: View {
     private func handleWallpaperURLSubmit() {
         let url = wallpaperURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else {
-            wallpaperURLError = "请输入链接"
+            wallpaperURLError = t("common.enterURL")
             return
         }
         isResolvingWallpaperURL = true

@@ -30,8 +30,8 @@ struct AnimeRulesMarketView: View {
         .task {
             await loadData()
         }
-        .alert("错误", isPresented: $showingError) {
-            Button("确定") {}
+        .alert(t("animeRules.error"), isPresented: $showingError) {
+            Button(t("animeRules.ok")) {}
         } message: {
             Text(errorMessage ?? t("unknown"))
         }
@@ -143,7 +143,7 @@ struct AnimeRulesMarketView: View {
         if let _ = await AnimeRuleStore.shared.installRuleByName(rule.id) {
             installedRuleIds.insert(rule.id)
         } else {
-            errorMessage = "安装规则 \(rule.name) 失败"
+            errorMessage = String(format: t("animeRules.installFailed"), rule.name)
             showingError = true
         }
     }
@@ -157,7 +157,7 @@ struct AnimeRulesMarketView: View {
             try await AnimeRuleStore.shared.uninstallRule(rule.id)
             installedRuleIds.remove(rule.id)
         } catch {
-            errorMessage = "卸载规则失败: \(error.localizedDescription)"
+            errorMessage = String(format: t("animeRules.uninstallFailed"), error.localizedDescription)
             showingError = true
         }
     }
@@ -216,7 +216,7 @@ private struct RuleMarketItem: View {
                     }
                 }
 
-                Text(rule.description ?? "无描述")
+                Text(rule.description ?? t("animeRules.noDescription"))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -227,7 +227,7 @@ private struct RuleMarketItem: View {
                         .foregroundStyle(.secondary)
 
                     if rule.antiCrawlerEnabled {
-                        Label("需验证", systemImage: "exclamationmark.triangle")
+                        Label(t("animeRules.needsVerification"), systemImage: "exclamationmark.triangle")
                             .font(.system(size: 11))
                             .foregroundStyle(.orange)
                     }
@@ -253,7 +253,7 @@ private struct RuleMarketItem: View {
                         .controlSize(.small)
                         .scaleEffect(0.8)
                 } else {
-                    Text(isInstalled ? "卸载" : "安装")
+                    Text(isInstalled ? t("animeRules.uninstall") : t("animeRules.install"))
                         .font(.system(size: 12, weight: .medium))
                 }
             }

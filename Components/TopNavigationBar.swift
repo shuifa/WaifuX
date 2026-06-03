@@ -185,7 +185,7 @@ struct GuessYouLikeNavButton: View {
             HStack(spacing: 5) {
                 Image(systemName: "sparkle")
                     .font(.system(size: 11, weight: .semibold))
-                Text("猜你喜欢")
+                Text(t("common.youMayLike"))
                     .font(.system(size: 11, weight: .semibold))
             }
             .foregroundStyle(.white.opacity(isHovered ? 0.96 : 0.82))
