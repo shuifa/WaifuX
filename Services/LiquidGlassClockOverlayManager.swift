@@ -180,7 +180,11 @@ public final class LiquidGlassClockOverlayManager {
         guard VideoWallpaperManager.shared.isVideoWallpaperActive,
               let videoURL = VideoWallpaperManager.shared.currentVideoURL
         else { return nil }
-        return WallpaperDynamicTextParser.loadSidecar(for: videoURL)
+        guard let info = WallpaperDynamicTextParser.loadSidecar(for: videoURL) else { return nil }
+        if let wallpaperPath = info.wallpaperPath, !wallpaperPath.isEmpty {
+            return SceneWallpaperDesignService.mergeDesign(into: info, wallpaperPath: wallpaperPath)
+        }
+        return info
     }
 
     /// 视频壁纸激活状态变化 → 检查 sidecar JSON + 总开关，仅当允许时才创建时钟
@@ -673,10 +677,18 @@ private struct RendererDynamicTextView: View {
     }
 
     private var renderedText: String {
+        let runtimeBehavior = entry.runtimeBehaviorOverride ?? entry.behavior
+        let runtimeScript = entry.runtimeScriptOverride ?? entry.script
+        let runtimePropertiesJSON = entry.runtimeScriptPropertiesJSONOverride ?? entry.scriptPropertiesJSON
+
+        if runtimeBehavior == "date", let languageCode = entry.runtimeLanguageCodeOverride {
+            return Self.localizedDateText(from: now, languageCode: languageCode)
+        }
+
         // 对于有时间类脚本的条目，用 JavaScriptCore 重新执行脚本获取当前时间
-        if let script = entry.script, !script.isEmpty,
-           entry.behavior == "clock" || entry.behavior == "date" || entry.behavior == "weekday" {
-            if let result = Self.executeWallpaperScript(script) {
+        if let script = runtimeScript, !script.isEmpty,
+           runtimeBehavior == "clock" || runtimeBehavior == "date" || runtimeBehavior == "weekday" {
+            if let result = Self.executeWallpaperScript(script, scriptPropertiesJSON: runtimePropertiesJSON) {
                 return result
             }
         }
@@ -689,7 +701,7 @@ private struct RendererDynamicTextView: View {
         // 根据条目名称是否含中文选择对应语言的 formatter
         let useChinese = Self.isChineseName(entry.name)
 
-        switch entry.behavior {
+        switch runtimeBehavior {
         case "clock":
             return Self.formattedClock(from: now, format: entry.format)
         case "weekday":
@@ -712,6 +724,40 @@ private struct RendererDynamicTextView: View {
         default:
             return entry.value ?? ""
         }
+    }
+
+    private static func localizedDateText(from date: Date, languageCode: String) -> String {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.day, .month, .year], from: date)
+        let day = components.day ?? 1
+        let month = max(1, min(12, components.month ?? 1))
+        let year = components.year ?? 1970
+        let monthText = localizedMonthText(month: month, languageCode: languageCode)
+
+        switch languageCode.uppercased() {
+        case "JP", "JA":
+            return "\(year)年\(month)月\(day)日"
+        default:
+            return "\(day) \(monthText) \(year)"
+        }
+    }
+
+    private static func localizedMonthText(month: Int, languageCode: String) -> String {
+        let index = month - 1
+        let months: [String]
+        switch languageCode.uppercased() {
+        case "RU":
+            months = ["ЯН", "ФЕ", "МА", "АП", "МА", "ИЮ", "ИЮ", "АВ", "СЕ", "ОК", "НО", "ДЕ"]
+        case "FR":
+            months = ["JAN", "FEV", "MAR", "AVR", "MAI", "JUIN", "JUIL", "AOUT", "SEP", "OCT", "NOV", "DEC"]
+        case "ES":
+            months = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"]
+        case "JP", "JA":
+            return String(month)
+        default:
+            months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+        }
+        return months.indices.contains(index) ? months[index] : months[0]
     }
 
     /// 根据当前时间返回中文时段文本
@@ -805,9 +851,9 @@ private struct RendererDynamicTextView: View {
     /// 通过 JavaScriptCore 执行壁纸脚本，用当前时间生成正确文本
     /// 每个唯一脚本只 eval 一次，之后只调用 update() 获取最新时间
     private static var jsContextCache: [String: JSContext] = [:]
-    private static func executeWallpaperScript(_ script: String) -> String? {
-        // 用完整脚本内容做 key，不同语言的脚本各自独立缓存
-        let ctxCacheKey = script
+    private static func executeWallpaperScript(_ script: String, scriptPropertiesJSON: String?) -> String? {
+        // 用脚本 + renderer 实际属性做 key；同一脚本在不同语言/格式属性下必须独立缓存。
+        let ctxCacheKey = script + "\n__scriptProperties=" + (scriptPropertiesJSON ?? "{}")
 
         let ctx: JSContext
         if let cached = jsContextCache[ctxCacheKey] {
@@ -820,13 +866,20 @@ private struct RendererDynamicTextView: View {
             // createScriptProperties 和脚本合并到一次 eval 中
             // 注意：必须智能处理各种 export 语法
             let cleanedScript = Self.cleanScriptForJSContext(script)
+            // 注入 Wallpaper Engine 脚本属性桥接；语言数组由壁纸脚本自己声明。
             let bundled = """
             var createScriptProperties = function() {
                 var props = {};
+                var overrideProps = \(Self.normalizedScriptPropertiesJSON(scriptPropertiesJSON) ?? "{}");
                 return new Proxy({}, {
                     get: function(target, name) {
                         if (name === 'finish') return function() { return props; };
-                        return function(c) { if (c && c.name !== undefined) props[c.name] = c.value; return this; };
+                        return function(c) {
+                            if (c && c.name !== undefined) {
+                                props[c.name] = Object.prototype.hasOwnProperty.call(overrideProps, c.name) ? overrideProps[c.name] : c.value;
+                            }
+                            return this;
+                        };
                     }
                 });
             };
@@ -848,7 +901,8 @@ private struct RendererDynamicTextView: View {
         ctx.exception = nil
         // 传 0 而非空字符串，避免 update(dt) 中 dt.toFixed() 等操作产生 NaN
         let result = updateFn.call(withArguments: [0])
-        if ctx.exception != nil { return nil }
+        // 运行时错误（如缺失外部全局变量）不打印，静默回退到 formatter
+        ctx.exception = nil
         guard let text = result?.toString(), !text.isEmpty, text != "undefined" else {
             return nil
         }
@@ -886,6 +940,38 @@ private struct RendererDynamicTextView: View {
                 return ""
             }
         }.joined(separator: "\n")
+    }
+
+    private static func normalizedScriptPropertiesJSON(_ json: String?) -> String? {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let decoded = try? JSONSerialization.jsonObject(with: data),
+              let normalized = normalizeScriptPropertyValue(decoded),
+              JSONSerialization.isValidJSONObject(normalized),
+              let encoded = try? JSONSerialization.data(withJSONObject: normalized, options: [.sortedKeys]),
+              let output = String(data: encoded, encoding: .utf8)
+        else {
+            return json
+        }
+        return output
+    }
+
+    private static func normalizeScriptPropertyValue(_ value: Any) -> Any? {
+        if let dict = value as? [String: Any] {
+            if dict.keys.contains("value") {
+                guard let rawValue = dict["value"] else { return nil }
+                return normalizeScriptPropertyValue(rawValue)
+            }
+            var output: [String: Any] = [:]
+            for (key, rawValue) in dict {
+                output[key] = normalizeScriptPropertyValue(rawValue) ?? rawValue
+            }
+            return output
+        }
+        if let array = value as? [Any] {
+            return array.map { normalizeScriptPropertyValue($0) ?? $0 }
+        }
+        return value
     }
 
     /// 注册字体并返回 PostScript 名称

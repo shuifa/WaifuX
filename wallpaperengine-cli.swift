@@ -30,6 +30,13 @@ private let PRIMARY_CAPTURE_PATH = "/tmp/wallpaperengine-cli-capture.png"
 private let DESK_CAPTURE_PATH_0 = "/tmp/wallpaperengine-cli-desk-0.png"
 private let DESK_CAPTURE_PATH_1 = "/tmp/wallpaperengine-cli-desk-1.png"
 
+private func isDynamicLockScreenEnabledForCurrentLaunch() -> Bool {
+    let rawValue = ProcessInfo.processInfo.environment["WAIFUX_DYNAMIC_LOCK_SCREEN_ENABLED"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    return rawValue == "1" || rawValue == "true" || rawValue == "yes"
+}
+
 private func dlog(_ msg: String) {
     let line = "[\(Date())] \(msg)\n"
     if let data = line.data(using: .utf8) {
@@ -92,13 +99,21 @@ private func waifuXGrayscaleThumb(from cgImage: CGImage, dimension: Int) -> [UIn
 
 // MARK: - IPC
 private enum IPCCommand: String, Codable {
-    case set, pause, resume, stop
+    case set, pause, resume, stop, applyProperties
 }
 
 private struct IPCMessage: Codable {
     let command: IPCCommand
     let path: String?
     let screen: Int?
+    let propertiesJSON: String?
+
+    init(command: IPCCommand, path: String?, screen: Int?, propertiesJSON: String? = nil) {
+        self.command = command
+        self.path = path
+        self.screen = screen
+        self.propertiesJSON = propertiesJSON
+    }
 }
 
 // MARK: - RendererBridge (from Wallpaper Engine X)
@@ -1256,8 +1271,12 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         // 对齐 Wallpaper Engine：注入 project 属性 + 修正缺失背景图与全屏布局，再稍等 Spine 应用相机/缩放
         runWebWallpaperBootstrap { [weak self] in
             guard let self = self else { return }
-            self.beginSettlingFirstFrame()
-            // 首帧就绪后启动鼠标事件桥（桌面图标层会吃掉事件，需全局监听转发）
+            if isDynamicLockScreenEnabledForCurrentLaunch() {
+                dlog("[WebRendererBridge] Dynamic lock screen enabled; capture first frame for fallback only")
+                self.beginSettlingFirstFrame()
+            } else {
+                self.beginSettlingFirstFrame()
+            }
             self.startMouseEventBridge()
         }
         NSApp.setActivationPolicy(.prohibited)
@@ -1311,6 +1330,31 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         """) { _, _ in }
         startMouseEventBridge()
         NSApp.setActivationPolicy(.prohibited)
+    }
+
+    @discardableResult
+    func applyUserProperties(jsonString: String) -> Bool {
+        injectedPropertiesJSON = jsonString
+        guard isLoaded, webView != nil else { return false }
+        let encoded = Data(jsonString.utf8).base64EncodedString()
+        let source = """
+        (function() {
+          try {
+            var props = JSON.parse(atob("\(encoded)"));
+            if (window.wallpaperPropertyListener && typeof window.wallpaperPropertyListener.applyUserProperties === 'function') {
+              window.wallpaperPropertyListener.applyUserProperties(props);
+              return true;
+            }
+          } catch (e) {
+            console.error('weweb: applyUserProperties runtime patch failed:', e);
+          }
+          return false;
+        })();
+        """
+        webView?.evaluateJavaScript(source) { result, _ in
+            dlog("[WebRendererBridge] applyUserProperties runtime patch result=\(String(describing: result))")
+        }
+        return true
     }
 
     func stop() {
@@ -1889,6 +1933,12 @@ private final class DesktopWallpaperManager {
         isPaused = false
     }
 
+    @discardableResult
+    func applyWebWallpaperProperties(_ jsonString: String) -> Bool {
+        guard isRunning, isWebMode else { return false }
+        return WebRendererBridge.shared.applyUserProperties(jsonString: jsonString)
+    }
+
     func stopWallpaper() {
         if isWebMode {
             WebRendererBridge.shared.stop()
@@ -1913,6 +1963,10 @@ private final class DesktopWallpaperManager {
     /// 将主截图复制到交替路径再设为桌面图，避免系统因固定路径缓存上一张壁纸（锁屏/静态桌面不更新）
     private func applyCaptureAsDesktopWallpaper(screen: Int? = nil) {
         guard FileManager.default.fileExists(atPath: PRIMARY_CAPTURE_PATH) else { return }
+        guard !isDynamicLockScreenEnabledForCurrentLaunch() else {
+            dlog("[DesktopWallpaperManager] Dynamic lock screen enabled; skip static capture desktop apply")
+            return
+        }
         let src = URL(fileURLWithPath: PRIMARY_CAPTURE_PATH)
         desktopCaptureSlot = 1 - desktopCaptureSlot
         let dstPath = desktopCaptureSlot == 0 ? DESK_CAPTURE_PATH_0 : DESK_CAPTURE_PATH_1
@@ -2062,6 +2116,10 @@ private final class DesktopWallpaperManager {
     }
 
     private func restoreOriginalWallpaper() {
+        guard !isDynamicLockScreenEnabledForCurrentLaunch() else {
+            dlog("[DesktopWallpaperManager] Dynamic lock screen enabled; skip restoring desktop wallpaper")
+            return
+        }
         guard let data = UserDefaults.standard.data(forKey: originalWallpaperKey),
               let savedState = try? JSONDecoder().decode(SavedOriginalWallpaperState.self, from: data) else {
             print("[DesktopWallpaperManager] No original wallpaper to restore")
@@ -2226,6 +2284,8 @@ private enum Client {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return "Failed to create socket" }
         defer { close(fd) }
+        var tv = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - floor(timeout)) * 1_000_000))
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
         let size = MemoryLayout<sockaddr_un>.size
         let connected = withUnsafePointer(to: &addr) {
@@ -2243,7 +2303,7 @@ private enum Client {
 
         var responseBuf = Data(repeating: 0, count: 1024)
         let received = responseBuf.withUnsafeMutableBytes { recv(fd, $0.baseAddress, 1024, 0) }
-        guard received > 0 else { return nil }
+        guard received > 0 else { return "Daemon communication timed out" }
         return String(data: responseBuf.prefix(received), encoding: .utf8)
     }
 }
@@ -2431,6 +2491,18 @@ private final class Daemon: NSObject, NSApplicationDelegate {
                 case .stop:
                     DesktopWallpaperManager.shared.stopWallpaper()
                     sendResponse("OK")
+                case .applyProperties:
+                    if let propertiesJSON = msg.propertiesJSON {
+                        let applied = DesktopWallpaperManager.shared.applyWebWallpaperProperties(propertiesJSON)
+                        dlog("[Daemon] applyProperties applied=\(applied)")
+                        if applied {
+                            sendResponse("OK")
+                        } else {
+                            sendResponse("ERROR:当前没有运行中的 Web 壁纸可应用属性")
+                        }
+                    } else {
+                        sendResponse("ERROR:缺少 propertiesJSON")
+                    }
                 }
             }
         }
@@ -3050,19 +3122,30 @@ struct WallpaperEngineCLI {
         }
 
         switch command {
-        case "set", "pause", "resume", "stop", "exit":
-
-            // 总是先清理旧 daemon 并启动新版本，避免旧版本残留导致行为不一致
-            stopDaemonIfRunning()
-            startDaemonProcess()
-            var attempts = 0
-            while !isDaemonRunning() && attempts < 30 {
-                Thread.sleep(forTimeInterval: 0.1)
-                attempts += 1
+        case "set", "pause", "resume", "stop", "exit", "apply-properties":
+            if command == "stop" || command == "exit" {
+                stopDaemonIfRunning()
+                exit(0)
             }
-            guard isDaemonRunning() else {
-                print("Failed to start daemon.")
-                exit(1)
+
+            if command == "set" {
+                // 总是先清理旧 daemon 并启动新版本，避免旧版本残留导致行为不一致
+                stopDaemonIfRunning()
+                startDaemonProcess()
+                var attempts = 0
+                while !isDaemonRunning() && attempts < 30 {
+                    Thread.sleep(forTimeInterval: 0.1)
+                    attempts += 1
+                }
+                guard isDaemonRunning() else {
+                    print("Failed to start daemon.")
+                    exit(1)
+                }
+            } else {
+                guard isDaemonRunning() else {
+                    print("Daemon not responding")
+                    exit(1)
+                }
             }
 
             let msg: IPCMessage
@@ -3080,6 +3163,13 @@ struct WallpaperEngineCLI {
                     path = setArgs.dropLast().joined(separator: " ")
                 }
                 msg = IPCMessage(command: .set, path: path, screen: screen)
+            case "apply-properties":
+                let applyArgs = Array(remainingArgs.dropFirst())
+                guard !applyArgs.isEmpty else {
+                    print("Usage: wallpaperengine-cli apply-properties <json>")
+                    exit(1)
+                }
+                msg = IPCMessage(command: .applyProperties, path: nil, screen: nil, propertiesJSON: applyArgs.joined(separator: " "))
             case "pause":
                 msg = IPCMessage(command: .pause, path: nil, screen: nil)
             case "resume":
@@ -3091,7 +3181,8 @@ struct WallpaperEngineCLI {
                 exit(1)
             }
 
-            if let err = Client.sendAndWaitForOK(msg) {
+            let responseTimeout: TimeInterval = command == "set" ? 35.0 : 5.0
+            if let err = Client.sendAndWaitForOK(msg, timeout: responseTimeout) {
                 if err == "OK" {
                     // success
                 } else if err.hasPrefix("ERROR:") {

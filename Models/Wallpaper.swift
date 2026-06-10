@@ -59,31 +59,56 @@ struct Wallpaper: Identifiable, Codable, Hashable {
         }
     }
     var aspectRatioValue: Double? {
-        if let parsed = Double(ratio), parsed > 0 {
-            return parsed
+        let exactDimensionsRatio: Double? = {
+            if dimensionX > 100, dimensionY > 100 {
+                return Double(dimensionX) / Double(dimensionY)
+            }
+
+            if let dimensions = Self.parseDimensions(from: resolution) {
+                return Double(dimensions.width) / Double(dimensions.height)
+            }
+
+            if let dimensions = inferredOriginalDimensions {
+                return Double(dimensions.width) / Double(dimensions.height)
+            }
+
+            if dimensionX > 0, dimensionY > 0 {
+                return Double(dimensionX) / Double(dimensionY)
+            }
+
+            return nil
+        }()
+
+        let declaredRatio: Double? = {
+            if let parsed = Double(ratio), parsed > 0 {
+                return parsed
+            }
+
+            if let parsed = Self.parseAspectRatioLabel(ratio), parsed > 0 {
+                return parsed
+            }
+
+            return nil
+        }()
+
+        // 优先信更具体的像素尺寸；ratio 字段常常是粗粒度标签，甚至可能错误。
+        // 只有尺寸不可用时才退回 ratio 文本。
+        if let exactDimensionsRatio {
+            if let declaredRatio,
+               abs(exactDimensionsRatio - declaredRatio) > 0.12 {
+                AppLogger.warn(.wallpaper, "Wallpaper ratio mismatch, prefer exact dimensions", metadata: [
+                    "id": id,
+                    "declaredRatio": String(format: "%.4f", declaredRatio),
+                    "exactRatio": String(format: "%.4f", exactDimensionsRatio),
+                    "resolution": resolution,
+                    "dimensionX": dimensionX,
+                    "dimensionY": dimensionY
+                ])
+            }
+            return exactDimensionsRatio
         }
 
-        if let parsed = Self.parseAspectRatioLabel(ratio), parsed > 0 {
-            return parsed
-        }
-
-        if dimensionX > 100, dimensionY > 100 {
-            return Double(dimensionX) / Double(dimensionY)
-        }
-
-        if let dimensions = Self.parseDimensions(from: resolution) {
-            return Double(dimensions.width) / Double(dimensions.height)
-        }
-
-        if let dimensions = inferredOriginalDimensions {
-            return Double(dimensions.width) / Double(dimensions.height)
-        }
-
-        if dimensionX > 0, dimensionY > 0 {
-            return Double(dimensionX) / Double(dimensionY)
-        }
-
-        return nil
+        return declaredRatio
     }
 
     var effectiveDimensions: (width: Int, height: Int) {

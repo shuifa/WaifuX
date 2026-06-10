@@ -139,6 +139,10 @@ final class VideoRenderer: @unchecked Sendable {
         }
     }
 
+    func relayoutForCurrentDisplayGeometry() {
+        applyAspectFillLayout(for: videoTrack)
+    }
+
     private func applyAspectFillLayout(videoSize: CGSize) {
         let bounds = rootLayer.bounds
         let layout = Self.aspectFillLayout(videoSize: videoSize, in: bounds)
@@ -186,6 +190,11 @@ final class VideoRenderer: @unchecked Sendable {
             renderer.stopRequestingMediaData()
             currentReader?.cancelReading()
             nextReader?.cancelReading()
+        }
+        DispatchQueue.main.async { [displayLayer, backgroundFrameLayer, stillFrameLayer] in
+            displayLayer.removeFromSuperlayer()
+            backgroundFrameLayer.removeFromSuperlayer()
+            stillFrameLayer.removeFromSuperlayer()
         }
     }
 

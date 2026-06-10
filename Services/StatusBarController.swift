@@ -133,6 +133,7 @@ final class StatusBarController: NSObject {
     private lazy var playPauseItem = NSMenuItem(title: t("statusbar.pauseWallpaper"), action: #selector(togglePlayback), keyEquivalent: "")
     private lazy var muteItem = NSMenuItem(title: t("statusbar.muteWallpaper"), action: #selector(toggleMute), keyEquivalent: "")
     private lazy var desktopIconsItem = NSMenuItem(title: t("statusbar.hideDesktopIcons"), action: #selector(toggleDesktopIcons), keyEquivalent: "")
+    private lazy var designWallpaperItem = NSMenuItem(title: "设计壁纸", action: #selector(openWebWallpaperDesignPanel), keyEquivalent: "")
     private lazy var quitItem = NSMenuItem(title: t("statusbar.quit"), action: #selector(quitApplication), keyEquivalent: "q")
 
     private let videoWallpaperManager = VideoWallpaperManager.shared
@@ -205,6 +206,7 @@ final class StatusBarController: NSObject {
         releaseMemoryItem.target = self
         muteItem.target = self
         desktopIconsItem.target = self
+        designWallpaperItem.target = self
         quitItem.target = self
 
         menu.addItem(openWindowItem)
@@ -212,6 +214,7 @@ final class StatusBarController: NSObject {
         menu.addItem(releaseMemoryItem)
         menu.addItem(.separator())
         menu.addItem(desktopIconsItem)
+        menu.addItem(designWallpaperItem)
         // toggleWallpaperItem 和 playPauseItem 在 refreshMenuState 中动态构建
         menu.addItem(muteItem)
         menu.addItem(.separator())
@@ -261,6 +264,27 @@ final class StatusBarController: NSObject {
         let hasNativeWallpaper = videoWallpaperManager.isVideoWallpaperActive
         let hasExternalWallpaper = weBridge.isControllingExternalEngine
         let hasWallpaper = hasNativeWallpaper || hasExternalWallpaper
+        let shouldShowDesignWallpaperItem: Bool
+        if let sceneWallpaperPath = currentSceneDesignWallpaperPath() {
+            shouldShowDesignWallpaperItem = true
+            designWallpaperItem.representedObject = sceneWallpaperPath
+        } else if let wallpaperPath = weBridge.currentWallpaperPathForDesign {
+            if weBridge.isCurrentWallpaperWeb {
+                shouldShowDesignWallpaperItem = WebWallpaperDesignService.shared.hasEditableProperties(for: wallpaperPath)
+                designWallpaperItem.representedObject = wallpaperPath
+            } else if weBridge.isCurrentWallpaperScene {
+                shouldShowDesignWallpaperItem = true
+                designWallpaperItem.representedObject = wallpaperPath
+            } else {
+                shouldShowDesignWallpaperItem = false
+                designWallpaperItem.representedObject = nil
+            }
+        } else {
+            shouldShowDesignWallpaperItem = false
+            designWallpaperItem.representedObject = nil
+        }
+        designWallpaperItem.isHidden = !shouldShowDesignWallpaperItem
+        designWallpaperItem.isEnabled = shouldShowDesignWallpaperItem
 
         // 移除旧的动态菜单项
         for item in wallpaperControlItems {
@@ -533,6 +557,38 @@ final class StatusBarController: NSObject {
     @objc private func toggleDesktopIcons() {
         DesktopIconManager.shared.toggle()
         refreshMenuState()
+    }
+
+    @objc private func openWebWallpaperDesignPanel() {
+        if let sceneWallpaperPath = currentSceneDesignWallpaperPath() {
+            SceneWallpaperDesignPanelController.shared.present(for: sceneWallpaperPath)
+            return
+        }
+
+        guard let wallpaperPath = weBridge.currentWallpaperPathForDesign else {
+            NSSound.beep()
+            return
+        }
+        if weBridge.isCurrentWallpaperWeb {
+            WebWallpaperDesignPanelController.shared.present(for: wallpaperPath)
+            return
+        }
+        if weBridge.isCurrentWallpaperScene {
+            SceneWallpaperDesignPanelController.shared.present(for: wallpaperPath)
+            return
+        }
+        NSSound.beep()
+    }
+
+    private func currentSceneDesignWallpaperPath() -> String? {
+        guard let videoURL = videoWallpaperManager.currentVideoURL,
+              let info = WallpaperDynamicTextParser.loadSidecar(for: videoURL),
+              info.hasDynamicText,
+              let wallpaperPath = info.wallpaperPath,
+              !wallpaperPath.isEmpty else {
+            return nil
+        }
+        return wallpaperPath
     }
 
     @objc private func quitApplication() {

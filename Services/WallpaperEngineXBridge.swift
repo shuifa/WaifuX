@@ -6,6 +6,7 @@ import WebKit
 private let webPrimaryCapturePath = "/tmp/wallpaperengine-web-capture.png"
 private let webDeskCapturePath0 = "/tmp/wallpaperengine-web-desk-0.png"
 private let webDeskCapturePath1 = "/tmp/wallpaperengine-web-desk-1.png"
+private let legacyCLIWebCapturePath = "/tmp/wallpaperengine-cli-capture.png"
 
 private struct SavedOriginalWallpaperState: Codable {
     let configs: [ScreenWallpaperConfig]
@@ -212,6 +213,25 @@ final class WallpaperEngineXBridge: ObservableObject {
         return NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleId }
     }
 
+    var currentWallpaperPathForDesign: String? {
+        lastWallpaperPath
+    }
+
+    func reloadCurrentSceneWallpaperForDesign() {
+        guard isCurrentWallpaperScene, let path = lastWallpaperPath else { return }
+        Task { @MainActor in
+            try? await setWallpaper(path: path)
+        }
+    }
+
+    var isCurrentWallpaperWeb: Bool {
+        isControllingExternalEngine && activeRenderKind == .web
+    }
+
+    var isCurrentWallpaperScene: Bool {
+        isControllingExternalEngine && activeRenderKind == .scene
+    }
+
     // MARK: - 设置壁纸
 
     /// 使用 wallpaper-wgpu 设置动态壁纸
@@ -272,6 +292,9 @@ final class WallpaperEngineXBridge: ObservableObject {
         }
 
         // 2. 终止旧进程
+        if #available(macOS 26.0, *) {
+            LockScreenWallpaperService.shared.clearRealtimeSourceIfNeeded(notify: renderKind != .web)
+        }
         await stopRenderProcessBeforeLaunch()
         // 如果上一张是 web 壁纸，旧 CLI 的 daemon 仍在跑；切到 scene/新 web 之前必须先停掉，
         // 否则两个壁纸层会在桌面叠加显示。
@@ -414,6 +437,9 @@ final class WallpaperEngineXBridge: ObservableObject {
 
     /// 切换为**非** wallpaper-wgpu 壁纸时必须调用
     func ensureStoppedForNonCLIWallpaper() {
+        if #available(macOS 26.0, *) {
+            LockScreenWallpaperService.shared.clearRealtimeSourceIfNeeded()
+        }
         stopRenderProcess()
         // 同步杀掉旧 CLI daemon（fire-and-forget 的 client 命令在 App 退出场景来不及发出，
         // 且 stop client 自己还会再 fork daemon — 直接按 PID kill 最稳妥）
@@ -442,12 +468,6 @@ final class WallpaperEngineXBridge: ObservableObject {
         targetScreenIDs.removeAll()
         targetScreenFingerprints.removeAll()
         lastAppliedScreenConfigurations.removeAll()
-    }
-
-    /// 若当前处于 web 模式（即旧 CLI 的 daemon 持有壁纸窗口），通过 `wallpaperengine-cli stop` 让 daemon 结束。
-    private func stopLegacyWebDaemonIfNeeded() {
-        guard activeRenderKind == .web else { return }
-        Task { try? await Self.runLegacyCLIClientCommand(["stop"]) }
     }
 
     /// 同步终止 `/tmp/wallpaperengine-cli.pid` 指向的 daemon 进程（无视 `activeRenderKind`）。
@@ -501,10 +521,65 @@ final class WallpaperEngineXBridge: ObservableObject {
         }
 
         print("[WallpaperEngineXBridge] 使用旧 wallpaperengine-cli 设置 Web 壁纸: \(path) screenIdx=\(screenIndex.map(String.init) ?? "all")")
+        try? FileManager.default.removeItem(atPath: legacyCLIWebCapturePath)
         let status = try await Self.runLegacyCLIClientCommand(args)
         guard status == 0 else {
             throw WallpaperEngineError.executionFailed("wallpaperengine-cli set 失败 (exit=\(status))")
         }
+
+        if let propertiesJSON = try? WebWallpaperDesignService.shared.effectivePropertiesJSON(for: path),
+           !propertiesJSON.isEmpty {
+            try? await applyWebWallpaperProperties(propertiesJSON)
+        }
+
+        let captureURL = await captureWebFallbackFrameForLockScreenIfNeeded()
+        await syncWebStaticFrameToLockScreenIfNeeded(imageURL: captureURL, targetScreens: targetScreens)
+    }
+
+    private func syncWebStaticFrameToLockScreenIfNeeded(imageURL: URL?, targetScreens: [NSScreen]?) async {
+        guard #available(macOS 26.0, *) else { return }
+        guard VideoWallpaperManager.shared.isLockScreenEnabled else { return }
+        guard UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true else { return }
+        guard let imageURL, FileManager.default.fileExists(atPath: imageURL.path) else {
+            print("[WallpaperEngineXBridge] ⚠️ Web 锁屏静态帧未生成，跳过扩展静态图同步")
+            return
+        }
+
+        let screens = targetScreens?.isEmpty == false ? targetScreens! : NSScreen.screens
+        let displayIDs = screens.compactMap { screen -> UInt32? in
+            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        }
+        guard !displayIDs.isEmpty else {
+            print("[WallpaperEngineXBridge] ⚠️ 未找到目标显示器，Web 锁屏静态帧同步已跳过")
+            return
+        }
+
+        do {
+            try await LockScreenWallpaperService.shared.cacheStaticImageSource(imageURL: imageURL, displayIDs: displayIDs)
+            print("[WallpaperEngineXBridge] 🖼️ 已将 Web 首帧按静态图同步到锁屏扩展 display=\(displayIDs)")
+        } catch {
+            print("[WallpaperEngineXBridge] ⚠️ Web 锁屏静态帧同步失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func captureWebFallbackFrameForLockScreenIfNeeded() async -> URL? {
+        guard #available(macOS 26.0, *) else { return nil }
+        guard VideoWallpaperManager.shared.isLockScreenEnabled else { return nil }
+        guard UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true else { return nil }
+
+        if FileManager.default.fileExists(atPath: legacyCLIWebCapturePath) {
+            return URL(fileURLWithPath: legacyCLIWebCapturePath)
+        }
+
+        let deadline = Date().addingTimeInterval(3.0)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            if FileManager.default.fileExists(atPath: legacyCLIWebCapturePath) {
+                return URL(fileURLWithPath: legacyCLIWebCapturePath)
+            }
+        }
+
+        return nil
     }
 
     /// 启动旧 `wallpaperengine-cli` 的客户端子命令（set/pause/resume/stop）。
@@ -529,10 +604,25 @@ final class WallpaperEngineXBridge: ObservableObject {
         return try await processTask.value
     }
 
+    func applyWebWallpaperProperties(_ propertiesJSON: String) async throws {
+        guard isCurrentWallpaperWeb else {
+            throw WallpaperEngineError.executionFailed("当前没有运行中的 Web 壁纸")
+        }
+        let status = try await Self.runLegacyCLIClientCommand(["apply-properties", propertiesJSON])
+        guard status == 0 else {
+            throw WallpaperEngineError.executionFailed("Web 壁纸属性热更新失败 (exit=\(status))")
+        }
+    }
+
     /// 给旧 CLI 客户端进程拼装 DYLD 路径，复用 `bakeWithLegacyCLI` 的搜索策略。
     private static func legacyCLILaunchEnvironment(for cli: URL) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["LSUIElement"] = "1"
+        if #available(macOS 26.0, *) {
+            env["WAIFUX_DYNAMIC_LOCK_SCREEN_ENABLED"] = VideoWallpaperManager.shared.isLockScreenEnabled ? "1" : "0"
+        } else {
+            env["WAIFUX_DYNAMIC_LOCK_SCREEN_ENABLED"] = "0"
+        }
         let execDir = cli.deletingLastPathComponent()
         let dylibCandidates = [
             execDir.path,

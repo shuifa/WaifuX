@@ -349,10 +349,9 @@ struct WallpaperDetailSheet: View {
             Color.black
 
             if let image = sharedPortraitImage {
-                // 左右延伸层：使用已加载的全分辨率图大幅降采样（模糊/拉伸后无需高清）
+                // 左右延伸层：使用已加载的全分辨率图做横向拉伸和模糊
                 Image(nsImage: image)
                     .resizable()
-                    .interpolation(.low)
                     .scaledToFit()
                     .frame(width: width, height: height)
                     .scaleEffect(x: 2.25, y: 1.14, anchor: .center)

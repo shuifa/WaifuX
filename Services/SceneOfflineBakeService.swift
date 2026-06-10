@@ -467,14 +467,6 @@ enum SceneOfflineBakeService {
         try? FileManager.default.removeItem(at: outURL)
         try FileManager.default.moveItem(at: tempURL, to: outURL)
 
-        // wallpaper-wgpu 不输出动态文本 JSON，从 scene.json 解析作为后备
-        if let sceneJSON = try? Self.resolveSceneJSON(contentRoot: contentRoot) {
-            let info = try? WallpaperDynamicTextParser.extract(from: sceneJSON)
-            if let info = info, info.hasDynamicText {
-                try? WallpaperDynamicTextParser.saveSidecar(info, for: outURL)
-            }
-        }
-
         return SceneBakeArtifact(
             analysisId: eligibility.analysisId,
             videoPath: outURL.path,
@@ -671,51 +663,6 @@ enum SceneOfflineBakeService {
             URL(fileURLWithPath: "/Volumes/mac/CodeLibrary/Claude/WallHaven/Resources/wallpaperengine-cli")
         ].compactMap { $0 }
         return candidates.first { fm.isExecutableFile(atPath: $0.path) || fm.fileExists(atPath: $0.path) }
-    }
-
-    /// 解析 contentRoot 下的场景文件（支持任意命名的 .pkg 及 scene.json）
-    private static func resolveSceneJSON(contentRoot: URL) -> URL? {
-        let fm = FileManager.default
-        // 1. 标准 scene.pkg
-        let pkg = contentRoot.appendingPathComponent("scene.pkg")
-        if fm.fileExists(atPath: pkg.path) {
-            return pkg
-        }
-        // 2. project.json 中 "file" 字段指定的场景文件
-        let projectURL = contentRoot.appendingPathComponent("project.json")
-        if let data = try? Data(contentsOf: projectURL),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let sceneFile = json["file"] as? String,
-           !sceneFile.isEmpty {
-            let sceneURL = contentRoot.appendingPathComponent(sceneFile)
-            if fm.fileExists(atPath: sceneURL.path) {
-                return sceneURL
-            }
-        }
-        // 3. 搜索目录下任意 .pkg 文件
-        if let anyPkg = findAnyPkgFile(in: contentRoot) {
-            return anyPkg
-        }
-        // 4. scene.json
-        let sj = contentRoot.appendingPathComponent("scene.json")
-        if fm.fileExists(atPath: sj.path) {
-            return sj
-        }
-        return nil
-    }
-
-    /// 递归搜索目录下第一个 .pkg 文件
-    private static func findAnyPkgFile(in directory: URL) -> URL? {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-            return nil
-        }
-        for case let fileURL as URL in enumerator {
-            if fileURL.pathExtension.lowercased() == "pkg" {
-                return fileURL
-            }
-        }
-        return nil
     }
 
     /// 检查是否有缓存（不触发实际烘焙）

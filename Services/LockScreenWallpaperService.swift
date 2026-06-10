@@ -107,7 +107,9 @@ final class LockScreenWallpaperService {
         let prefs = PrefsFile(
             userPaused: false,
             alwaysPauseDesktop: false,
-            currentVideoPath: destURL.path
+            currentVideoPath: destURL.path,
+            currentImagePath: nil,
+            currentRealtimeSourceKind: nil
         )
         let prefsURL = container.appendingPathComponent(prefsFileName)
         let data = try JSONEncoder().encode(prefs)
@@ -181,7 +183,8 @@ final class LockScreenWallpaperService {
                 userPaused: false,
                 alwaysPauseDesktop: false,
                 currentVideoPath: nil,
-                currentImagePath: lastPath
+                currentImagePath: lastPath,
+                currentRealtimeSourceKind: nil
             )
             let prefsURL = container.appendingPathComponent(prefsFileName)
             let data = try JSONEncoder().encode(prefs)
@@ -229,9 +232,28 @@ final class LockScreenWallpaperService {
         print("[LockScreenWallpaper] 🔁 已请求扩展自解码切换 display=\(displayIDs) video=\(videoID) gen=\(generation)")
     }
 
+    /// 清掉历史版本写入的实时帧源标记。当前 Web 锁屏只走静态图链路。
+    func clearRealtimeSourceIfNeeded(notify: Bool = true) {
+        guard isAvailable, let container = sharedContainerURL else { return }
+        let prefsURL = container.appendingPathComponent(prefsFileName)
+        guard let data = try? Data(contentsOf: prefsURL),
+              var prefs = try? JSONDecoder().decode(PrefsFile.self, from: data),
+              prefs.currentRealtimeSourceKind != nil else {
+            return
+        }
+        prefs.currentRealtimeSourceKind = nil
+        if let encoded = try? JSONEncoder().encode(prefs) {
+            try? encoded.write(to: prefsURL, options: .atomic)
+        }
+        if notify {
+            notifyExtensionPrefsChanged()
+        }
+        print("[LockScreenWallpaper] ✅ 已清理实时锁屏帧源标记")
+    }
+
     /// 清空当前锁屏镜像帧源缓存。
     /// 不触碰用户在系统设置里手动选择的显示器实例。
-    func clearMirroringSourceCache() {
+    func clearMirroringSourceCache(notify: Bool = true) {
         guard isAvailable else { return }
 
         guard let container = sharedContainerURL else { return }
@@ -243,7 +265,7 @@ final class LockScreenWallpaperService {
         try? FileManager.default.removeItem(at: imageDir)
 
         // 更新偏好设置
-        let prefs = PrefsFile(userPaused: false, alwaysPauseDesktop: false, currentVideoPath: nil, currentImagePath: nil)
+        let prefs = PrefsFile(userPaused: false, alwaysPauseDesktop: false, currentVideoPath: nil, currentImagePath: nil, currentRealtimeSourceKind: nil)
         let prefsURL = container.appendingPathComponent(prefsFileName)
         if let data = try? JSONEncoder().encode(prefs) {
             try? data.write(to: prefsURL, options: .atomic)
@@ -255,7 +277,9 @@ final class LockScreenWallpaperService {
             WallpaperExtensionSocketServer.shared.clearDisplayVideos()
         }
 
-        notifyExtensionPrefsChanged()
+        if notify {
+            notifyExtensionPrefsChanged()
+        }
 
         print("[LockScreenWallpaper] ✅ 已清空锁屏镜像帧源缓存")
     }
@@ -419,8 +443,8 @@ final class LockScreenWallpaperService {
     func clearLockScreenInstances() {
         guard isAvailable else { return }
 
-        // 1. 清空视频缓存和偏好（包含 clearDisplayVideos、notifyExtensionPrefsChanged）
-        clearMirroringSourceCache()
+        // 1. 清空视频缓存和偏好，但先不要通知扩展，避免扩展在“半清理状态”下抢先刷新。
+        clearMirroringSourceCache(notify: false)
 
         // 2. 清空 Socket 服务端所有注册状态
         WallpaperExtensionSocketServer.shared.clearLocalDecodeVideos()
@@ -438,7 +462,7 @@ final class LockScreenWallpaperService {
         // 5. 自动关闭设置中的动态锁屏开关
         UserDefaults.standard.set(false, forKey: "dynamic_lock_screen_enabled")
 
-        // 6. 再次通知扩展刷新（此时所有状态已清理完毕）
+        // 6. 最后统一通知扩展刷新（此时所有状态已清理完毕）
         notifyExtensionPrefsChanged()
 
         print("[LockScreenWallpaper] ✅ 已彻底清理锁屏实例")
@@ -646,6 +670,7 @@ final class LockScreenWallpaperService {
         var alwaysPauseDesktop: Bool = false
         var currentVideoPath: String?
         var currentImagePath: String?
+        var currentRealtimeSourceKind: String?
         /// Per-display pause: displayID 集合
         var pausedDisplayIDs: Set<UInt32>?
         /// Per-display mute: displayID 集合

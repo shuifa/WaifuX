@@ -35,47 +35,51 @@ struct AnimeDetailSheet: View {
 
     // MARK: - 键盘快捷键
     @State private var keyboardMonitor: Any?
-    
+
     // 背景图状态管理
     @State private var backdropURL: String?
     @State private var isLoadingBackdrop = false
-    
+    /// 竖图模式下全分辨率图加载一次，供模糊延伸层与主图层共用
+    @State private var sharedPortraitImage: NSImage?
+    /// 竖图加载任务跟踪
+    @State private var portraitLoadTask: Task<Void, Never>?
+
     // 挤压动画配置
     private let squeezeThreshold: CGFloat = 80
     private let maxSqueezeOffset: CGFloat = 120
-    
+
     // 封面图 URL（备用）
     private var coverImageURL: URL? {
         anime.coverURL.flatMap { URL(string: $0) }
     }
-    
+
     var body: some View {
         GeometryReader { geometry in
             let _ = max(28, min(72, geometry.size.width * 0.05))
             let topBarTopInset = max(geometry.safeAreaInsets.top, 18)
             let bottomSafeInset = max(geometry.safeAreaInsets.bottom, 28)
-            
+
             let viewW = geometry.size.width
             let viewH = geometry.size.height
-            
+
             ZStack(alignment: .topLeading) {
                 // 深色背景
                 Color(hex: "0A0A0C")
                     .ignoresSafeArea()
                     .coordinateSpace(name: "scroll")
-                
+
                 // 背景图区域（包含双图叠加过渡）
                 if isVisible {
                     layeredBackgroundView(width: viewW, height: viewH)
                 }
-                
+
                 // 加载动画（仅在两张图都未加载完成时显示）
                 if !isImageLoaded {
                     LoadingOverlayView()
                         .frame(width: viewW, height: viewH)
                         .transition(.opacity.animation(.easeInOut(duration: 0.3)))
                 }
-                
+
                 // 叠在固定底图上的轻暗角
                 ZStack {
                     VStack {
@@ -98,14 +102,14 @@ struct AnimeDetailSheet: View {
                     }
                 }
                 .allowsHitTesting(false)
-                
+
                 // ScrollView 包含内容区域
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 0) {
                         // 顶部空白占位（让背景图显示）
                         Color.clear
                             .frame(height: detailScrollTopInset(viewportHeight: viewH, heroHidden: isHeroContentHidden))
-                        
+
                         // 内容区域
                         VStack(alignment: .leading, spacing: 24) {
                             // 底部留白（信息卡片已移除，简介在按钮下方）
@@ -134,7 +138,7 @@ struct AnimeDetailSheet: View {
                         topBarTopInset: topBarTopInset
                     )
                 }
-                
+
                 if showInfoBubble {
                     Color.black.opacity(0.001)
                         .ignoresSafeArea()
@@ -145,12 +149,12 @@ struct AnimeDetailSheet: View {
                             }
                         }
                 }
-                
+
                 floatingBackButton
                     .padding(.top, topBarTopInset + 18)
                     .padding(.leading, 28)
                     .zIndex(100)
-                
+
                 floatingInfoOverlay(
                     viewportWidth: viewW,
                     topBarTopInset: topBarTopInset
@@ -165,6 +169,7 @@ struct AnimeDetailSheet: View {
                 isVisible = true
             }
             loadBackdrop()
+            loadPortraitImage()
             setupKeyboardMonitor()
 
             // 加载规则数据
@@ -177,7 +182,7 @@ struct AnimeDetailSheet: View {
             removeKeyboardMonitor()
         }
     }
-    
+
     // MARK: - 键盘快捷键
 
     private func setupKeyboardMonitor() {
@@ -214,11 +219,11 @@ struct AnimeDetailSheet: View {
                 for: anime.displayTitle,
                 originalName: anime.originalName ?? anime.title
             )
-            
+
             await MainActor.run {
                 self.backdropURL = url
                 self.isLoadingBackdrop = false
-                
+
                 // 图片加载状态会在 AsyncImage 的 onAppear 中设置
                 withAnimation(.easeInOut(duration: 0.3)) {
                     self.isImageLoaded = true
@@ -226,13 +231,13 @@ struct AnimeDetailSheet: View {
             }
         }
     }
-    
+
     // MARK: - 背景视图
     /// 横图（TMDB backdrop）铺满整屏，竖图（Bangumi cover）完整缩放并做左右模糊延伸
     private func layeredBackgroundView(width: CGFloat, height viewH: CGFloat) -> some View {
         // 判断是否有横屏背景图
         let hasBackdrop = backdropURL != nil
-        
+
         return ZStack {
             if hasBackdrop {
                 // 横图模式：铺满整屏
@@ -241,7 +246,7 @@ struct AnimeDetailSheet: View {
                 // 竖图模式：完整显示+两侧模糊延伸
                 portraitBackground(width: width, height: viewH)
             }
-            
+
             // 渐变遮罩
             LinearGradient(
                 colors: [
@@ -252,7 +257,7 @@ struct AnimeDetailSheet: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-            
+
             Rectangle()
                 .fill(
                     RadialGradient(
@@ -271,7 +276,7 @@ struct AnimeDetailSheet: View {
         .clipped()
         .ignoresSafeArea()
     }
-    
+
     /// 横图背景：铺满整屏
     private func landscapeBackground(width: CGFloat, height: CGFloat) -> some View {
         ZStack {
@@ -296,18 +301,15 @@ struct AnimeDetailSheet: View {
                 .clipped()
         }
     }
-    
-    /// 竖图背景：完整缩放+两侧模糊延伸（参考 WallpaperDetailSheet）
+
+    /// 竖图背景：完整缩放+两侧模糊延伸（使用预加载的共享图片，两图层共用一次网络请求）
     private func portraitBackground(width: CGFloat, height: CGFloat) -> some View {
         ZStack {
             Color.black
 
-            // 左右延伸层：基于居中图做横向拉伸和模糊
-            if let coverURL = coverImageURL {
-                KFImage(coverURL)
-                    .cacheMemoryOnly(false)
-                    .fade(duration: 0.3)
-                    .placeholder { _ in Color.clear }
+            if let image = sharedPortraitImage {
+                // 左右延伸层：横向拉伸和模糊
+                Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(width: width, height: height)
@@ -329,29 +331,15 @@ struct AnimeDetailSheet: View {
                             endPoint: .trailing
                         )
                     )
-            }
 
-            // 主图：完整缩放展示
-            if let coverURL = coverImageURL {
-                KFImage(coverURL)
-                    .cacheMemoryOnly(false)
-                    .fade(duration: 0.3)
-                    .onSuccess { _ in
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            isImageLoaded = true
-                        }
-                    }
-                    .onFailure { _ in
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            isImageLoaded = true
-                        }
-                    }
-                    .placeholder { _ in Color.clear }
+                // 主图：完整缩放展示
+                Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(width: width, height: height)
                     .shadow(color: .black.opacity(0.32), radius: 42, y: 18)
             }
+            // 图片未加载时保持黑色背景（LoadingOverlay 覆盖期间不可见）
 
             // 左右暗角遮罩
             LinearGradient(
@@ -368,7 +356,45 @@ struct AnimeDetailSheet: View {
         }
         .frame(width: width, height: height, alignment: .center)
     }
-    
+
+    /// 竖图专用：通过 Kingfisher 下载/缓存一次全分辨率图，供两个图层共用
+    private func loadPortraitImage() {
+        guard let url = coverImageURL else { return }
+        portraitLoadTask?.cancel()
+        sharedPortraitImage = nil
+
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let screenSize = NSScreen.main?.frame.size ?? CGSize(width: 1512, height: 982)
+        let downsampleSize = CGSize(
+            width: max(screenSize.width, screenSize.height) * scale,
+            height: min(screenSize.width, screenSize.height) * scale
+        )
+
+        portraitLoadTask = Task {
+            do {
+                let result = try await KingfisherManager.shared.retrieveImage(
+                    with: url,
+                    options: [
+                        .processor(DownsamplingImageProcessor(size: downsampleSize)),
+                        .backgroundDecode
+                    ]
+                )
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    sharedPortraitImage = result.image
+                    isImageLoaded = true
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    isImageLoaded = true
+                }
+            }
+        }
+    }
+
     // MARK: - Hero Chrome
     private func fixedHeroChrome(viewportWidth: CGFloat, topBarTopInset: CGFloat) -> some View {
         // 计算挤压进度：0 表示未滚动，1 表示达到最大挤压
@@ -376,11 +402,11 @@ struct AnimeDetailSheet: View {
         let scaleY = 1 - (squeezeProgress * 0.15) // 最大挤压到 85%
         let offsetY = -squeezeProgress * maxSqueezeOffset * 0.3
         let opacity = 1 - (squeezeProgress * 0.3)
-        
+
         return VStack(spacing: 0) {
             Spacer()
                 .frame(height: max(topBarTopInset + 44, 68))
-            
+
             VStack(spacing: 18) {
                 if !isHeroContentHidden {
                     detailCategoryBadge
@@ -412,14 +438,14 @@ struct AnimeDetailSheet: View {
         .opacity(opacity)
         .animation(.easeOut(duration: 0.15), value: scrollOffset)
     }
-    
+
     private func detailScrollTopInset(viewportHeight: CGFloat, heroHidden: Bool) -> CGFloat {
         if heroHidden {
             return max(min(viewportHeight * 0.42, 380), 300)
         }
         return max(min(viewportHeight * 0.58, 520), 420)
     }
-    
+
     // MARK: - 返回按钮
     private var floatingBackButton: some View {
         Button {
@@ -434,11 +460,11 @@ struct AnimeDetailSheet: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     // MARK: - 信息浮层
     private func floatingInfoOverlay(viewportWidth: CGFloat, topBarTopInset: CGFloat) -> some View {
         let bubbleWidth = min(360, max(260, viewportWidth - 84))
-        
+
         return VStack(alignment: .trailing, spacing: 14) {
             HStack(spacing: 10) {
                 Button {
@@ -454,7 +480,7 @@ struct AnimeDetailSheet: View {
                         .detailGlassCircleChrome()
                 }
                 .buttonStyle(.plain)
-                
+
                 Button {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
                         isHeroContentHidden.toggle()
@@ -469,7 +495,7 @@ struct AnimeDetailSheet: View {
                 }
                 .buttonStyle(.plain)
             }
-            
+
             if showInfoBubble {
                 detailInfoBubble(width: bubbleWidth)
                     .transition(
@@ -485,7 +511,7 @@ struct AnimeDetailSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .zIndex(2)
     }
-    
+
     // MARK: - 中央信息区
     private var detailCategoryBadge: some View {
         Text("Anime · \(anime.typeDisplayName)")
@@ -496,7 +522,7 @@ struct AnimeDetailSheet: View {
             .frame(height: 34)
             .detailGlassCapsuleChrome(level: .prominent)
     }
-    
+
     // MARK: - 元数据胶囊
     private var metadataItems: [(label: String, value: String)] {
         var items: [(String, String)] = []
@@ -517,7 +543,7 @@ struct AnimeDetailSheet: View {
 
         return items
     }
-    
+
     private var metadataCapsules: some View {
         ForEach(Array(metadataItems.enumerated()), id: \.offset) { index, item in
             detailMetaCapsule(
@@ -527,7 +553,7 @@ struct AnimeDetailSheet: View {
             )
         }
     }
-    
+
     private func detailMetaCapsule(label: String, value: String, isLast: Bool = false) -> some View {
         HStack(spacing: 4) {
             Text(label)
@@ -542,14 +568,14 @@ struct AnimeDetailSheet: View {
         .detailGlassCapsuleChrome(level: .prominent)
         .padding(.trailing, isLast ? 0 : 8)
     }
-    
+
     // MARK: - 按钮行
     private var buttonRowWithDividers: some View {
         HStack(spacing: 16) {
             HStack(spacing: 16) {
                 dividerLine
                     .frame(width: 70)
-                
+
                 Button {
                     viewModel.toggleFavorite()
                 } label: {
@@ -562,7 +588,7 @@ struct AnimeDetailSheet: View {
                 }
                 .buttonStyle(.plain)
             }
-            
+
             Button {
                 AnimeWindowManager.shared.openPlayerWindow(for: anime, using: viewModel)
             } label: {
@@ -581,7 +607,7 @@ struct AnimeDetailSheet: View {
                 .detailPrimaryGlassButtonChrome()
             }
             .buttonStyle(.plain)
-            
+
             HStack(spacing: 16) {
                 Button {
                     // TODO: 分享
@@ -594,7 +620,7 @@ struct AnimeDetailSheet: View {
                         .detailGlassCircleChrome()
                 }
                 .buttonStyle(.plain)
-                
+
                 dividerLine
                     .frame(width: 70)
             }
@@ -603,7 +629,7 @@ struct AnimeDetailSheet: View {
         .padding(.top, 12)
         .glassContainer(spacing: 16)
     }
-    
+
     private var dividerLine: some View {
         Rectangle()
             .fill(
@@ -619,7 +645,7 @@ struct AnimeDetailSheet: View {
             )
             .frame(height: 1)
     }
-    
+
     // MARK: - 简介区域
     private func summarySection(summary: String) -> some View {
         Text(summary)
@@ -675,28 +701,28 @@ struct AnimeDetailSheet: View {
                 )
         )
     }
-    
+
     private func infoRow(label: String, value: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Text(label)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white.opacity(0.5))
                 .frame(width: 80, alignment: .leading)
-            
+
             Text(value)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.9))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
-    
+
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
             .font(.system(size: 13, weight: .bold))
             .foregroundStyle(.white.opacity(0.9))
             .tracking(1)
     }
-    
+
     // MARK: - 信息气泡
     private func detailInfoBubble(width: CGFloat) -> some View {
         DetailGlassPopoverCard(width: width, maxHeight: 460, variant: .dark) {
@@ -705,13 +731,13 @@ struct AnimeDetailSheet: View {
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.96))
                     .lineLimit(2)
-                
+
                 Text("Anime · TV Series")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.62))
                     .tracking(0.6)
             }
-            
+
             if let tags = anime.tags, !tags.isEmpty {
                 FlowLayout(spacing: 8) {
                     ForEach(tags.prefix(8)) { tag in
@@ -725,9 +751,9 @@ struct AnimeDetailSheet: View {
                 }
                 .glassContainer(spacing: 10)
             }
-            
+
             dividerLine.opacity(0.7)
-            
+
             // 简要信息 - 优先使用 Bangumi 详情中的简介
             let summary = viewModel.bangumiDetail?.summary ?? anime.summary
             if let summary = summary, !summary.isEmpty {
@@ -742,12 +768,12 @@ struct AnimeDetailSheet: View {
 private struct LoadingOverlayView: View {
     @State private var isAnimating = false
     @State private var rotationAngle: Double = 0
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0C")
                 .ignoresSafeArea()
-            
+
             VStack(spacing: 24) {
                 // 加载指示器
                 ZStack {
@@ -766,7 +792,7 @@ private struct LoadingOverlayView: View {
                             lineWidth: 3
                         )
                         .frame(width: 48, height: 48)
-                    
+
                     // 旋转的弧线
                     Circle()
                         .trim(from: 0, to: 0.7)
@@ -790,7 +816,7 @@ private struct LoadingOverlayView: View {
                         rotationAngle = 360
                     }
                 }
-                
+
                 // 加载文本
                 Text(t("loading"))
                     .font(.system(size: 14, weight: .medium))
@@ -805,7 +831,7 @@ private struct LoadingOverlayView: View {
 /// 内容少时不滚动，内容多时才滚动
 private struct AdaptiveScrollView: View {
     let content: String
-    
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             Text(content)

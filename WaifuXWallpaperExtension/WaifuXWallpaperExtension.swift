@@ -152,6 +152,7 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             PowerMonitor.shared.startMonitoring()
             observePowerStateChanges()
             observeSocketCommands()
+            observeSocketCommandNotifications()
         } else {
             let err = String(cString: dlerror())
             extLog("INIT — dlopen failed: \(err)")
@@ -283,6 +284,24 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
         extLog("[Extension] Socket command polling started")
     }
 
+    private func observeSocketCommandNotifications() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        CFNotificationCenterAddObserver(
+            center,
+            observer,
+            { _, _, _, _, _ in
+                DispatchQueue.main.async {
+                    WaifuXWallpaperExtension.drainPendingSocketCommands(reason: "commandsChanged")
+                }
+            },
+            "com.waifux.app.wallpaper.commandsChanged" as CFString,
+            nil,
+            .deliverImmediately
+        )
+        extLog("[Extension] Socket command notification observer started")
+    }
+
     static func drainPendingSocketCommands(reason: String) {
         var handledCount = 0
         for _ in 0..<16 {
@@ -359,6 +378,8 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                 if FileManager.default.fileExists(atPath: path) {
                     WallpaperState.shared.cachedVideoURL = url
                     WallpaperState.shared.cachedImageURL = nil
+                    WallpaperState.shared.removeIOSurfaceRenderer(for: displayID)
+                    FrameChannel.shared.unregisterCallback(displayID: displayID)
                     if let renderer = WallpaperState.shared.renderer(for: displayID) {
                         renderer.replaceVideo(with: url)
                         _ = WallpaperState.shared.replaceContextRenderer(displayID: displayID, renderer: renderer, videoID: videoID)
@@ -367,7 +388,7 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                             WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: active.rootLayer)
                         }
                         extLog("[Commands] ✅ 已热切换显示器 \(displayID) 到视频: \(videoID)")
-                    } else if let active = WallpaperState.shared.activeContext(for: displayID) {
+                    } else if let active = WallpaperState.shared.activeContextForCommand(displayID: displayID) {
                         // handleSocketCommand 始终在主线程调用，rootLayer 在此之后
                         // 不会被其他线程修改，使用 nonisolated(unsafe) 绕过严格的 Sendable 检查。
                         nonisolated(unsafe) let rootLayer = active.rootLayer
@@ -375,9 +396,11 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                         // 需要在主线程执行，否则视频不会动画（displayLayer 无帧输出）。
                         Task { @MainActor in
                             do {
+                                WallpaperState.shared.removeIOSurfaceRenderer(for: displayID)
+                                FrameChannel.shared.unregisterCallback(displayID: displayID)
                                 rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
                                 let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: url)
-                                let oldRenderer = WallpaperState.shared.replaceContextRenderer(displayID: displayID, renderer: renderer, videoID: videoID)
+                                let oldRenderer = WallpaperState.shared.replaceContextRendererForCommand(displayID: displayID, renderer: renderer, videoID: videoID)
                                 oldRenderer?.stop()
                                 renderer.start()
                                 WallpaperPrefs.shared.updateCurrentVideo()

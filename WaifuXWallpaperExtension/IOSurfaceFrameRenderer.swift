@@ -59,6 +59,7 @@ final class IOSurfaceFrameRenderer: @unchecked Sendable {
         displayLayer.videoGravity = .resize  // frame 已匹配显示尺寸，直接拉伸填满
         displayLayer.frame = rootLayer.bounds
         displayLayer.contentsScale = rootLayer.contentsScale
+        displayLayer.isHidden = true
         rootLayer.addSublayer(displayLayer)
 
         let renderer = IOSurfaceFrameRenderer(displayID: displayID, displayLayer: displayLayer)
@@ -211,19 +212,19 @@ final class IOSurfaceFrameRenderer: @unchecked Sendable {
         renderer.enqueue(sampleBuffer)
         if !hasLoggedFirstEnqueue {
             hasLoggedFirstEnqueue = true
-        // 首帧到达时检查 layer 是否因 fallback 被隐藏，若是则恢复显示
-        if displayLayer.isHidden {
-            displayLayer.isHidden = false
-            // 清理父层上非本渲染器的 sublayer（本地回退 VideoRenderer 留下的）
+            // 首帧到达时清理静态 fallback，让 IOSurface 动态层接管显示。
             if let parent = displayLayer.superlayer {
+                parent.contents = nil
                 for sub in parent.sublayers ?? [] {
                     if sub !== displayLayer, sub is AVSampleBufferDisplayLayer {
                         sub.removeFromSuperlayer()
                     }
                 }
             }
-            extLog("[IOSurfaceRenderer] 🔄 首帧到达，已恢复 IOSurface 层并清理回退 layer display=\\(displayID)")
-        }
+            if displayLayer.isHidden {
+                displayLayer.isHidden = false
+            }
+            extLog("[IOSurfaceRenderer] 🔄 首帧到达，已清理静态底图并恢复 IOSurface 层 display=\(displayID)")
             extLog("[IOSurfaceRenderer] 首帧已入队 display=\(displayID) pts=\(timestamp.seconds)")
         }
 

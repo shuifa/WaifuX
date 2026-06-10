@@ -2,6 +2,23 @@ import SwiftUI
 import Kingfisher
 import QuartzCore
 
+actor WallpaperForegroundImageLoadLimiter {
+    static let shared = WallpaperForegroundImageLoadLimiter()
+
+    private let maxConcurrentLoads = 4
+    private var activeLoads = 0
+
+    func tryAcquire() -> Bool {
+        guard activeLoads < maxConcurrentLoads else { return false }
+        activeLoads += 1
+        return true
+    }
+
+    func release() {
+        activeLoads = max(0, activeLoads - 1)
+    }
+}
+
 @MainActor
 enum WallpaperExploreScrollActivity {
     private static let idleDelay: CFTimeInterval = 0.22
@@ -37,6 +54,7 @@ struct WallpaperCardView: View {
     @State private var isHovered = false
     @State private var hasStartedImageLoading = false
     @State private var deferredImageLoadTask: Task<Void, Never>?
+    @State private var holdsForegroundLoadPermit = false
 
     static let bottomBarHeight: CGFloat = 46
     private static let maxAspectRatioClamp: ClosedRange<CGFloat> = 0.35...3.6
@@ -139,6 +157,7 @@ struct WallpaperCardView: View {
         .onDisappear {
             deferredImageLoadTask?.cancel()
             deferredImageLoadTask = nil
+            releaseForegroundLoadPermitIfNeeded()
         }
     }
 
@@ -146,6 +165,25 @@ struct WallpaperCardView: View {
         guard !hasStartedImageLoading else { return }
         deferredImageLoadTask?.cancel()
 
+        if AppResponsivenessMonitor.isForegroundSettling {
+            deferredImageLoadTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    if await WallpaperForegroundImageLoadLimiter.shared.tryAcquire() {
+                        holdsForegroundLoadPermit = true
+                        break
+                    }
+                    try? await Task.sleep(nanoseconds: 80_000_000)
+                }
+                guard !Task.isCancelled else { return }
+                beginImageLoadingAfterGuards()
+            }
+            return
+        }
+
+        beginImageLoadingAfterGuards()
+    }
+
+    private func beginImageLoadingAfterGuards() {
         if !WallpaperExploreScrollActivity.isActive {
             hasStartedImageLoading = true
             return
@@ -158,6 +196,14 @@ struct WallpaperCardView: View {
                 hasStartedImageLoading = true
             }
             deferredImageLoadTask = nil
+        }
+    }
+
+    private func releaseForegroundLoadPermitIfNeeded() {
+        guard holdsForegroundLoadPermit else { return }
+        holdsForegroundLoadPermit = false
+        Task {
+            await WallpaperForegroundImageLoadLimiter.shared.release()
         }
     }
 
@@ -187,6 +233,12 @@ struct WallpaperCardView: View {
                 .memoryCacheExpiration(.seconds(300))
                 .diskCacheExpiration(.days(7))
                 .placeholder { imagePlaceholder }
+                .onSuccess { _ in
+                    releaseForegroundLoadPermitIfNeeded()
+                }
+                .onFailure { _ in
+                    releaseForegroundLoadPermitIfNeeded()
+                }
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(width: cardWidth, height: imageHeight)

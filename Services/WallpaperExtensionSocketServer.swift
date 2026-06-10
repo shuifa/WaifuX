@@ -15,6 +15,7 @@ import os
 
 private let appLog = OSLog(subsystem: "com.waifux.app", category: "ExtensionIPC")
 private let appWillTerminateNotificationName = "com.waifux.app.wallpaper.appWillTerminate"
+private let commandsChangedNotificationName = "com.waifux.app.wallpaper.commandsChanged"
 
 // MARK: - IPC 协议类型（与服务端兼容）
 
@@ -117,6 +118,18 @@ final class WallpaperExtensionSocketServer: @unchecked Sendable {
         }
         cmdLock.withLock { $0.append(command) }
         os_log(.info, log: appLog, "入队命令: %@ display=%d gen=%llu", command.action, command.displayID ?? 0, generation)
+        notifyCommandsChanged()
+    }
+
+    private func notifyCommandsChanged() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        CFNotificationCenterPostNotification(
+            center,
+            CFNotificationName(commandsChangedNotificationName as CFString),
+            nil,
+            nil,
+            true
+        )
     }
 
     /// 清空所有挂起命令。

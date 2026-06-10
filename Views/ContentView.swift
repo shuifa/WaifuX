@@ -253,6 +253,17 @@ struct ContentView: View {
             globalOverlayLayer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            AppResponsivenessMonitor.noteTabChange(navigationState.selectedTab.title)
+            AppResponsivenessMonitor.noteDetailDepth(detailPath.count)
+            AppResponsivenessMonitor.noteScenePhase("contentViewVisible")
+        }
+        .onChange(of: navigationState.selectedTab) { _, tab in
+            AppResponsivenessMonitor.noteTabChange(tab.title)
+        }
+        .onChange(of: detailPath.count) { _, depth in
+            AppResponsivenessMonitor.noteDetailDepth(depth)
+        }
         .onChange(of: navigationState.selectedWallpaper) { _, wallpaper in
             guard let wallpaper else { return }
             openDetail(.wallpaper(wallpaper, context: nil))

@@ -214,6 +214,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppResponsivenessMonitor.startIfNeeded()
+        AppResponsivenessMonitor.noteScenePhase("didFinishLaunching")
+        AppResponsivenessMonitor.noteAppActive(NSApp.isActive)
         // ⚠️ ⚠️ 关键：所有 UserDefaults 读取都必须在 applicationDidFinishLaunching 中延迟恢复！
         // 绝对不能在任何单例 init() 中读 UserDefaults，macOS 26+ 会触发 _CFXPreferences
         // 隐式递归导致主线程栈溢出崩溃（EXC_BAD_ACCESS SIGSEGV, 174K 层递归）
@@ -297,10 +300,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // 动态壁纸恢复在 restoreAllDataAsync 中完成
             // 设置激活策略为 .accessory（无 Dock 图标和菜单栏）
             NSApp.setActivationPolicy(.accessory)
+            AppResponsivenessMonitor.noteWindowVisible(false)
+            AppResponsivenessMonitor.noteScenePhase("loginLaunchHidden")
         } else {
             // ⚠️ 关键：立即显示窗口，不要等待
             window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            AppResponsivenessMonitor.noteWindowVisible(true)
+            AppResponsivenessMonitor.noteScenePhase("mainWindowVisible")
         }
 
         // ⚠️ 关键：让出主线程，让 SwiftUI 完成首次布局渲染
@@ -427,10 +434,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        AppResponsivenessMonitor.noteAppActive(true)
+        AppResponsivenessMonitor.noteScenePhase("didBecomeActive")
+        AppResponsivenessMonitor.noteForegroundActivation(reason: "applicationDidBecomeActive")
         guard !isDynamicWallpaperRendering else { return }
         // 备用同步：当应用重新变为活跃时，检查并同步跨 Space 壁纸
         // 因为 activeSpaceDidChangeNotification 在应用后台时可能不可靠
         DesktopWallpaperSyncManager.shared.syncOnAppActivation()
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        AppResponsivenessMonitor.noteAppActive(false)
+        AppResponsivenessMonitor.noteScenePhase("didResignActive")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -511,11 +526,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+        AppResponsivenessMonitor.noteWindowVisible(true)
+        AppResponsivenessMonitor.noteScenePhase("showMainWindow")
     }
 
     func hideMainWindow() {
         DynamicWallpaperAutoPauseManager.shared.suppressForegroundPauseForMainWindowHide()
         window?.orderOut(nil)
+        AppResponsivenessMonitor.noteWindowVisible(false)
+        AppResponsivenessMonitor.noteScenePhase("hideMainWindow")
 
         // 主窗口隐藏后尽快卸载前台视图树，后台只保留状态栏、动态壁纸、调度器和下载任务。
         delayedReleaseTask?.cancel()
@@ -579,6 +598,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func releaseForegroundResourcesForHiddenWindow(_ window: NSWindow) {
+        AppResponsivenessMonitor.noteScenePhase("releaseForegroundResources")
         // 窗口隐藏时锁定所有加密文件夹
         FolderLockService.shared.lockAllFolders()
 
@@ -910,10 +930,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return (app, executableURL.path)
         }
         for stale in staleApps {
-            if stale.app.terminate() {
+            let pid = stale.app.processIdentifier
+            let sentTerminate = stale.app.terminate()
+            let didExit = waitForProcessExit(pid: pid, timeout: 2.0)
+            if sentTerminate, didExit {
                 print("[WaifuXApp] Terminated stale wallpaper extension process: \(stale.path)")
+            } else if sentTerminate {
+                let forced = forceKillProcessIfNeeded(pid: pid, label: stale.path)
+                print("[WaifuXApp] Stale wallpaper extension required force kill: \(stale.path), forced=\(forced)")
             } else {
-                print("[WaifuXApp] Failed to terminate stale wallpaper extension process: \(stale.path)")
+                let forced = forceKillProcessIfNeeded(pid: pid, label: stale.path)
+                print("[WaifuXApp] Failed to terminate stale wallpaper extension process gracefully: \(stale.path), forced=\(forced)")
             }
         }
     }
@@ -938,11 +965,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
 
             if kill(pid, SIGTERM) == 0 {
-                print("[WaifuXApp] Terminated stale wallpaper extension pid=\(pid): \(command)")
+                if waitForProcessExit(pid: pid, timeout: 2.0) {
+                    print("[WaifuXApp] Terminated stale wallpaper extension pid=\(pid): \(command)")
+                } else {
+                    let forced = forceKillProcessIfNeeded(pid: pid, label: command)
+                    print("[WaifuXApp] Stale wallpaper extension pid=\(pid) required force kill: forced=\(forced) command=\(command)")
+                }
             } else {
                 print("[WaifuXApp] Failed to terminate stale wallpaper extension pid=\(pid): errno=\(errno)")
             }
         }
+    }
+
+    private func waitForProcessExit(pid: pid_t, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while kill(pid, 0) == 0 && Date() < deadline {
+            usleep(100_000)
+        }
+        return kill(pid, 0) != 0
+    }
+
+    @discardableResult
+    private func forceKillProcessIfNeeded(pid: pid_t, label: String) -> Bool {
+        guard kill(pid, 0) == 0 else { return true }
+        guard kill(pid, SIGKILL) == 0 else {
+            print("[WaifuXApp] Failed to SIGKILL stale wallpaper extension pid=\(pid): errno=\(errno) label=\(label)")
+            return false
+        }
+        let didExit = waitForProcessExit(pid: pid, timeout: 1.0)
+        if !didExit {
+            print("[WaifuXApp] SIGKILL sent but process still present pid=\(pid) label=\(label)")
+        }
+        return didExit
     }
 
     private func runRegistrationTool(_ launchPath: String, arguments: [String], label: String) {

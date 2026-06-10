@@ -2,13 +2,12 @@ import Foundation
 
 // MARK: - 壁纸动态文本解析器
 //
-// 从 scene.json 中提取文本对象，检测时钟/日期行为，输出 sidecar JSON。
-// 替代旧 `lw_renderer_get_dynamic_texts_json()` C API 的纯 Swift 方案。
+// 只读取烘焙视频同目录的动态文本 sidecar JSON。
+// 动态文本真实渲染数据来自 renderer 写出的 SceneBakes/*.json，不从原始 scene/pkg 推断。
 //
 // ═══════════════════════════════════════════════════════════
 // 使用场景：
-//   烘焙完成后 → parseSceneJSON() → 检测是否有时钟/日期文本
-//   → 有则写入 sidecar JSON → 播放时读取 → 决定是否显示 clock overlay
+//   播放烘焙视频 → 读取同名 sidecar JSON → 决定是否显示 dynamic text overlay
 // ═══════════════════════════════════════════════════════════
 
 public struct DynamicTextEntry: Codable, Equatable, Sendable {
@@ -21,10 +20,18 @@ public struct DynamicTextEntry: Codable, Equatable, Sendable {
     /// 设计时文本值
     public let value: String?
     /// 是否可见
-    public let visible: Bool
+    public var visible: Bool
     /// 格式字符串，如 "hh"（时）、"mm"（分）、"ss"（秒）、"hh:mm"（完整时间）
     /// 从 text.scriptproperties.format 提取；nil 表示未知（回退到完整时间 "HH:mm"）
     public var format: String? = nil
+    /// renderer sidecar 中实际应用过的 scriptProperties。用于 Swift overlay 重新执行脚本时
+    /// 继承真实语言/格式配置，而不是脚本声明的默认值。
+    public var scriptPropertiesJSON: String? = nil
+    /// 设计层运行时文本覆盖：只影响 Swift overlay 重新执行脚本，不改 sidecar 底稿字段。
+    public var runtimeBehaviorOverride: String? = nil
+    public var runtimeScriptOverride: String? = nil
+    public var runtimeScriptPropertiesJSONOverride: String? = nil
+    public var runtimeLanguageCodeOverride: String? = nil
 
     /// C++ V8 引擎执行脚本后的实际文本内容（优先于 value 使用）
     public var resolvedText: String? = nil
@@ -33,6 +40,7 @@ public struct DynamicTextEntry: Codable, Equatable, Sendable {
 
     /// renderer sidecar 中的原始文本对象字段（用于按 Wallpaper Engine 场景坐标恢复 overlay）。
     public var id: String? = nil
+    public var parentID: String? = nil
     public var x: Double? = nil
     public var y: Double? = nil
     public var originX: Double? = nil
@@ -72,6 +80,8 @@ public struct WallpaperDynamicTextsInfo: Codable, Equatable, Sendable {
     public let hasDynamicText: Bool
     /// 具体行为列表
     public let entries: [DynamicTextEntry]
+    /// 原始场景壁纸路径（legacy renderer sidecar 会带出）
+    public var wallpaperPath: String? = nil
     /// renderer sidecar 的场景尺寸，用于将 scene 坐标映射到当前屏幕。
     public var sceneWidth: Double? = nil
     public var sceneHeight: Double? = nil
@@ -88,118 +98,6 @@ public struct WallpaperDynamicTextsInfo: Codable, Equatable, Sendable {
 // MARK: - 解析器
 
 public enum WallpaperDynamicTextParser {
-
-    /// 从 scene.json 解析出动态文本信息
-    public static func extract(from sceneJSON: URL) throws -> WallpaperDynamicTextsInfo {
-        let data = try Data(contentsOf: sceneJSON)
-        guard let scene = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return .empty
-        }
-        return extract(from: scene)
-    }
-
-    /// 从 scene.pkg 中提取 scene.json 再解析
-    public static func extract(fromPkg pkgURL: URL) throws -> WallpaperDynamicTextsInfo {
-        let sceneData = try extractSceneJSONFromPkg(pkgURL)
-        guard let scene = try JSONSerialization.jsonObject(with: sceneData) as? [String: Any] else {
-            return .empty
-        }
-        return extract(from: scene)
-    }
-
-    /// 从已解析的 scene dict 中提取
-    public static func extract(from scene: [String: Any]) -> WallpaperDynamicTextsInfo {
-        guard let objects = scene["objects"] as? [[String: Any]] else {
-            return .empty
-        }
-
-        var entries: [DynamicTextEntry] = []
-
-        for obj in objects {
-            // 检测文本对象：scene.json 可能用 "text"（旧格式）或 "textProperties"（新格式）
-            // 且不一定有明确的 "type": "text" 字段
-            let textObj: [String: Any]?
-            if let tp = obj["textProperties"] as? [String: Any] {
-                textObj = tp
-            } else if let t = obj["text"] as? [String: Any] {
-                textObj = t
-            } else if let type = obj["type"] as? String, type.lowercased() == "text",
-                      let tp = obj["textProperties"] as? [String: Any] {
-                textObj = tp
-            } else {
-                textObj = nil
-            }
-            guard let tp = textObj else { continue }
-
-            let name = (obj["name"] as? String) ?? ""
-            let script = tp["script"] as? String
-            let value = tp["value"] as? String
-            let visible = (obj["visible"] as? Bool) ?? true
-
-            // 提取格式：scriptproperties / scriptProperties 中的 format 字段
-            let format: String?
-            if let sp = tp["scriptproperties"] as? [String: Any],
-               let f = sp["format"] as? String {
-                format = f
-            } else if let sp = tp["scriptProperties"] as? [String: Any],
-                      let f = sp["format"] as? String {
-                format = f
-            } else {
-                format = nil
-            }
-
-            let behavior = detectBehavior(name: name, script: script, format: format)
-            // 不再过滤 "unknown" 行为：所有可见文本对象都应保留到 overlay 中，
-            // 即使无法检测行为类型。renderedText 的 default 分支会显示原始 value。
-            var entry = DynamicTextEntry(
-                behavior: behavior,
-                name: name,
-                script: script,
-                value: value,
-                visible: visible,
-                format: format
-            )
-            // 从 scene.json 对象层读取位置/变换信息
-            entry.id = obj["id"] as? String
-            entry.x = readDouble(obj["x"])
-            entry.y = readDouble(obj["y"])
-            entry.originX = readDouble(obj["originX"])
-            entry.originY = readDouble(obj["originY"])
-            entry.finalOriginX = readDouble(obj["finalOriginX"] ?? obj["originX"])
-            entry.finalOriginY = readDouble(obj["finalOriginY"] ?? obj["originY"])
-            entry.finalX = readDouble(obj["finalX"] ?? obj["x"])
-            entry.finalY = readDouble(obj["finalY"] ?? obj["y"])
-            entry.width = readDouble(obj["width"])
-            entry.height = readDouble(obj["height"])
-            entry.maxWidth = readDouble(obj["maxWidth"])
-            entry.scaleX = readDouble(obj["scaleX"])
-            entry.scaleY = readDouble(obj["scaleY"])
-            entry.finalScaleX = readDouble(obj["finalScaleX"] ?? obj["scaleX"])
-            entry.finalScaleY = readDouble(obj["finalScaleY"] ?? obj["scaleY"])
-            entry.rotation = readDouble(obj["rotation"])
-            entry.finalAngle = readDouble(obj["finalAngle"] ?? obj["rotation"])
-            // 从 textProperties 层读取字体/颜色
-            entry.fontFamily = (tp["font"] as? String) ?? (tp["fontFamily"] as? String)
-            entry.fontSize = readDouble(tp["fontSize"] ?? tp["size"])
-            entry.effectiveFontSize = readDouble(tp["effectiveFontSize"])
-            entry.fontPath = tp["fontPath"] as? String
-            entry.color = tp["color"] as? [Double] ?? (tp["color"] as? [NSNumber])?.map(\.doubleValue)
-            entry.alpha = readDouble(tp["alpha"])
-            entry.alignment = (tp["align"] as? String) ?? (tp["alignment"] as? String)
-            if let renderOrder = readDouble(obj["renderOrder"]) {
-                entry.renderOrder = Int(renderOrder)
-            }
-            entries.append(entry)
-        }
-
-        return WallpaperDynamicTextsInfo(
-            hasDynamicText: !entries.isEmpty,
-            entries: entries,
-            sceneWidth: readDouble(scene["width"]),
-            sceneHeight: readDouble(scene["height"]),
-            extractedAt: Date()
-        )
-    }
 
     // MARK: - 行为检测
 
@@ -233,6 +131,10 @@ public enum WallpaperDynamicTextParser {
 
         let lowerName = name.lowercased().replacingOccurrences(of: " ", with: "")
         let lowerScript = (script ?? "").lowercased()
+
+        if isDateTimeWeekdayScript(name: lowerName, script: lowerScript) {
+            return "weekday"
+        }
 
         // 时钟：script 含 hour/minute/second 或名称暗示（支持中文）
         let isClock = lowerScript.contains("hour") || lowerScript.contains("minute")
@@ -277,32 +179,19 @@ public enum WallpaperDynamicTextParser {
         return "unknown"
     }
 
-    // MARK: - Sidecar 文件管理
-
-    /// 从 JSON 值读取 Double（兼容 NSNumber / Double / Int）
-    private static func readDouble(_ value: Any?) -> Double? {
-        switch value {
-        case let d as Double: return d
-        case let f as Float: return Double(f)
-        case let i as Int: return Double(i)
-        case let n as NSNumber: return n.doubleValue
-        case let s as String: return Double(s.trimmingCharacters(in: .whitespacesAndNewlines))
-        default: return nil
-        }
+    private static func isDateTimeWeekdayScript(name: String, script: String) -> Bool {
+        guard name.contains("day") && name.contains("date") else { return false }
+        let hasWeekdayArray = script.contains("day = [") || script.contains("day=[")
+        let returnsWeekdayOnly = script.contains("showday == true") || script.contains("showday==true")
+        let hasClockLogic = script.contains("gethours") || script.contains("hours =") || script.contains("minute")
+        return hasWeekdayArray && returnsWeekdayOnly && !hasClockLogic
     }
+
+    // MARK: - Sidecar 文件管理
 
     /// Sidecar JSON 路径约定：与 MP4 同目录同名 .json
     public static func sidecarPath(for videoURL: URL) -> URL {
         videoURL.deletingPathExtension().appendingPathExtension("json")
-    }
-
-    /// 保存 sidecar JSON
-    public static func saveSidecar(_ info: WallpaperDynamicTextsInfo, for videoURL: URL) throws {
-        let url = sidecarPath(for: videoURL)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(info)
-        try data.write(to: url)
     }
 
     /// 读取 sidecar JSON
@@ -350,6 +239,7 @@ private extension WallpaperDynamicTextParser {
                 return WallpaperDynamicTextsInfo(
                     hasDynamicText: explicitHasDynamicText,
                     entries: legacyEntries(from: dict["entries"] ?? dict["texts"] ?? dict["dynamicTexts"]),
+                    wallpaperPath: legacyString(dict["wallpaperPath"]),
                     sceneWidth: sceneWidth,
                     sceneHeight: sceneHeight,
                     extractedAt: Date()
@@ -371,6 +261,7 @@ private extension WallpaperDynamicTextParser {
         return WallpaperDynamicTextsInfo(
             hasDynamicText: !inferredEntries.isEmpty || (isRendererDynamicTextList && !textObjects.isEmpty),
             entries: inferredEntries,
+            wallpaperPath: legacyString((json as? [String: Any])?["wallpaperPath"]),
             sceneWidth: sceneWidth,
             sceneHeight: sceneHeight,
             extractedAt: Date()
@@ -412,10 +303,12 @@ private extension WallpaperDynamicTextParser {
             visible: legacyBool(object["visible"]) ?? true,
             format: format
         )
+        entry.scriptPropertiesJSON = jsonString(from: object["scriptproperties"] ?? object["scriptProperties"])
         // 读取 C++ V8 已解析的文本结果
         entry.resolvedText = legacyString(object["value"])
         entry.rasterHeight = legacyDouble(object["rasterHeight"])
         entry.id = legacyString(object["id"])
+        entry.parentID = legacyString(object["parentID"] ?? object["parent"])
         entry.x = legacyDouble(object["x"])
         entry.y = legacyDouble(object["y"])
         entry.originX = legacyDouble(object["originX"])
@@ -565,51 +458,15 @@ private extension WallpaperDynamicTextParser {
             return nil
         }
     }
-}
 
-// MARK: - PKG 解析（复用 SceneBakeEligibilityService 逻辑）
-
-private extension WallpaperDynamicTextParser {
-
-    static func extractSceneJSONFromPkg(_ pkgURL: URL) throws -> Data {
-        let data = try Data(contentsOf: pkgURL)
-        var o = 0
-        let slen = try readU32LE(data, &o)
-        guard o + Int(slen) <= data.count else { throw PkgError.truncated }
-        o += Int(slen)
-        let nfiles = try readU32LE(data, &o)
-        var entries: [(name: String, offset: UInt32, length: UInt32)] = []
-        for _ in 0..<Int(nfiles) {
-            let es = try readU32LE(data, &o)
-            guard o + Int(es) <= data.count else { throw PkgError.truncated }
-            let nameData = data.subdata(in: o..<o + Int(es))
-            o += Int(es)
-            let name = String(data: nameData, encoding: .utf8) ?? ""
-            let fileOff = try readU32LE(data, &o)
-            let fileLen = try readU32LE(data, &o)
-            entries.append((name, fileOff, fileLen))
+    static func jsonString(from value: Any?) -> String? {
+        guard let value,
+              JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8),
+              !json.isEmpty else {
+            return nil
         }
-        let base = o
-        for e in entries {
-            if e.name == "scene.json" || e.name.hasSuffix("/scene.json") {
-                let start = base + Int(e.offset)
-                let end = start + Int(e.length)
-                guard end <= data.count else { throw PkgError.truncated }
-                return data.subdata(in: start..<end)
-            }
-        }
-        throw PkgError.sceneNotFound
-    }
-
-    static func readU32LE(_ data: Data, _ o: inout Int) throws -> UInt32 {
-        guard o + 4 <= data.count else { throw PkgError.truncated }
-        let v = UInt32(data[o]) | (UInt32(data[o + 1]) << 8) | (UInt32(data[o + 2]) << 16) | (UInt32(data[o + 3]) << 24)
-        o += 4
-        return v
-    }
-
-    enum PkgError: Error {
-        case truncated
-        case sceneNotFound
+        return json
     }
 }

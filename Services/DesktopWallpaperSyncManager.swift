@@ -31,6 +31,10 @@ final class DesktopWallpaperSyncManager {
     /// 用于 Space 切换的 debounce，快速连续切换时只保留最后一次
     private var pendingSyncWorkItem: DispatchWorkItem?
     private var pendingScreenChangeWorkItem: DispatchWorkItem?
+    private var pendingActivationSyncWorkItem: DispatchWorkItem?
+    /// 标记“应用重新激活时确实需要做一次恢复性同步”。
+    /// 仅在显示器参数变化/系统唤醒等场景置为 true，避免普通前后台切换也去重写桌面壁纸。
+    private var requiresActivationRecoverySync = false
 
     private init() {
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -103,7 +107,24 @@ final class DesktopWallpaperSyncManager {
 
     /// 应用变为活跃时的备用同步入口（处理 activeSpaceDidChangeNotification 丢失的情况）
     func syncOnAppActivation() {
-        performSync(source: "appActivation")
+        let screenCount = NSScreen.screens.count
+        if screenCount <= 1, !requiresActivationRecoverySync {
+            AppLogger.debug(.ui, "Desktop wallpaper activation sync skipped", metadata: [
+                "reason": "singleDisplayNoRecoveryNeeded",
+                "screenCount": screenCount
+            ])
+            return
+        }
+
+        pendingActivationSyncWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.performSync(source: "appActivation")
+            self.requiresActivationRecoverySync = false
+        }
+        pendingActivationSyncWorkItem = workItem
+        // 激活应用的首帧优先给 UI；桌面跨 Space 同步延后一拍，避免把窗口唤醒卡在主线程上。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: workItem)
     }
 
     @objc private func handleActiveSpaceChanged() {
@@ -120,6 +141,7 @@ final class DesktopWallpaperSyncManager {
     @objc private func handleScreenParametersChanged() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.requiresActivationRecoverySync = true
             // 防抖：延迟 0.5s 执行
             self.pendingScreenChangeWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
@@ -140,6 +162,7 @@ final class DesktopWallpaperSyncManager {
         // performSync 内部有 0.5s 防抖，重复同步会被自动跳过。
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.requiresActivationRecoverySync = true
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.relinkScreenStateForCurrentDisplays()
@@ -159,6 +182,7 @@ final class DesktopWallpaperSyncManager {
         // 屏幕唤醒后延迟同步（不 cancel pendingScreenChangeWorkItem，理由同上）
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.requiresActivationRecoverySync = true
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.relinkScreenStateForCurrentDisplays()
@@ -202,6 +226,7 @@ final class DesktopWallpaperSyncManager {
 
     /// 执行实际同步逻辑
     private func performSync(source: String) {
+        let start = Date()
         // 防抖动：避免短时间内多次同步（Space 切换通常不会连续触发）
         if let last = lastSyncTime, Date().timeIntervalSince(last) < minimumSyncInterval {
             print("[DesktopWallpaperSyncManager] Skipping sync from '\(source)' (too soon)")
@@ -210,6 +235,15 @@ final class DesktopWallpaperSyncManager {
         lastSyncTime = Date()
 
         let videoManager = VideoWallpaperManager.shared
+        let hasStaticRegistrations = !lastSetImageURLByScreen.isEmpty || !lastSetImageURLByFingerprint.isEmpty
+        let hasDynamicWallpaper = videoManager.isVideoWallpaperActive
+        guard hasStaticRegistrations || hasDynamicWallpaper else {
+            AppLogger.debug(.ui, "Desktop wallpaper sync skipped", metadata: [
+                "source": source,
+                "reason": "noRegisteredWallpaperState"
+            ])
+            return
+        }
 
         let workspace = NSWorkspace.shared
         let currentScreens = NSScreen.screens
@@ -220,6 +254,7 @@ final class DesktopWallpaperSyncManager {
             }
             return false
         }()
+        var syncWrites = 0
 
         // 1. 对每个当前屏幕，优先同步该屏幕自己的壁纸状态
         for screen in currentScreens {
@@ -235,12 +270,23 @@ final class DesktopWallpaperSyncManager {
                     print("[DesktopWallpaperSyncManager] [\(source)] 🔒 动态锁屏已启用，跳过 poster 同步 for screen \(screen.localizedName)")
                 } else {
                     do {
+                        let writeStart = Date()
                         // 使用 "充满屏幕" 缩放模式，与初始设置保持一致
                         let fillOptions: [NSWorkspace.DesktopImageOptionKey: Any] = [
                             .imageScaling: NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue),
                             .allowClipping: true
                         ]
                         try workspace.setDesktopImageURLForAllSpaces(posterURL, for: screen, options: fillOptions)
+                        syncWrites += 1
+                        let elapsedMS = Date().timeIntervalSince(writeStart) * 1000
+                        if elapsedMS >= 250 {
+                            AppLogger.warn(.ui, "Desktop wallpaper sync write was slow", metadata: [
+                                "source": source,
+                                "screen": screen.localizedName,
+                                "kind": "videoPoster",
+                                "durationMS": String(format: "%.0f", elapsedMS)
+                            ])
+                        }
                         print("[DesktopWallpaperSyncManager] [\(source)] Synced video poster for screen \(screen.localizedName)")
                     } catch {
                         print("[DesktopWallpaperSyncManager] [\(source)] Failed to sync poster for screen \(screen.localizedName): \(error)")
@@ -266,14 +312,39 @@ final class DesktopWallpaperSyncManager {
             }
 
             do {
+                let writeStart = Date()
                 // 使用 setDesktopImageURLForAllSpaces 确保所有 Spaces 同步，
                 // 该方法内部已发送 com.apple.desktop 通知，无需额外触发
                 let options = lastOptionsByScreen[screenID] ?? lastOptionsByFingerprint[fingerprint] ?? [:]
                 try workspace.setDesktopImageURLForAllSpaces(url, for: screen, options: options)
+                syncWrites += 1
+                let elapsedMS = Date().timeIntervalSince(writeStart) * 1000
+                if elapsedMS >= 250 {
+                    AppLogger.warn(.ui, "Desktop wallpaper sync write was slow", metadata: [
+                        "source": source,
+                        "screen": screen.localizedName,
+                        "kind": "staticWallpaper",
+                        "durationMS": String(format: "%.0f", elapsedMS)
+                    ])
+                }
                 print("[DesktopWallpaperSyncManager] [\(source)] Synced static wallpaper for screen \(screen.localizedName)")
             } catch {
                 print("[DesktopWallpaperSyncManager] [\(source)] Failed to sync wallpaper for screen \(screen.localizedName): \(error)")
             }
+        }
+
+        let totalMS = Date().timeIntervalSince(start) * 1000
+        let logMetadata: [String: Any] = [
+            "source": source,
+            "screens": currentScreens.count,
+            "writes": syncWrites,
+            "durationMS": String(format: "%.0f", totalMS),
+            "skipStaticWrites": shouldSkipStaticDesktopWrites
+        ]
+        if totalMS >= 500 {
+            AppLogger.warn(.ui, "Desktop wallpaper sync completed slowly", metadata: logMetadata)
+        } else {
+            AppLogger.debug(.ui, "Desktop wallpaper sync completed", metadata: logMetadata)
         }
     }
 }

@@ -147,6 +147,49 @@ final class WallpaperState: Sendable {
         }
     }
 
+    func activeContextForCommand(displayID: UInt32) -> ActiveWallpaper? {
+        lock.withLock { state in
+            if let exact = state.activeContexts.values.first(where: { $0.displayID == displayID }) {
+                return exact
+            }
+            if let unbound = state.activeContexts.values.first(where: { $0.displayID == nil }) {
+                return unbound
+            }
+            if state.activeContexts.count == 1 {
+                return state.activeContexts.values.first
+            }
+            return nil
+        }
+    }
+
+    func activeContext(wallpaperID: String) -> ActiveWallpaper? {
+        lock.withLock { state in
+            guard let contextId = state.wallpaperIDToContext[wallpaperID] else { return nil }
+            return state.activeContexts[contextId]
+        }
+    }
+
+    func updateContextDisplayID(wallpaperID: String, displayID: UInt32) {
+        lock.withLock { state in
+            guard let contextId = state.wallpaperIDToContext[wallpaperID],
+                  let old = state.activeContexts[contextId],
+                  old.displayID != displayID else {
+                return
+            }
+            state.activeContexts[contextId] = ActiveWallpaper(
+                caContext: old.caContext,
+                rootLayer: old.rootLayer,
+                renderer: old.renderer,
+                displayID: displayID,
+                videoID: old.videoID
+            )
+        }
+    }
+
+    func activeContextsSnapshot() -> [ActiveWallpaper] {
+        lock.withLock { Array($0.activeContexts.values) }
+    }
+
     func replaceContextRenderer(displayID: UInt32, renderer: VideoRenderer?, videoID: String?) -> VideoRenderer? {
         lock.withLock { state in
             guard let pair = state.activeContexts.first(where: { $0.value.displayID == displayID }) else {
@@ -158,6 +201,24 @@ final class WallpaperState: Sendable {
                 rootLayer: old.rootLayer,
                 renderer: renderer,
                 displayID: old.displayID,
+                videoID: videoID ?? old.videoID
+            )
+            return old.renderer
+        }
+    }
+
+    func replaceContextRendererForCommand(displayID: UInt32, renderer: VideoRenderer?, videoID: String?) -> VideoRenderer? {
+        lock.withLock { state in
+            let pair = state.activeContexts.first(where: { $0.value.displayID == displayID })
+                ?? state.activeContexts.first(where: { $0.value.displayID == nil })
+                ?? (state.activeContexts.count == 1 ? state.activeContexts.first : nil)
+            guard let pair else { return nil }
+            let old = pair.value
+            state.activeContexts[pair.key] = ActiveWallpaper(
+                caContext: old.caContext,
+                rootLayer: old.rootLayer,
+                renderer: renderer,
+                displayID: displayID,
                 videoID: videoID ?? old.videoID
             )
             return old.renderer

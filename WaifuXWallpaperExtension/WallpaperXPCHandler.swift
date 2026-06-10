@@ -14,6 +14,58 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
     var agentProxy: (any WallpaperExtensionProxyXPCProtocol)?
     private var previousPresentationMode = "default"
 
+    private static func extractWallpaperContextIdentifier(from object: Any?) -> String? {
+        guard let object else { return nil }
+
+        func normalizedIdentifier(from raw: String) -> String? {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed != "nil" else { return nil }
+
+            if let range = trimmed.range(
+                of: "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}",
+                options: .regularExpression
+            ) {
+                return "uuid:\(trimmed[range].lowercased())"
+            }
+
+            if !trimmed.contains("0x") {
+                return "raw:\(trimmed)"
+            }
+
+            return nil
+        }
+
+        if let string = object as? String, let normalized = normalizedIdentifier(from: string) {
+            return normalized
+        }
+        if let string = object as? NSString, let normalized = normalizedIdentifier(from: string as String) {
+            return normalized
+        }
+        if let uuid = object as? UUID {
+            return "uuid:\(uuid.uuidString.lowercased())"
+        }
+
+        let mirror = Mirror(reflecting: object)
+        for child in mirror.children {
+            if let string = child.value as? String, let normalized = normalizedIdentifier(from: string) {
+                return normalized
+            }
+            if let string = child.value as? NSString, let normalized = normalizedIdentifier(from: string as String) {
+                return normalized
+            }
+            if let uuid = child.value as? UUID {
+                return "uuid:\(uuid.uuidString.lowercased())"
+            }
+
+            let childDescription = String(describing: child.value)
+            if let normalized = normalizedIdentifier(from: childDescription) {
+                return normalized
+            }
+        }
+
+        return normalizedIdentifier(from: String(describing: object))
+    }
+
     private static func displayMetrics(for displayID: UInt32) -> (size: CGSize, scale: CGFloat)? {
         let cgDisplayID = CGDirectDisplayID(displayID)
         let pixelWidth = CGDisplayPixelsWide(cgDisplayID)
@@ -27,18 +79,120 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         return (bounds.size, 1.0)
     }
 
+    private static func requestDisplayGeometry(from request: Any?) -> (displayID: UInt32?, size: CGSize?, scale: CGFloat?) {
+        var descriptions: [String] = []
+
+        func collectDescriptions(_ value: Any, depth: Int) {
+            guard depth < 3, descriptions.count < 24 else { return }
+            descriptions.append(String(describing: value))
+            for child in Mirror(reflecting: value).children {
+                collectDescriptions(child.value, depth: depth + 1)
+            }
+        }
+
+        if let request {
+            collectDescriptions(request, depth: 0)
+        }
+
+        func number(after marker: String) -> Double? {
+            for desc in descriptions {
+                guard let range = desc.range(of: marker) else { continue }
+                let tail = desc[range.upperBound...].drop(while: { $0 == " " })
+                let token = tail.prefix { char in
+                    char.isNumber || char == "." || char == "-"
+                }
+                if let value = Double(token) {
+                    return value
+                }
+            }
+            return nil
+        }
+
+        let displayID = number(after: "directDisplayID: ").flatMap { UInt32(exactly: Int($0)) }
+            ?? number(after: "displayID: ").flatMap { UInt32(exactly: Int($0)) }
+        let width = number(after: "width: ")
+        let height = number(after: "height: ")
+        let size: CGSize?
+        if let width, let height, width > 0, height > 0 {
+            size = CGSize(width: width, height: height)
+        } else {
+            size = nil
+        }
+        let scale = number(after: "scaleFactor: ").flatMap { $0 > 0 ? CGFloat($0) : nil }
+        return (displayID, size, scale)
+    }
+
+    private static func applyDisplayGeometryUpdate(
+        wallpaperID: String?,
+        displayID: UInt32?,
+        size requestedSize: CGSize?,
+        scale requestedScale: CGFloat?
+    ) {
+        let contexts: [ActiveWallpaper]
+        if let wallpaperID,
+           let active = WallpaperState.shared.activeContext(wallpaperID: wallpaperID) {
+            contexts = [active]
+        } else if let displayID,
+                  let active = WallpaperState.shared.activeContext(for: displayID) {
+            contexts = [active]
+        } else if displayID != nil {
+            contexts = []
+        } else {
+            contexts = WallpaperState.shared.activeContextsSnapshot()
+        }
+
+        guard !contexts.isEmpty else { return }
+
+        let applyBlock = {
+            for active in contexts {
+                let targetDisplayID = displayID ?? active.displayID
+                guard let targetDisplayID else { continue }
+
+                let metrics = Self.displayMetrics(for: targetDisplayID)
+                let targetSize = requestedSize ?? metrics?.size
+                let targetScale = requestedScale ?? metrics?.scale ?? active.rootLayer.contentsScale
+                guard let targetSize, targetSize.width > 0, targetSize.height > 0 else { continue }
+
+                let oldBounds = active.rootLayer.bounds
+                let oldScale = active.rootLayer.contentsScale
+                let needsFrame = abs(oldBounds.width - targetSize.width) > 0.5
+                    || abs(oldBounds.height - targetSize.height) > 0.5
+                let needsScale = abs(oldScale - targetScale) > 0.001
+                guard needsFrame || needsScale else { continue }
+
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                active.rootLayer.frame = CGRect(origin: .zero, size: targetSize)
+                active.rootLayer.bounds = CGRect(origin: .zero, size: targetSize)
+                active.rootLayer.contentsScale = targetScale
+                active.renderer?.relayoutForCurrentDisplayGeometry()
+                CATransaction.commit()
+
+                if let wallpaperID, active.displayID != targetDisplayID {
+                    WallpaperState.shared.updateContextDisplayID(wallpaperID: wallpaperID, displayID: targetDisplayID)
+                }
+
+                extLog(
+                    "[Geometry] updated display=\(targetDisplayID) "
+                        + "\(Int(oldBounds.width))x\(Int(oldBounds.height))@\(oldScale) -> "
+                        + "\(Int(targetSize.width))x\(Int(targetSize.height))@\(targetScale)"
+                )
+            }
+        }
+
+        if Thread.isMainThread {
+            applyBlock()
+        } else {
+            DispatchQueue.main.async(execute: applyBlock)
+        }
+    }
+
     // MARK: - Lifecycle
 
     func acquire(withId id: Any?, request: Any?, reply: @escaping @Sendable (Any?, (any Error)?) -> Void) {
         extLog("=== ACQUIRE ===")
 
-        var wallpaperIDString: String?
-        if let idObj = id as? NSObject {
-            let idStr = String(describing: Mirror(reflecting: idObj).children.first?.value ?? "")
-            if let range = idStr.range(of: "[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", options: .regularExpression) {
-                wallpaperIDString = String(idStr[range])
-            }
-        }
+        let wallpaperIDString = Self.extractWallpaperContextIdentifier(from: id)
 
         // Extract displayID and destSize from request via Mirror
         var displayID: UInt32?
@@ -504,7 +658,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
     }
 
     static func switchActiveContextToStaticImage(displayID: UInt32, sourceID: String, imageURL: URL) {
-        guard let active = WallpaperState.shared.activeContext(for: displayID),
+        guard let active = WallpaperState.shared.activeContextForCommand(displayID: displayID),
               let source = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             extLog("[Commands] ❌ 静态图热切换失败 display=\(displayID) source=\(sourceID)")
@@ -519,13 +673,24 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         rootLayer.contents = image
         CATransaction.commit()
 
-        let oldRenderer = WallpaperState.shared.replaceContextRenderer(displayID: displayID, renderer: nil, videoID: sourceID)
+        let oldRenderer = WallpaperState.shared.replaceContextRendererForCommand(displayID: displayID, renderer: nil, videoID: sourceID)
         oldRenderer?.stop()
+        WallpaperState.shared.removeIOSurfaceRenderer(for: displayID)
+        FrameChannel.shared.unregisterCallback(displayID: displayID)
         WallpaperPrefs.shared.updateCurrentVideo()
         extLog("[Commands] ✅ 已热切换显示器 \(displayID) 到静态图: \(sourceID)")
     }
 
-    func update(withId _: Any?, request: Any?, reply: @escaping @Sendable ((any Error)?) -> Void) {
+    func update(withId id: Any?, request: Any?, reply: @escaping @Sendable ((any Error)?) -> Void) {
+        let wallpaperIDString = Self.extractWallpaperContextIdentifier(from: id)
+        let geometry = Self.requestDisplayGeometry(from: request)
+        Self.applyDisplayGeometryUpdate(
+            wallpaperID: wallpaperIDString,
+            displayID: geometry.displayID,
+            size: geometry.size,
+            scale: geometry.scale
+        )
+
         var presentationMode = "?"
         var activityState = "?"
         if let reqObj = request as? NSObject {
@@ -585,21 +750,17 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
 
     func invalidate(withId id: Any?, reply: @escaping @Sendable ((any Error)?) -> Void) {
         var cleaned = false
-        if let idObj = id as? NSObject {
-            let idStr = String(describing: Mirror(reflecting: idObj).children.first?.value ?? "")
-            if let range = idStr.range(of: "[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", options: .regularExpression) {
-                let uuid = String(idStr[range])
-                if let active = WallpaperState.shared.removeContext(wallpaperID: uuid) {
-                    active.renderer?.stop()
-                    cleaned = true
-                }
-            }
+        let identifier = Self.extractWallpaperContextIdentifier(from: id)
+        if let identifier,
+           let active = WallpaperState.shared.removeContext(wallpaperID: identifier) {
+            active.renderer?.stop()
+            cleaned = true
         }
         let remaining = WallpaperState.shared.activeContextCount
         if remaining == 0 {
             WallpaperPrefs.shared.setActive(false)
         }
-        extLog("=== INVALIDATE === (cleaned: \(cleaned), remaining: \(remaining))")
+        extLog("=== INVALIDATE === (identifier: \(identifier ?? "nil"), cleaned: \(cleaned), remaining: \(remaining))")
         reply(nil)
     }
 

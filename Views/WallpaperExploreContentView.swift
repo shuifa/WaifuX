@@ -3,6 +3,150 @@ import AppKit
 import Kingfisher
 @preconcurrency import Translation
 
+@MainActor
+private enum WallpaperExploreDiagnostics {
+    private struct Counters {
+        var reloadRequests = 0
+        var reloadWhileLoading = 0
+        var wallpaperChanges = 0
+        var loadMoreTriggers = 0
+        var loadMoreSkips = 0
+        var recomputes = 0
+        var slowRecomputes = 0
+        var layoutCacheHits = 0
+        var layoutRebuilds = 0
+        var slowLayoutRebuilds = 0
+        var atmosphereSyncs = 0
+    }
+
+    private static var counters = Counters()
+    private static var lastSnapshotTime: TimeInterval = 0
+    private static let snapshotInterval: TimeInterval = 2.0
+    private static let slowRecomputeThresholdMS = 12.0
+    private static let slowLayoutThresholdMS = 10.0
+
+    static func markReloadRequested(reason: String, isLoading: Bool, currentCount: Int) {
+        counters.reloadRequests += 1
+        if isLoading {
+            counters.reloadWhileLoading += 1
+            AppLogger.warn(.wallpaper, "ExploreDiag reload requested during active load", metadata: [
+                "reason": reason,
+                "currentCount": currentCount
+            ])
+        }
+        flushSnapshotIfNeeded(trigger: "reload", metadata: [
+            "reason": reason,
+            "currentCount": currentCount
+        ])
+    }
+
+    static func markWallpapersChanged(totalCount: Int, isLoading: Bool) {
+        counters.wallpaperChanges += 1
+        flushSnapshotIfNeeded(trigger: "wallpapersChanged", metadata: [
+            "totalCount": totalCount,
+            "isLoading": isLoading
+        ])
+    }
+
+    static func markLoadMoreTriggered(source: String, currentCount: Int) {
+        counters.loadMoreTriggers += 1
+        flushSnapshotIfNeeded(trigger: "loadMore", metadata: [
+            "source": source,
+            "currentCount": currentCount
+        ])
+    }
+
+    static func markLoadMoreSkipped(source: String, reason: String) {
+        counters.loadMoreSkips += 1
+        if counters.loadMoreSkips % 8 == 0 {
+            flushSnapshotIfNeeded(trigger: "loadMoreSkipped", force: true, metadata: [
+                "source": source,
+                "reason": reason
+            ])
+        }
+    }
+
+    static func markRecompute(durationMS: Double, totalCount: Int, visibleCount: Int, changed: Bool) {
+        counters.recomputes += 1
+        if durationMS >= slowRecomputeThresholdMS {
+            counters.slowRecomputes += 1
+            AppLogger.warn(.wallpaper, "ExploreDiag slow visible recompute", metadata: [
+                "durationMS": String(format: "%.2f", durationMS),
+                "totalCount": totalCount,
+                "visibleCount": visibleCount,
+                "changed": changed
+            ])
+        } else {
+            flushSnapshotIfNeeded(trigger: "recompute", metadata: [
+                "durationMS": String(format: "%.2f", durationMS),
+                "visibleCount": visibleCount,
+                "changed": changed
+            ])
+        }
+    }
+
+    static func markLayout(durationMS: Double, itemCount: Int, columnCount: Int, reusedCache: Bool) {
+        if reusedCache {
+            counters.layoutCacheHits += 1
+            return
+        }
+
+        counters.layoutRebuilds += 1
+        if durationMS >= slowLayoutThresholdMS {
+            counters.slowLayoutRebuilds += 1
+            AppLogger.warn(.wallpaper, "ExploreDiag slow waterfall layout rebuild", metadata: [
+                "durationMS": String(format: "%.2f", durationMS),
+                "itemCount": itemCount,
+                "columnCount": columnCount
+            ])
+        } else {
+            flushSnapshotIfNeeded(trigger: "layout", metadata: [
+                "durationMS": String(format: "%.2f", durationMS),
+                "itemCount": itemCount,
+                "columnCount": columnCount
+            ])
+        }
+    }
+
+    static func markAtmosphereSync(firstID: String?) {
+        counters.atmosphereSyncs += 1
+        flushSnapshotIfNeeded(trigger: "atmosphere", metadata: [
+            "firstID": firstID ?? "nil"
+        ])
+    }
+
+    private static func flushSnapshotIfNeeded(
+        trigger: String,
+        force: Bool = false,
+        metadata: [String: Any] = [:]
+    ) {
+        let now = Date().timeIntervalSinceReferenceDate
+        guard force || now - lastSnapshotTime >= snapshotInterval else { return }
+        lastSnapshotTime = now
+
+        var combined: [String: Any] = [
+            "trigger": trigger,
+            "reloadRequests": counters.reloadRequests,
+            "reloadWhileLoading": counters.reloadWhileLoading,
+            "wallpaperChanges": counters.wallpaperChanges,
+            "loadMoreTriggers": counters.loadMoreTriggers,
+            "loadMoreSkips": counters.loadMoreSkips,
+            "recomputes": counters.recomputes,
+            "slowRecomputes": counters.slowRecomputes,
+            "layoutCacheHits": counters.layoutCacheHits,
+            "layoutRebuilds": counters.layoutRebuilds,
+            "slowLayoutRebuilds": counters.slowLayoutRebuilds,
+            "atmosphereSyncs": counters.atmosphereSyncs
+        ]
+
+        for (key, value) in metadata {
+            combined[key] = value
+        }
+
+        AppLogger.info(.wallpaper, "ExploreDiag snapshot", metadata: combined)
+    }
+}
+
 // MARK: - 滚动位置保存已移除（怀疑返回时回到顶部是因数据被清空导致）
 
 // MARK: - macOS 14 兼容：滚动加载更多哨兵
@@ -164,7 +308,12 @@ struct WallpaperExploreContentView: View {
             if !visible {
                 pauseActivity()
             } else {
-                syncAtmosphereIfNeeded()
+                Task { @MainActor in
+                    if AppResponsivenessMonitor.isForegroundSettling {
+                        await AppResponsivenessMonitor.waitUntilForegroundSettles()
+                    }
+                    syncAtmosphereIfNeeded()
+                }
             }
         }
         .onChange(of: searchText) { _, newValue in
@@ -197,6 +346,10 @@ struct WallpaperExploreContentView: View {
         .onChange(of: fourKSorting) { _, _ in handle4KSortingChange() }
         .onChange(of: konachanSorting) { _, _ in handleKonachanSortingChange() }
         .onChange(of: viewModel.wallpapers) { _, _ in
+            WallpaperExploreDiagnostics.markWallpapersChanged(
+                totalCount: viewModel.wallpapers.count,
+                isLoading: viewModel.isLoading
+            )
             // ⚡ 3s 节流：loadMore 时 wallpapers 高频追加，syncAtmosphereIfNeeded 会下载缩略图
             // + CoreImage 颜色分析，不加节流会导致 CPU 持续满载。
             let now = Date()
@@ -1054,13 +1207,29 @@ struct WallpaperExploreContentView: View {
     }
 
     private func triggerLoadMore() {
-        guard viewModel.hasMorePages,
-              !viewModel.isLoading,
-              !isLoadingMore else { return }
+        guard viewModel.hasMorePages else {
+            WallpaperExploreDiagnostics.markLoadMoreSkipped(source: "triggerLoadMore", reason: "noMorePages")
+            return
+        }
+        guard !viewModel.isLoading else {
+            WallpaperExploreDiagnostics.markLoadMoreSkipped(source: "triggerLoadMore", reason: "viewModelLoading")
+            return
+        }
+        guard !isLoadingMore else {
+            WallpaperExploreDiagnostics.markLoadMoreSkipped(source: "triggerLoadMore", reason: "alreadyLoadingMore")
+            return
+        }
 
         // ⛔ 冷却期内不触发 loadMore（防止 contentSize 增长后的无限级联）
-        if let cooldown = loadMoreCooldownUntil, Date() < cooldown { return }
+        if let cooldown = loadMoreCooldownUntil, Date() < cooldown {
+            WallpaperExploreDiagnostics.markLoadMoreSkipped(source: "triggerLoadMore", reason: "cooldown")
+            return
+        }
 
+        WallpaperExploreDiagnostics.markLoadMoreTriggered(
+            source: "triggerLoadMore",
+            currentCount: viewModel.wallpapers.count
+        )
         isLoadingMore = true
         loadMoreFailed = false
         ForegroundPrefetchManager.shared.stop(namespace: "wallpaper-view-model")
@@ -1099,8 +1268,14 @@ struct WallpaperExploreContentView: View {
         guard isVisible, viewportHeight > 0, sentinelMinY.isFinite else { return }
         if sentinelMinY <= viewportHeight + Self.loadMoreTriggerThreshold {
             // ⛔ 冷却期内不触发 loadMore
-            if let cooldown = loadMoreCooldownUntil, Date() < cooldown { return }
-            guard !scrollCoordinator.wasNearBottom else { return }
+            if let cooldown = loadMoreCooldownUntil, Date() < cooldown {
+                WallpaperExploreDiagnostics.markLoadMoreSkipped(source: "legacySentinel", reason: "cooldown")
+                return
+            }
+            guard !scrollCoordinator.wasNearBottom else {
+                WallpaperExploreDiagnostics.markLoadMoreSkipped(source: "legacySentinel", reason: "alreadyNearBottom")
+                return
+            }
             scrollCoordinator.wasNearBottom = true
             scheduleLoadMoreFromScroll()
         } else if sentinelMinY > viewportHeight + Self.loadMoreResetThreshold {
@@ -1162,6 +1337,11 @@ struct WallpaperExploreContentView: View {
     }
 
     private func reloadData() {
+        WallpaperExploreDiagnostics.markReloadRequested(
+            reason: "userAction",
+            isLoading: viewModel.isLoading,
+            currentCount: viewModel.wallpapers.count
+        )
         AppLogger.info(.wallpaper, "重新搜索：用户操作触发")
         prepareForFeedReplacement()
         lastSyncedFirstWallpaperID = nil
@@ -1215,6 +1395,7 @@ struct WallpaperExploreContentView: View {
     }
 
     private func recomputeVisibleWallpapers() {
+        let start = Date()
         let newVisible: [Wallpaper]
         if viewModel.currentSourceSupportsWallhavenCategories {
             newVisible = viewModel.wallpapers.filter { matchesCategory($0, category: category) }
@@ -1224,10 +1405,17 @@ struct WallpaperExploreContentView: View {
         // 仅当内容或顺序真正变化时才赋值，避免触发不必要的 body 重建
         // 必须使用数组比较而非 Set，因为顺序变化（如排序变更）也需要触发重排
         let newIDs = newVisible.map(\.id)
+        let changed = newIDs != lastVisibleIDs
         if newIDs != lastVisibleIDs {
             lastVisibleIDs = newIDs
             visibleWallpapers = newVisible
         }
+        WallpaperExploreDiagnostics.markRecompute(
+            durationMS: Date().timeIntervalSince(start) * 1000,
+            totalCount: viewModel.wallpapers.count,
+            visibleCount: newVisible.count,
+            changed: changed
+        )
     }
 
     // ❌ 已移除 refreshFavoriteIDs()，收藏状态改为视图在 ForEach 中
@@ -1247,6 +1435,7 @@ struct WallpaperExploreContentView: View {
         let fid = first?.id
         guard fid != lastSyncedFirstWallpaperID else { return }
         lastSyncedFirstWallpaperID = fid
+        WallpaperExploreDiagnostics.markAtmosphereSync(firstID: fid)
         DispatchQueue.main.async {
             guard lastSyncedFirstWallpaperID == fid else { return }
             exploreAtmosphere.updateFirstWallpaper(first)
@@ -1352,9 +1541,16 @@ private final class WallpaperWaterfallLayoutCache {
         config: WallpaperGridConfig
     ) -> [[Wallpaper]] {
         if cachedKey == key {
+            WallpaperExploreDiagnostics.markLayout(
+                durationMS: 0,
+                itemCount: wallpapers.count,
+                columnCount: config.columnCount,
+                reusedCache: true
+            )
             return cachedColumns
         }
 
+        let start = Date()
         let columns = ExploreGridLayout.waterfallColumns(
             items: wallpapers,
             columnCount: config.columnCount,
@@ -1366,6 +1562,12 @@ private final class WallpaperWaterfallLayoutCache {
         )
         cachedKey = key
         cachedColumns = columns
+        WallpaperExploreDiagnostics.markLayout(
+            durationMS: Date().timeIntervalSince(start) * 1000,
+            itemCount: wallpapers.count,
+            columnCount: config.columnCount,
+            reusedCache: false
+        )
         return columns
     }
 }
