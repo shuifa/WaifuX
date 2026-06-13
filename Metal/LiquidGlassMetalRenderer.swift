@@ -331,7 +331,7 @@ extension LiquidGlassMetalRenderer: MTKViewDelegate {
         // ⚡ 性能：时间没变化时跳过渲染（时钟内容不变无需重绘）
         guard shouldRedraw() else { return }
 
-        guard let device = device,
+        guard let _ = device,
               let commandQueue = commandQueue,
               let pipelineState = glassPipelineState,
               let vertexBuffer = vertexBuffer,

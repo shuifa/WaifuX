@@ -28,13 +28,27 @@ mkdir -p "$DEST_DIR" "$DEST_LIB_DIR"
 echo "🔧 wallpaper-wgpu 部署开始..."
 
 # ── 1. 复制 wallpaper-wgpu ──────────────────────────────────────
-WGUI_SRC="${WAIFUX_WGPU_SRC:-/Users/lixiongwei/Downloads/wallpaper-wgpu}"
+WGUI_SRC="${WAIFUX_WGPU_SRC:-/Volumes/mac/CodeLibrary/Claude/wallpaper-wgpu/target/release/wallpaper-wgpu}"
 if [[ -f "$WGUI_SRC" ]]; then
   cp "$WGUI_SRC" "$DEST_DIR/wallpaper-wgpu"
   chmod +x "$DEST_DIR/wallpaper-wgpu"
   echo "  ✅ wallpaper-wgpu → $DEST_DIR/wallpaper-wgpu"
 else
   echo "  ⚠️  $WGUI_SRC 不存在，跳过 wallpaper-wgpu 复制"
+fi
+
+# ── 1.5 复制 ffmpeg（bake 命令需要） ────────────────────────────
+FFMPEG_SRC="${WAIFUX_FFMPEG_SRC:-/opt/homebrew/bin/ffmpeg}"
+if [[ -L "$FFMPEG_SRC" ]]; then
+  # 如果是符号链接，解析真实路径
+  FFMPEG_SRC="$(readlink -f "$FFMPEG_SRC" 2>/dev/null || echo "$FFMPEG_SRC")"
+fi
+if [[ -f "$FFMPEG_SRC" ]]; then
+  cp "$FFMPEG_SRC" "$DEST_DIR/ffmpeg"
+  chmod +x "$DEST_DIR/ffmpeg"
+  echo "  ✅ ffmpeg → $DEST_DIR/ffmpeg"
+else
+  echo "  ⚠️  ffmpeg 未找到（$FFMPEG_SRC），bake 功能将不可用"
 fi
 
 # ── 2. 复制 DXC ─────────────────────────────────────────────────
@@ -168,6 +182,9 @@ if command -v codesign >/dev/null 2>&1; then
   fi
   if [[ -f "$DEST_LIB_DIR/libdxcompiler.dylib" ]]; then
     codesign --force -s - "$DEST_LIB_DIR/libdxcompiler.dylib" 2>/dev/null || true
+  fi
+  if [[ -f "$DEST_DIR/ffmpeg" ]]; then
+    codesign --force -s - "$DEST_DIR/ffmpeg" 2>/dev/null || true
   fi
   echo "  ✅ 签名完成"
 fi

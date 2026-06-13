@@ -3,45 +3,129 @@ import Kingfisher
 import AppKit
 import AVFoundation
 
-// MARK: - Scroll 偏移量追踪 PreferenceKey
-private struct LibraryMainScrollOffsetPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+// MARK: - Scroll State
+private final class LibraryScrollRuntimeState: ObservableObject {
+    var currentOffset: CGFloat = 0
+}
+
+// MARK: - 滚动状态追踪（我的库）
+enum LibraryScrollActivity {
+    private static let idleDelay: CFTimeInterval = 0.22
+    @MainActor private static var lastScrollEventTime: CFTimeInterval = 0
+
+    @MainActor
+    static func markActive() {
+        lastScrollEventTime = CACurrentMediaTime()
+    }
+
+    @MainActor
+    static var isActive: Bool {
+        CACurrentMediaTime() - lastScrollEventTime < idleDelay
     }
 }
 
-// MARK: - Scroll 恢复辅助组件
-/// 嵌入 ScrollView 内容中，当 `restoreTrigger` 变化时查找父级 NSScrollView 并恢复滚动偏移。
-private struct LibraryScrollRestoreTrigger: NSViewRepresentable {
-    let targetOffset: CGFloat
+// MARK: - Scroll 观察与恢复辅助组件
+/// 直接观察底层 NSScrollView，避免滚动时通过 PreferenceKey 持续触发整棵 SwiftUI 内容重算。
+private struct LibraryScrollObserver: NSViewRepresentable {
+    let restoreOffset: CGFloat
     let restoreTrigger: Int
+    let onScroll: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        scheduleRestore(from: view)
+        scheduleInstall(from: view, context: context)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        scheduleRestore(from: nsView)
+        context.coordinator.onScroll = onScroll
+        scheduleInstall(from: nsView, context: context)
     }
 
-    private func scheduleRestore(from view: NSView) {
-        guard targetOffset > 0 else { return }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onScroll: onScroll)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stopObserving()
+    }
+
+    private func scheduleInstall(from view: NSView, context: Context) {
         DispatchQueue.main.async {
-            var current = view.superview
-            while current != nil {
-                if let scrollView = current as? NSScrollView {
-                    let currentY = scrollView.contentView.bounds.origin.y
-                    if abs(currentY - targetOffset) > 1 {
-                        scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetOffset))
-                        scrollView.reflectScrolledClipView(scrollView.contentView)
-                    }
-                    break
+            context.coordinator.install(
+                from: view,
+                restoreOffset: restoreOffset,
+                restoreTrigger: restoreTrigger
+            )
+        }
+    }
+
+    @MainActor
+    final class Coordinator {
+        var onScroll: (CGFloat) -> Void
+        private weak var observedScrollView: NSScrollView?
+        private var boundsObserver: NSObjectProtocol?
+        private var lastRestoreTrigger = -1
+
+        init(onScroll: @escaping (CGFloat) -> Void) {
+            self.onScroll = onScroll
+        }
+
+        func install(from view: NSView, restoreOffset: CGFloat, restoreTrigger: Int) {
+            guard let scrollView = findParentScrollView(from: view) else { return }
+
+            if observedScrollView !== scrollView {
+                stopObserving()
+                observedScrollView = scrollView
+                scrollView.contentView.postsBoundsChangedNotifications = true
+                boundsObserver = NotificationCenter.default.addObserver(
+                    forName: NSView.boundsDidChangeNotification,
+                    object: scrollView.contentView,
+                    queue: .main
+                ) { [weak self, weak scrollView] _ in
+                    guard let scrollView else { return }
+                    MainActor.assumeIsolated { self?.handleScroll(scrollView) }
                 }
-                current = current?.superview
             }
+
+            if restoreTrigger != lastRestoreTrigger {
+                lastRestoreTrigger = restoreTrigger
+                restore(scrollView: scrollView, targetOffset: restoreOffset)
+            }
+
+            handleScroll(scrollView)
+        }
+
+        func stopObserving() {
+            if let boundsObserver {
+                NotificationCenter.default.removeObserver(boundsObserver)
+            }
+            boundsObserver = nil
+            observedScrollView = nil
+        }
+
+        private func handleScroll(_ scrollView: NSScrollView) {
+            onScroll(max(0, scrollView.contentView.bounds.origin.y))
+        }
+
+        private func restore(scrollView: NSScrollView, targetOffset: CGFloat) {
+            guard targetOffset > 0 else { return }
+            let currentY = scrollView.contentView.bounds.origin.y
+            if abs(currentY - targetOffset) > 1 {
+                scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetOffset))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+        }
+
+        private func findParentScrollView(from view: NSView) -> NSScrollView? {
+            var current = view.superview
+            while let candidate = current {
+                if let scrollView = candidate as? NSScrollView {
+                    return scrollView
+                }
+                current = candidate.superview
+            }
+            return nil
         }
     }
 }
@@ -81,8 +165,8 @@ struct MyLibraryContentView: View {
     // 图片预加载由 onAppear 直接触发，无需追踪可见卡片 ID
 
     // MARK: - Scroll 恢复
-    /// 当前 ScrollView 的 contentOffset.y
-    @State private var libraryMainScrollOffset: CGFloat = 0
+    @StateObject private var libraryScrollRuntimeState = LibraryScrollRuntimeState()
+    @State private var isLibraryHeaderContentVisible = true
     /// 详情页导航前保存的滚动位置（>=0 表示需要恢复）
     @State private var savedLibraryScrollOffset: CGFloat = -1
     /// 恢复成功后自增，驱动 LibraryScrollRestorer 重新触发
@@ -101,6 +185,8 @@ struct MyLibraryContentView: View {
     @State private var lastWallpaperPrefetchBucket: Int?
     @State private var lastMediaPrefetchBucket: Int?
     @State private var lastAnimePrefetchBucket: Int?
+    @State private var updateWallpaperDebounce: DispatchWorkItem?
+    @State private var updateMediaDebounce: DispatchWorkItem?
     private let wallpaperPrefetchNamespace = "library.wallpapers"
     private let mediaPrefetchNamespace = "library.media"
     private let animePrefetchNamespace = "library.anime"
@@ -182,6 +268,10 @@ struct MyLibraryContentView: View {
         !trimmedLibrarySearchQuery.isEmpty
     }
 
+    private var libraryHeaderHeight: CGFloat {
+        118
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             if isEditing {
@@ -205,59 +295,63 @@ struct MyLibraryContentView: View {
                 grainIntensity: arcSettings.grainIntensity,
                 lightweight: true
             )
+            // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
+            .drawingGroup(opaque: true)
+            // 滚动时暂停背景重绘（背景是静态的，不需要每帧更新）
+            .allowsHitTesting(false)
 
             GeometryReader { geometry in
                 let contentWidth = max(0, geometry.size.width - 56)
                 let gridConfig = LibraryGridConfig(contentWidth: contentWidth)
                 let animeGridConfig = AnimeGridConfig(contentWidth: contentWidth)
 
-                ScrollView {
+                VStack(spacing: 0) {
+                    // 固定头部
                     VStack(alignment: .leading, spacing: 0) {
                         mediaHero
                         libraryControlPanel
-                            .padding(.top, 36)
-                        contentSections(config: gridConfig, animeConfig: animeGridConfig)
-                            .padding(.top, 10)
-                        Spacer(minLength: 0)
+                            .padding(.top, 20)
                     }
                     .padding(.horizontal, 28)
                     .padding(.top, mainTopBarContentPadding)
-                    .padding(.bottom, 80)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .frame(minHeight: geometry.size.height)
-                    .background(
-                        GeometryReader { proxy in
-                            Color.clear
-                                .preference(
-                                    key: LibraryMainScrollOffsetPreferenceKey.self,
-                                    value: -proxy.frame(in: .named("library-main-scroll")).origin.y
-                                )
+                    .padding(.bottom, 12)
+
+                    // 内部滚动区域
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            contentSections(config: gridConfig, animeConfig: animeGridConfig)
+                                .padding(.top, 10)
+                            Spacer(minLength: 0)
                         }
-                    )
-                    // ✅ 零尺寸辅助视图：从详情返回时恢复滚动位置
-                    .background(
-                        LibraryScrollRestoreTrigger(
-                            targetOffset: savedLibraryScrollOffset,
-                            restoreTrigger: libraryScrollRestoreToken
+                        .padding(.horizontal, 28)
+                        .padding(.bottom, 80)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .background(
+                            LibraryScrollObserver(
+                                restoreOffset: savedLibraryScrollOffset,
+                                restoreTrigger: libraryScrollRestoreToken,
+                                onScroll: handleLibraryScroll
+                            )
+                            .frame(width: 0, height: 0)
                         )
-                        .frame(width: 0, height: 0)
-                    )
-                }
-                .coordinateSpace(name: "library-main-scroll")
-                .onPreferenceChange(LibraryMainScrollOffsetPreferenceKey.self) { newOffset in
-                    libraryMainScrollOffset = newOffset
+                    }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
             await viewModel.initialLoad()
-            await loadAnimeFavorites()
-            Task {
-                await LocalWallpaperScanner.shared.forceRescan()
-            }
             updateWallpaperItems()
             updateMediaItems()
+            await loadAnimeFavorites()
+            Task(priority: .utility) {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await LocalWallpaperScanner.shared.forceRescan()
+                await MainActor.run {
+                    updateWallpaperItems()
+                    updateMediaItems()
+                }
+            }
         }
         .onAppear {
             // ✅ 从详情返回时触发 ScrollView 滚动位置恢复
@@ -281,10 +375,10 @@ struct MyLibraryContentView: View {
             }
         }
         .onChange(of: viewModel.libraryContentRevision) { _, _ in
-            updateWallpaperItems()
+            debouncedUpdateWallpaperItems()
         }
         .onChange(of: mediaViewModel.libraryContentRevision) { _, _ in
-            updateMediaItems()
+            debouncedUpdateMediaItems()
         }
         .onChange(of: selectedSubTab) { _, _ in
             // 切换子标签时重置文件夹导航和滚动位置
@@ -299,20 +393,20 @@ struct MyLibraryContentView: View {
             updateMediaItems()
         }
         .onChange(of: wallpaperRatioFilter) { _, _ in
-            updateWallpaperItems()
+            debouncedUpdateWallpaperItems()
         }
         .onChange(of: mediaRatioFilter) { _, _ in
-            updateMediaItems()
+            debouncedUpdateMediaItems()
         }
         .onReceive(folderStore.$wallpaperFolders) { _ in
-            updateWallpaperItems()
+            debouncedUpdateWallpaperItems()
         }
         .onReceive(folderStore.$mediaFolders) { _ in
-            updateMediaItems()
+            debouncedUpdateMediaItems()
         }
         .onReceive(gridOrderStore.$revision) { _ in
-            updateWallpaperItems()
-            updateMediaItems()
+            debouncedUpdateWallpaperItems()
+            debouncedUpdateMediaItems()
         }
         .onReceive(NotificationCenter.default.publisher(for: .appShouldReleaseForegroundMemory)) { _ in
             releaseForegroundMemory()
@@ -329,8 +423,8 @@ struct MyLibraryContentView: View {
             currentMediaFolderID = nil
             wallpaperFolderStack.removeAll()
             mediaFolderStack.removeAll()
-            updateWallpaperItems()
-            updateMediaItems()
+            debouncedUpdateWallpaperItems()
+            debouncedUpdateMediaItems()
         }
         .sheet(isPresented: $showNewFolderSheet) {
             NewFolderSheet(
@@ -464,7 +558,40 @@ struct MyLibraryContentView: View {
         ForegroundPrefetchManager.shared.stop(namespace: animePrefetchNamespace)
     }
 
+    private func handleLibraryScroll(_ offset: CGFloat) {
+        LibraryScrollActivity.markActive()
+        libraryScrollRuntimeState.currentOffset = offset
+
+        let hideThreshold = libraryHeaderHeight + 24
+        let showThreshold = libraryHeaderHeight - 24
+        let shouldBeVisible = isLibraryHeaderContentVisible
+            ? offset < hideThreshold
+            : offset < showThreshold
+        guard shouldBeVisible != isLibraryHeaderContentVisible else { return }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isLibraryHeaderContentVisible = shouldBeVisible
+        }
+    }
+
     // MARK: - Hero
+    private var libraryHeaderPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if isLibraryHeaderContentVisible {
+                VStack(alignment: .leading, spacing: 0) {
+                    mediaHero
+                    libraryControlPanel
+                        .padding(.top, 36)
+                }
+                .frame(height: libraryHeaderHeight, alignment: .bottom)
+            }
+        }
+        .frame(height: libraryHeaderHeight, alignment: .bottom)
+        .clipped()
+    }
+
     private var mediaHero: some View {
         HStack(alignment: .bottom) {
             Text(t("my.media.library"))
@@ -536,6 +663,7 @@ struct MyLibraryContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .glassContainer(spacing: 12)
     }
 
     // MARK: - Content Sections
@@ -572,13 +700,15 @@ struct MyLibraryContentView: View {
             } else {
                 batchDeleteToolbar(count: wallpaperItems.count + currentWallpaperFolders.count)
 
-                LazyVGrid(columns: config.gridItems, alignment: .leading, spacing: config.spacing) {
-                    ForEach(orderedWallpaperGridItems) { entry in
-                        wallpaperGridEntry(entry, config: config)
-                            .dropDestination(for: String.self) { strings, _ in
-                                handleGridReorderDrop(strings, before: entry.id)
-                            }
-                    }
+                libraryWaterfallGrid(
+                    entries: orderedWallpaperGridItems,
+                    config: config,
+                    estimatedHeight: LibraryCardMetrics.thumbnailHeight + 60
+                ) { entry in
+                    wallpaperGridEntry(entry, config: config)
+                        .dropDestination(for: String.self) { strings, _ in
+                            handleGridReorderDrop(strings, before: entry.id)
+                        }
                 }
             }
         }
@@ -649,6 +779,24 @@ struct MyLibraryContentView: View {
             folderStore.moveWallpaperToFolder(wallpaperID: id, folderID: folderID)
         }
         updateWallpaperItems()
+    }
+
+    private func debouncedUpdateWallpaperItems() {
+        updateWallpaperDebounce?.cancel()
+        let work = DispatchWorkItem { [self] in
+            updateWallpaperItems()
+        }
+        updateWallpaperDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+    }
+
+    private func debouncedUpdateMediaItems() {
+        updateMediaDebounce?.cancel()
+        let work = DispatchWorkItem { [self] in
+            updateMediaItems()
+        }
+        updateMediaDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 
     private func updateWallpaperItems() {
@@ -788,6 +936,7 @@ struct MyLibraryContentView: View {
         ) {
             handleWallpaperTap(item.wallpaper)
         }
+        .equatable()
         .contextMenu {
             if currentWallpaperFolderID != nil {
                 Button {
@@ -823,13 +972,15 @@ struct MyLibraryContentView: View {
             } else {
                 batchDeleteToolbar(count: mediaItems.count + currentMediaFolders.count)
 
-                LazyVGrid(columns: config.gridItems, alignment: .leading, spacing: config.spacing) {
-                    ForEach(orderedMediaGridItems) { entry in
-                        mediaGridEntry(entry, config: config)
-                            .dropDestination(for: String.self) { strings, _ in
-                                handleGridReorderDrop(strings, before: entry.id)
-                            }
-                    }
+                libraryWaterfallGrid(
+                    entries: orderedMediaGridItems,
+                    config: config,
+                    estimatedHeight: LibraryCardMetrics.thumbnailHeight + 56
+                ) { entry in
+                    mediaGridEntry(entry, config: config)
+                        .dropDestination(for: String.self) { strings, _ in
+                            handleGridReorderDrop(strings, before: entry.id)
+                        }
                 }
             }
         }
@@ -922,10 +1073,12 @@ struct MyLibraryContentView: View {
             cardWidth: config.cardWidth,
             thumbnailURL: item.thumbnailURL,
             shouldProbeAnimatedThumbnail: item.shouldProbeAnimatedThumbnail,
-            resolvedVideoFileURL: item.resolvedVideoFileURL
+            resolvedVideoFileURL: item.resolvedVideoFileURL,
+            isVisible: isVisible
         ) {
             handleMediaTap(item.mediaItem)
         }
+        .equatable()
         .contextMenu {
             if currentMediaFolderID != nil {
                 Button {
@@ -1174,19 +1327,31 @@ struct MyLibraryContentView: View {
             } else {
                 batchDeleteToolbar(count: currentAnimeItems.count)
 
-                LazyVGrid(columns: config.gridItems, alignment: .leading, spacing: config.spacing) {
-                    ForEach(currentAnimeItems) { anime in
-                        AnimeLibraryCard(
-                            anime: anime,
-                            isEditing: isEditing,
-                            isSelected: selectedItems.contains(anime.id),
-                            cardWidth: config.cardWidth
-                        ) {
-                            handleAnimeTap(anime)
+                let animeCardHeight = config.cardWidth * 1.4 + 52
+                let columnItems = ExploreGridLayout.stableColumns(
+                    items: currentAnimeItems,
+                    columnCount: config.columnCount
+                )
+
+                HStack(alignment: .top, spacing: config.spacing) {
+                    ForEach(0..<config.columnCount, id: \.self) { columnIndex in
+                        LazyVStack(spacing: config.spacing) {
+                            ForEach(columnItems[safe: columnIndex] ?? []) { anime in
+                                AnimeLibraryCard(
+                                    anime: anime,
+                                    isEditing: isEditing,
+                                    isSelected: selectedItems.contains(anime.id),
+                                    cardWidth: config.cardWidth
+                                ) {
+                                    handleAnimeTap(anime)
+                                }
+                                .onAppear {
+                                    preloadNearbyAnime(around: anime, config: config)
+                                }
+                                .frame(height: animeCardHeight)
+                            }
                         }
-                        .onAppear {
-                            preloadNearbyAnime(around: anime, config: config)
-                        }
+                        .frame(width: config.cardWidth)
                     }
                 }
             }
@@ -1565,15 +1730,12 @@ struct MyLibraryContentView: View {
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .background(
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
+        .liquidGlassSurface(.regular, in: Capsule(style: .continuous), lightweight: true)
         .overlay(
             Capsule(style: .continuous)
-                .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
         )
-        .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
         .clipped()
         .animation(.easeInOut(duration: 0.25), value: isLibrarySearchExpanded)
         .onChange(of: isLibrarySearchFocused) { _, focused in
@@ -1631,13 +1793,10 @@ struct MyLibraryContentView: View {
                 .foregroundStyle(.white.opacity(0.95))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                )
+                .liquidGlassSurface(.regular, in: RoundedRectangle(cornerRadius: 8, style: .continuous), lightweight: true)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
                 )
         }
         .menuStyle(.borderlessButton)
@@ -1669,13 +1828,10 @@ struct MyLibraryContentView: View {
         }
         .padding(.horizontal, 2)
         .padding(.vertical, 2)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
+        .liquidGlassSurface(.regular, in: RoundedRectangle(cornerRadius: 8, style: .continuous), lightweight: true)
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
         )
     }
 
@@ -1728,13 +1884,10 @@ struct MyLibraryContentView: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.84))
                     .frame(width: 36, height: 36)
-                    .background(
-                        Circle()
-                            .fill(.ultraThinMaterial)
-                    )
+                    .liquidGlassSurface(.regular, in: Circle(), lightweight: true)
                     .overlay(
                         Circle()
-                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                            .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
                     )
             }
             .menuStyle(.borderlessButton)
@@ -1772,14 +1925,15 @@ struct MyLibraryContentView: View {
                             .fill(tint.opacity(0.3))
                     } else {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(.ultraThinMaterial)
+                            .fill(.regularMaterial)
+                            .opacity(0.5)
                     }
                 }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(prominence == .primary ? tint.opacity(0.24) : Color.white.opacity(0.15), lineWidth: 1)
+                )
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(prominence == .primary ? tint.opacity(0.24) : Color.white.opacity(0.15), lineWidth: 1)
-            )
         }
         .buttonStyle(.plain)
         .pointingHandCursor()
@@ -1829,7 +1983,8 @@ struct MyLibraryContentView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(.ultraThinMaterial)
+                            .fill(.regularMaterial)
+                            .opacity(0.4)
                     )
                 }
                 .buttonStyle(.plain)
@@ -1916,7 +2071,7 @@ struct MyLibraryContentView: View {
         if isEditing {
             toggleSelection(wallpaper.id)
         } else {
-            savedLibraryScrollOffset = libraryMainScrollOffset
+            savedLibraryScrollOffset = libraryScrollRuntimeState.currentOffset
             wallpaperContext = wallpaperItems.map(\.wallpaper)
             selectedWallpaper = wallpaper
         }
@@ -1959,7 +2114,7 @@ struct MyLibraryContentView: View {
         if isEditing {
             toggleSelection(item.id)
         } else {
-            savedLibraryScrollOffset = libraryMainScrollOffset
+            savedLibraryScrollOffset = libraryScrollRuntimeState.currentOffset
             mediaContext = mediaItems.map(\.mediaItem)
             selectedMedia = item
         }
@@ -1969,7 +2124,7 @@ struct MyLibraryContentView: View {
         if isEditing {
             toggleSelection(anime.id)
         } else {
-            savedLibraryScrollOffset = libraryMainScrollOffset
+            savedLibraryScrollOffset = libraryScrollRuntimeState.currentOffset
             selectedAnime = anime
         }
     }
@@ -2197,7 +2352,31 @@ struct MyLibraryContentView: View {
             self.spacing = 16
             let totalSpacing = spacing * CGFloat(columnCount - 1)
             self.cardWidth = floor((contentWidth - totalSpacing) / CGFloat(columnCount))
-            self.gridItems = Array(repeating: GridItem(.flexible(), spacing: spacing), count: columnCount)
+            self.gridItems = Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columnCount)
+        }
+    }
+
+    @ViewBuilder
+    private func libraryWaterfallGrid<Item: Identifiable, Content: View>(
+        entries: [Item],
+        config: LibraryGridConfig,
+        estimatedHeight: CGFloat,
+        @ViewBuilder content: @escaping (Item) -> Content
+    ) -> some View {
+        let columnItems = ExploreGridLayout.stableColumns(
+            items: entries,
+            columnCount: config.columnCount
+        )
+
+        HStack(alignment: .top, spacing: config.spacing) {
+            ForEach(0..<config.columnCount, id: \.self) { columnIndex in
+                LazyVStack(spacing: config.spacing) {
+                    ForEach(columnItems[safe: columnIndex] ?? []) { item in
+                        content(item)
+                    }
+                }
+                .frame(width: config.cardWidth)
+            }
         }
     }
 
@@ -2213,7 +2392,7 @@ struct MyLibraryContentView: View {
             self.columnCount = contentWidth > 1200 ? 5 : (contentWidth > 800 ? 4 : 3)
             let totalSpacing = spacing * CGFloat(columnCount - 1)
             self.cardWidth = floor((contentWidth - totalSpacing) / CGFloat(columnCount))
-            self.gridItems = Array(repeating: GridItem(.flexible(), spacing: spacing), count: columnCount)
+            self.gridItems = Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columnCount)
         }
     }
 
@@ -2494,19 +2673,31 @@ struct MyLibraryContentView: View {
         isSyncingSubscriptions = true
 
         let mediaItems = mediaViewModel.workshopService.convertToMediaItems(items)
-        var successCount = 0
-        var failCount = 0
-
-        for item in mediaItems {
-            guard !Task.isCancelled else { break }
-            do {
-                try await mediaViewModel.downloadWorkshopWallpaper(item)
-                successCount += 1
-            } catch {
-                AppLogger.error(.media, "sync download failed", metadata: ["id": item.id, "error": "\(error)"])
-                failCount += 1
+        
+        // 并发提交所有下载任务，SteamCMD 下载限制器会自动控制并发（最多 2 个同时下载）
+        let results = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
+            for item in mediaItems {
+                group.addTask {
+                    guard !Task.isCancelled else { return false }
+                    do {
+                        try await self.mediaViewModel.downloadWorkshopWallpaper(item)
+                        return true
+                    } catch {
+                        AppLogger.error(.media, "sync download failed", metadata: ["id": item.id, "error": "\(error)"])
+                        return false
+                    }
+                }
             }
+            
+            var results: [Bool] = []
+            for await success in group {
+                results.append(success)
+            }
+            return results
         }
+        
+        let successCount = results.filter { $0 }.count
+        let failCount = results.filter { !$0 }.count
 
         isSyncingSubscriptions = false
         mediaViewModel.objectWillChange.send()
@@ -2712,7 +2903,7 @@ struct ContentTypePicker: View {
                             selectedTypeGlass
                         } else if hoveredType == type {
                             Capsule(style: .continuous)
-                                .fill(.ultraThinMaterial)
+                                .fill(Color.white.opacity(0.1))
                         }
                     }
                 }
@@ -2727,15 +2918,7 @@ struct ContentTypePicker: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay(
-            Capsule(style: .continuous)
-                .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+        .liquidGlassSurface(.regular, in: Capsule(style: .continuous))
     }
 
     private func labelColor(for type: ContentType) -> Color {
@@ -2751,7 +2934,7 @@ struct ContentTypePicker: View {
     @ViewBuilder
     private var selectedTypeGlass: some View {
         Capsule(style: .continuous)
-            .fill(.ultraThinMaterial)
+            .fill(Color.white.opacity(0.12))
             .overlay(
                 Capsule(style: .continuous)
                     .stroke(

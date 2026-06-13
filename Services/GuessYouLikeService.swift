@@ -453,7 +453,7 @@ final class GuessYouLikeService {
                     id: w.id,
                     title: w.primaryTagName ?? w.categoryDisplayName,
                     subtitle: w.resolution,
-                    imageURL: w.gridPreviewURL?.absoluteString ?? w.thumbs.original ?? w.path,
+                    imageURL: w.gridPreviewURL?.absoluteString ?? w.thumbs.original,
                     destination: w.url,
                     contentType: .wallpaper,
                     sourceName: RecommendationSource.wallhaven.displayName

@@ -271,11 +271,9 @@ class WorkshopSourceManager: ObservableObject {
 
         // 在 users 块内逐行扫描
         var currentSteamID: String?
-        var isMostRecent = false
-
         let scanner = content[afterBrace...]
         var depth = 1
-        var lines = scanner.split(separator: "\n", omittingEmptySubsequences: false)
+        let lines = scanner.split(separator: "\n", omittingEmptySubsequences: false)
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -292,24 +290,6 @@ class WorkshopSourceManager: ObservableObject {
                 if depth == 1 {
                     // 回到 users 顶层，重置状态
                     currentSteamID = nil
-                    isMostRecent = false
-                }
-                continue
-            }
-
-            if depth == 2 {
-                // users 下的直接子 key：可能是 SteamID64 或嵌套块
-                let key = extractVDFKey(trimmed)
-                if let key = key, key.allSatisfy(\.isNumber), key.count == 17 {
-                    // 这是 SteamID64 条目
-                    currentSteamID = key
-                    isMostRecent = false
-                }
-            } else if depth == 3, let steamID = currentSteamID {
-                // SteamID64 块内部的属性
-                if let key = extractVDFKey(trimmed), key == "MostRecent",
-                   let val = extractVDFValue(trimmed), val == "1" {
-                    isMostRecent = true
                 }
             }
         }

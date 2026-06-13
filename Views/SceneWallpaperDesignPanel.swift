@@ -25,13 +25,19 @@ final class SceneWallpaperDesignPanelController {
             backing: .buffered,
             defer: false
         )
-        window.isOpaque = false
-        window.backgroundColor = .clear
+        window.title = "设计壁纸"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
-        window.isReleasedWhenClosed = false
+        window.isOpaque = false
         window.hasShadow = true
-        window.level = .floating
+        window.backgroundColor = .clear
         window.setContentSize(NSSize(width: 360, height: 600))
+        window.minSize = NSSize(width: 360, height: 600)
+        window.maxSize = NSSize(width: 360, height: 600)
+        window.isReleasedWhenClosed = false
+        window.tabbingMode = .disallowed
+        window.level = .floating
 
         let rootView = SceneWallpaperDesignPanel(viewModel: viewModel)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -220,8 +226,8 @@ final class SceneWallpaperDesignViewModel: ObservableObject {
                 return abs(ox - ex) < 5 && abs(oy - ey) < 5
             }
 
-            // 确定显示名称：取第一个非空名称，否则用 "未命名"
-            let groupName = siblings.first(where: { !$0.name.isEmpty })?.name ?? "未命名"
+            // 确定显示名称：取第一个非空名称，否则用默认名称
+            let groupName = siblings.first(where: { !$0.name.isEmpty })?.name ?? t("design.unnamed")
 
             // 确定当前选中语言：
             // 若有显式覆盖的可见条目，选第一个可见的
@@ -368,7 +374,7 @@ struct SceneWallpaperDesignPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if viewModel.languageGroups.isEmpty {
-                        Text("当前场景没有可设计的 sidecar 文本，或当前播放的不是这张场景壁纸。")
+                        Text(t("design.noDesignableText"))
                             .font(.system(size: 12))
                             .foregroundStyle(LiquidGlassColors.textSecondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -427,14 +433,14 @@ struct SceneWallpaperDesignPanel: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "sparkles.rectangle.stack")
+            Image(systemName: "slider.horizontal.3")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(accentTint)
                 .frame(width: 26, height: 26)
                 .background(accentTint.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("设计场景")
+                Text(t("design.designScene"))
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(LiquidGlassColors.textPrimary)
                 Text(viewModel.wallpaperName)
@@ -463,7 +469,7 @@ struct SceneWallpaperDesignPanel: View {
     private var glassDivider: some View {
         Rectangle()
             .fill(LinearGradient(
-                colors: [accentTint.opacity(0.35), .white.opacity(0.06), accentTint.opacity(0.35)],
+                colors: [accentTint.opacity(0.3), .white.opacity(0.06), accentTint.opacity(0.3)],
                 startPoint: .leading,
                 endPoint: .trailing
             ))
@@ -477,7 +483,7 @@ struct SceneWallpaperDesignPanel: View {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.system(size: 12, weight: .semibold))
-                Text("重置为默认值")
+                Text(t("design.resetToDefault"))
                     .font(.system(size: 12, weight: .semibold))
             }
             .foregroundStyle(accentTint)
@@ -504,7 +510,7 @@ private struct LanguageGroupEditor: View {
                 Circle()
                     .fill(accentTint.opacity(0.6))
                     .frame(width: 6, height: 6)
-                Text(group.displayName.isEmpty ? "未命名" : group.displayName)
+                Text(group.displayName.isEmpty ? t("design.unnamed") : group.displayName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(LiquidGlassColors.textPrimary)
                 Spacer(minLength: 4)
@@ -526,7 +532,7 @@ private struct LanguageGroupEditor: View {
                     HStack(spacing: 4) {
                         Image(systemName: "globe")
                             .font(.system(size: 10))
-                        Text(group.languageLabels[safe: group.selectedLanguageIndex] ?? "语言")
+                        Text(group.languageLabels[safe: group.selectedLanguageIndex] ?? t("design.language"))
                             .font(.system(size: 11, weight: .semibold))
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.system(size: 8))
@@ -591,7 +597,7 @@ private struct SceneTextEntryEditor: View {
                 Circle()
                     .fill(accentTint.opacity(0.6))
                     .frame(width: 6, height: 6)
-                Text(row.name.isEmpty ? "未命名" : row.name)
+                Text(row.name.isEmpty ? t("design.unnamed") : row.name)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(LiquidGlassColors.textPrimary)
             }
@@ -623,7 +629,7 @@ private struct SceneTextConfigPanel: View {
         if showHideToggle {
             glassCard {
                 VStack(alignment: .leading, spacing: 10) {
-                    toggleRow("隐藏", isOn: Binding(
+                    toggleRow(t("design.hidden"), isOn: Binding(
                         get: { row.override.hidden ?? false },
                         set: {
                             row.override.hidden = $0
@@ -644,7 +650,7 @@ private struct SceneTextConfigPanel: View {
         // 第二张卡片：滑块
         glassCard {
             VStack(alignment: .leading, spacing: 10) {
-                sliderRow("透明度", value: Binding(
+                sliderRow(t("design.opacity"), value: Binding(
                     get: { row.override.alpha ?? row.source.alpha ?? 1 },
                     set: {
                         row.override.alpha = $0
@@ -652,7 +658,7 @@ private struct SceneTextConfigPanel: View {
                     }
                 ), range: 0...1, step: 0.05)
 
-                sliderRow("X 偏移", value: Binding(
+                sliderRow(t("design.xOffset"), value: Binding(
                     get: { row.override.offsetX ?? 0 },
                     set: {
                         row.override.offsetX = $0
@@ -660,7 +666,7 @@ private struct SceneTextConfigPanel: View {
                     }
                 ), range: -400...400, step: 1)
 
-                sliderRow("Y 偏移", value: Binding(
+                sliderRow(t("design.yOffset"), value: Binding(
                     get: { row.override.offsetY ?? 0 },
                     set: {
                         row.override.offsetY = $0
@@ -668,7 +674,7 @@ private struct SceneTextConfigPanel: View {
                     }
                 ), range: -400...400, step: 1)
 
-                sliderRow("缩放", value: Binding(
+                sliderRow(t("design.scale"), value: Binding(
                     get: { row.override.scaleMultiplier ?? 1 },
                     set: {
                         row.override.scaleMultiplier = $0
@@ -676,7 +682,7 @@ private struct SceneTextConfigPanel: View {
                     }
                 ), range: 0.2...3, step: 0.05)
 
-                sliderRow("字号倍率", value: Binding(
+                sliderRow(t("design.fontSizeMultiplier"), value: Binding(
                     get: { row.override.fontSizeMultiplier ?? 1 },
                     set: {
                         row.override.fontSizeMultiplier = $0
@@ -684,7 +690,7 @@ private struct SceneTextConfigPanel: View {
                     }
                 ), range: 0.2...3, step: 0.05)
 
-                sliderRow("旋转", value: Binding(
+                sliderRow(t("design.rotation"), value: Binding(
                     get: { row.override.rotationOverride ?? (row.source.finalAngle ?? row.source.rotation ?? 0) },
                     set: {
                         row.override.rotationOverride = $0
@@ -692,7 +698,7 @@ private struct SceneTextConfigPanel: View {
                     }
                 ), range: -3.14...3.14, step: 0.01)
 
-                sliderRow("最大宽度", value: Binding(
+                sliderRow(t("design.maxWidth"), value: Binding(
                     get: { row.override.maxWidthOverride ?? row.source.maxWidth ?? 500 },
                     set: {
                         row.override.maxWidthOverride = $0
@@ -705,8 +711,8 @@ private struct SceneTextConfigPanel: View {
         // 第三张卡片：字体
         glassCard {
             VStack(alignment: .leading, spacing: 10) {
-                fieldRow("字体名称") {
-                    TextField("字体名称覆盖", text: Binding(
+                fieldRow(t("design.fontName")) {
+                    TextField(t("design.fontName"), text: Binding(
                         get: { row.override.fontFamilyOverride ?? "" },
                         set: {
                             row.override.fontFamilyOverride = $0.isEmpty ? nil : $0
@@ -720,8 +726,8 @@ private struct SceneTextConfigPanel: View {
                     .accentColor(accentTint)
                 }
 
-                fieldRow("字体路径") {
-                    TextField("字体文件路径覆盖", text: Binding(
+                fieldRow(t("design.fontPath")) {
+                    TextField(t("design.fontPath"), text: Binding(
                         get: { row.override.fontPathOverride ?? "" },
                         set: {
                             row.override.fontPathOverride = $0.isEmpty ? nil : $0
@@ -735,7 +741,7 @@ private struct SceneTextConfigPanel: View {
                     .accentColor(accentTint)
                 }
 
-                fieldRow("对齐") {
+                fieldRow(t("design.alignment")) {
                     Picker("", selection: Binding(
                         get: { row.override.alignmentOverride ?? row.source.alignment ?? "center center" },
                         set: {
@@ -743,9 +749,9 @@ private struct SceneTextConfigPanel: View {
                             row = row
                         }
                     )) {
-                        Text("左对齐").tag("left center")
-                        Text("居中").tag("center center")
-                        Text("右对齐").tag("right center")
+                        Text(t("design.alignLeft")).tag("left center")
+                        Text(t("design.alignCenter")).tag("center center")
+                        Text(t("design.alignRight")).tag("right center")
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
@@ -762,8 +768,8 @@ private struct SceneTextConfigPanel: View {
     // MARK: - 共享的文本/时钟内容（避免 showHideToggle 分支重复）
     @ViewBuilder
     private var textAndClockContent: some View {
-        fieldRow("文本覆盖") {
-            TextField("文本覆盖", text: Binding(
+        fieldRow(t("design.textOverride")) {
+            TextField(t("design.textOverride"), text: Binding(
                 get: { row.override.textOverride ?? "" },
                 set: {
                     row.override.textOverride = $0.isEmpty ? nil : $0
@@ -778,7 +784,7 @@ private struct SceneTextConfigPanel: View {
         }
 
         if row.source.behavior == "clock" {
-            toggleRow("24 小时制", isOn: Binding(
+            toggleRow(t("design.use24Hour"), isOn: Binding(
                 get: { row.override.use24hFormat ?? true },
                 set: {
                     row.override.use24hFormat = $0
@@ -786,7 +792,7 @@ private struct SceneTextConfigPanel: View {
                 }
             ))
 
-            toggleRow("显示秒", isOn: Binding(
+            toggleRow(t("design.showSeconds"), isOn: Binding(
                 get: { row.override.showSeconds ?? false },
                 set: {
                     row.override.showSeconds = $0
@@ -794,8 +800,8 @@ private struct SceneTextConfigPanel: View {
                 }
             ))
 
-            fieldRow("分隔符") {
-                TextField("分隔符", text: Binding(
+            fieldRow(t("design.delimiter")) {
+                TextField(t("design.delimiter"), text: Binding(
                     get: { row.override.delimiter ?? "" },
                     set: {
                         row.override.delimiter = $0.isEmpty ? nil : $0
@@ -887,7 +893,7 @@ private struct SceneTextConfigPanel: View {
 
     private var colorRow: some View {
         HStack(spacing: 10) {
-            Text("颜色覆盖")
+            Text(t("design.colorOverride"))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(LiquidGlassColors.textPrimary)
                 .frame(width: labelWidth, alignment: .leading)

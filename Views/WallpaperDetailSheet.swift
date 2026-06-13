@@ -362,7 +362,7 @@ struct WallpaperDetailSheet: View {
 
                 // 主图：降采样到屏幕分辨率（用已加载的同一张图，不再重复请求网络）
                 let scale = NSScreen.main?.backingScaleFactor ?? 2
-                let downsampleSize = CGSize(width: width * scale, height: height * scale)
+                let _ = CGSize(width: width * scale, height: height * scale)
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.medium)
@@ -1214,7 +1214,7 @@ struct WallpaperDetailSheet: View {
                 await MainActor.run {
                     // 只替换 uploader 字段（其他字段保持搜索结果的即可）
                     if detail.uploader != nil {
-                        var updated = resolvedWallpaper
+                        let updated = resolvedWallpaper
                         // 通过重新创建 Wallpaper 来更新 uploader（保持其他字段不变）
                         let newWallpaper = Wallpaper(
                             id: updated.id,

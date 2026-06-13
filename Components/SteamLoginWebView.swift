@@ -134,14 +134,17 @@ struct SteamLoginWebView: NSViewRepresentable {
 
             // ── 初始状态：只检测，不自动跳转 ──
             case .initial:
-                // 情况 A：已经在 profile 格式的订阅页（有 Cookie 直接进来了）
-                if let sid = extractSteamIDFromProfileURL(urlString),
-                   urlString.contains("browsefilter=mysubscriptions") {
-                    reachProfilePage(steamID: sid)
-                    return
-                }
-                // 情况 B：在订阅页但没有 profile 前缀
+                // 情况 A：已经在订阅页（支持 /profiles/ 和 /id/ 两种格式）
                 if urlString.contains("myworkshopfiles") && urlString.contains("browsefilter=mysubscriptions") {
+                    if let sid = extractSteamIDFromProfileURL(urlString) {
+                        reachProfilePage(steamID: sid)
+                        return
+                    }
+                    if let vanity = extractVanityNameFromProfileURL(urlString) {
+                        reachProfilePage(steamID: vanity)
+                        return
+                    }
+                    // 从页面内容提取 ID
                     tryExtractSteamIDFromPage(webView: webView)
                     return
                 }
@@ -163,9 +166,12 @@ struct SteamLoginWebView: NSViewRepresentable {
             // ── 已有 SteamID，等待用户点击"前往订阅页面" ──
             case .hasSteamID:
                 // 不自动跳转，只是检查是否直接到了订阅页
-                if let sid = extractSteamIDFromProfileURL(urlString),
-                   urlString.contains("browsefilter=mysubscriptions") {
-                    reachProfilePage(steamID: sid)
+                if urlString.contains("myworkshopfiles") && urlString.contains("browsefilter=mysubscriptions") {
+                    if let sid = extractSteamIDFromProfileURL(urlString) {
+                        reachProfilePage(steamID: sid)
+                    } else if let vanity = extractVanityNameFromProfileURL(urlString) {
+                        reachProfilePage(steamID: vanity)
+                    }
                 }
 
             // ── 已在最终订阅页，无需任何操作 ──
@@ -236,14 +242,77 @@ struct SteamLoginWebView: NSViewRepresentable {
             return String(urlString[Range(match.range(at: 1), in: urlString)!])
         }
 
+        private func extractVanityNameFromProfileURL(_ urlString: String) -> String? {
+            let pattern = "/id/([a-zA-Z0-9_-]+)"
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: urlString, range: NSRange(urlString.startIndex..., in: urlString)) else {
+                return nil
+            }
+            return String(urlString[Range(match.range(at: 1), in: urlString)!])
+        }
+
         // MARK: - SteamID 提取
 
         private func tryExtractSteamIDFromPage(webView: WKWebView) {
             webView.evaluateJavaScript("document.body.innerHTML") { result, error in
                 guard let html = result as? String else { return }
+                // 优先从页面 HTML 提取数字 steamID
                 if let id = self.extractSteamIDFromPageHTML(html) {
                     self.setLoggedInWithID(id)
+                    return
                 }
+                // 降级：从页面链接提取 /profiles/ 格式的 ID
+                if let id = self.extractSteamIDFromPageLinks(html) {
+                    self.setLoggedInWithID(id)
+                    return
+                }
+                // 最后降级：从当前 URL 提取 /id/vanityname/ 格式的 vanity name
+                if let vanityName = self.extractVanityNameFromCurrentURL() {
+                    AppLogger.info(.media, "Using vanity name from URL: \(vanityName)")
+                    self.setLoggedInWithID(vanityName)
+                    return
+                }
+                // 如果在订阅页面且页面有数据，标记为已登录（允许后续同步）
+                if let url = webView.url?.absoluteString,
+                   url.contains("myworkshopfiles") && url.contains("browsefilter=mysubscriptions") {
+                    self.checkPageHasWorkshopItems(webView: webView)
+                }
+            }
+        }
+
+        /// 从页面链接中提取 /profiles/ 格式的 steamID
+        private func extractSteamIDFromPageLinks(_ html: String) -> String? {
+            let pattern = "/profiles/(\\d{17})"
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)) else {
+                return nil
+            }
+            return String(html[Range(match.range(at: 1), in: html)!])
+        }
+
+        /// 从当前 URL 提取 /id/vanityname/ 格式的 vanity name
+        private func extractVanityNameFromCurrentURL() -> String? {
+            guard let url = webView?.url?.absoluteString else { return nil }
+            let pattern = "/id/([a-zA-Z0-9_-]+)/"
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) else {
+                return nil
+            }
+            return String(url[Range(match.range(at: 1), in: url)!])
+        }
+
+        /// 检查页面是否有 Workshop 订阅数据，如果有则标记为已登录
+        private func checkPageHasWorkshopItems(webView: WKWebView) {
+            let js = """
+            (function() {
+                var items = document.querySelectorAll('.workshopItem, .workshopItemSubscription, [id*=\"Subscription\"], a[href*=\"/sharedfiles/filedetails/?id=\"]');
+                return items.length;
+            })()
+            """
+            webView.evaluateJavaScript(js) { result, error in
+                guard let count = result as? Int, count > 0 else { return }
+                AppLogger.info(.media, "Page has \(count) workshop items, marking as logged in")
+                self.setLoggedInWithoutID()
             }
         }
 
@@ -252,12 +321,30 @@ struct SteamLoginWebView: NSViewRepresentable {
                 "steamid=\"(\\d{17})\"",
                 "\"steamid\":\"(\\d{17})\"",
                 "profile/(\\d{17})",
-                "\"steamid64\":\"(\\d{17})\""
+                "\"steamid64\":\"(\\d{17})\"",
+                "\"accountid\":\"(\\d{5,10})\"",
+                "\"accountid\":(\\d{5,10})",
+                "g_steamID\\s*=\\s*\"(\\d{17})\"",
+                "g_steamID\\s*=\\s*'(\\d{17})'",
+                "\"steamid\":\\s*\"(\\d{17})\"",
+                "data-steamid=\"(\\d{17})\"",
+                "/profiles/(\\d{17})",
+                "openid\\.claimed_id.*?(\\d{17})",
+                "SteamId[\"']?\\s*[:=]\\s*[\"']?(\\d{17})"
             ]
             for pattern in patterns {
-                guard let regex = try? NSRegularExpression(pattern: pattern),
+                guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
                       let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)) else { continue }
-                return String(html[Range(match.range(at: 1), in: html)!])
+                let id = String(html[Range(match.range(at: 1), in: html)!])
+                // 如果是 accountid (较短)，需要转换为 steamID64
+                if id.count >= 5 && id.count <= 10 {
+                    if let accountID = UInt64(id) {
+                        return String(accountID + 76561197960265728)
+                    }
+                }
+                if id.count == 17 {
+                    return id
+                }
             }
             return nil
         }
@@ -299,19 +386,21 @@ struct SteamLoginWebView: NSViewRepresentable {
 /// 确保后续 URLSession 请求（NetworkService）携带有效的登录会话
 private func transferSteamCookiesToSharedStorage() async {
     await withCheckedContinuation { continuation in
-        let cookieStore = WKWebsiteDataStore.default().httpCookieStore
-        cookieStore.getAllCookies { cookies in
-            let sharedStorage = HTTPCookieStorage.shared
-            var transferredCount = 0
-            for cookie in cookies {
-                guard cookie.domain.contains("steamcommunity.com") ||
-                      cookie.domain.contains("steampowered.com") ||
-                      cookie.domain.contains("steamcdn.com") else { continue }
-                sharedStorage.setCookie(cookie)
-                transferredCount += 1
+        MainActor.assumeIsolated {
+            let cookieStore = WKWebsiteDataStore.default().httpCookieStore
+            cookieStore.getAllCookies { cookies in
+                let sharedStorage = HTTPCookieStorage.shared
+                var transferredCount = 0
+                for cookie in cookies {
+                    guard cookie.domain.contains("steamcommunity.com") ||
+                          cookie.domain.contains("steampowered.com") ||
+                          cookie.domain.contains("steamcdn.com") else { continue }
+                    sharedStorage.setCookie(cookie)
+                    transferredCount += 1
+                }
+                AppLogger.info(.media, "Transferred \(transferredCount) Steam cookies to shared storage")
+                continuation.resume()
             }
-            AppLogger.info(.media, "Transferred \(transferredCount) Steam cookies to shared storage")
-            continuation.resume()
         }
     }
 }

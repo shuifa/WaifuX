@@ -74,15 +74,24 @@ func regenerateSceneBakePosterAndNotify(itemID: String, videoURL: URL) async -> 
 private actor SceneOfflineBakeConcurrencyGate {
     static let shared = SceneOfflineBakeConcurrencyGate()
     private var busy = false
+    private var busySince: Date?
 
     func tryEnter() -> Bool {
+        // 安全重置：如果门控卡死超过 10 分钟，自动重置
+        if busy, let since = busySince, Date().timeIntervalSince(since) > 600 {
+            print("[SceneOfflineBakeConcurrencyGate] ⚠️ 门控卡死超过 10 分钟，自动重置")
+            busy = false
+            busySince = nil
+        }
         if busy { return false }
         busy = true
+        busySince = Date()
         return true
     }
 
     func leave() {
         busy = false
+        busySince = nil
     }
 }
 
@@ -181,7 +190,7 @@ enum SceneOfflineBakeService {
             }
             // 预览不传 `--wallpaper` / `--background`：保留一个普通可见窗口供用户查看，
             // 不要把窗口贴成桌面壁纸层级（壁纸层级会被其他窗口遮住，且鼠标事件全部穿透）。
-            var args = ["--release", "--", contentRoot.path]
+            var args = [contentRoot.path]
             if let assets = WallpaperEngineEmbeddedAssets.materializedAssetsRootIfPresent(),
                !assets.isEmpty {
                 args += ["--assets", assets]
@@ -268,15 +277,11 @@ enum SceneOfflineBakeService {
         cacheItemID: String,
         durationSeconds: Double = 15,
         fps: Int32 = 30,
-        renderer: SceneBakeRenderer = .legacyCLI,
+        renderer: SceneBakeRenderer = .wallpaperWgpu,
         persistArtifactToItemID: String? = nil,
         progress: (@MainActor (Double) -> Void)? = nil
     ) async throws -> SceneBakeArtifact {
-        // 统一并发门控：BakeService 与 SceneOfflineBakeService 共享
-        let alreadyBaking = await MainActor.run { BakeService.shared.isBaking }
-        guard !alreadyBaking else {
-            throw SceneOfflineBakeError.concurrentBakeInProgress
-        }
+        // 并发门控：防止多个烘焙同时运行
         let entered = await SceneOfflineBakeConcurrencyGate.shared.tryEnter()
         guard entered else {
             throw SceneOfflineBakeError.concurrentBakeInProgress
@@ -346,12 +351,12 @@ enum SceneOfflineBakeService {
 
         try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
-        let cachedInspection: BakedVideoInspection? = {
+        let cachedInspection: BakedVideoInspection? = await {
             switch renderer {
             case .wallpaperWgpu:
-                return inspectBakedVideo(at: outURL, expectedWidth: evenW, expectedHeight: evenH)
+                return await inspectBakedVideo(at: outURL, expectedWidth: evenW, expectedHeight: evenH)
             case .legacyCLI:
-                return inspectBakedVideo(at: outURL)
+                return await inspectBakedVideo(at: outURL)
             }
         }()
         if let cachedInspection,
@@ -386,11 +391,13 @@ enum SceneOfflineBakeService {
             try? FileManager.default.removeItem(at: outURL)
         }
 
-        await MainActor.run {
-            WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper()
+        if renderer == .legacyCLI {
+            await MainActor.run {
+                WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper()
+            }
+            // 与 stop 子进程错开
+            try await Task.sleep(nanoseconds: 250_000_000)
         }
-        // 与 stop 子进程错开
-        try await Task.sleep(nanoseconds: 250_000_000)
 
         let artifact: SceneBakeArtifact
         switch renderer {
@@ -445,35 +452,110 @@ enum SceneOfflineBakeService {
         durationSeconds: Double,
         progress: (@MainActor (Double) -> Void)?
     ) async throws -> SceneBakeArtifact {
+        // 使用 wallpaper-wgpu bake 子命令（GPU readback 直接编码，不需要屏幕录制）
+        guard let wgpuBinary = WallpaperEngineXBridge.resolvedCLIExecutableURL() else {
+            throw SceneOfflineBakeError.cliNotFound
+        }
+
         let tempURL = outURL.deletingLastPathComponent()
             .appendingPathComponent(".\(outURL.deletingPathExtension().lastPathComponent).\(UUID().uuidString).tmp.mp4")
         try? FileManager.default.removeItem(at: tempURL)
 
-        let bakeResult = try await BakeService.shared.bakeVideo(
-            scenePath: contentRoot.path,
-            outputURL: tempURL,
-            targetWidth: width,
-            targetHeight: height,
-            fps: Int(fps),
-            duration: durationSeconds,
-            progress: progress
-        )
+        // wallpaper-wgpu bake <path> --size WxH --fps N --duration S --out <path> [--assets <path>] [--clean]
+        var args: [String] = [
+            "bake",
+            contentRoot.path,
+            "--size", "\(width)x\(height)",
+            "--fps", String(fps),
+            "--clean",
+            "--out", tempURL.path,
+        ]
 
-        guard inspectBakedVideo(at: tempURL, expectedWidth: bakeResult.width, expectedHeight: bakeResult.height) != nil else {
+        // assets 路径
+        if let assets = WallpaperEngineEmbeddedAssets.materializedAssetsRootIfPresent(), !assets.isEmpty {
+            args += ["--assets", assets]
+        }
+
+        // 自动检测周期时不需要传 --duration，让 bake 自己检测
+        if durationSeconds > 0 {
+            args += ["--duration", String(Int(durationSeconds))]
+        }
+
+        print("[SceneOfflineBake] 启动 wallpaper-wgpu bake: \(wgpuBinary.lastPathComponent) \(args.joined(separator: " "))")
+
+        let process = Process()
+        process.executableURL = wgpuBinary
+        process.arguments = args
+        process.environment = SceneOfflineBakeService.rendererLaunchEnvironment(for: wgpuBinary)
+
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+        process.standardOutput = FileHandle.nullDevice
+
+        try process.run()
+
+        // 监控 stderr 中的进度信息
+        // 格式: \r[bake] {message} [{progress * 100:.0}%]
+        let stderrHandle = stderrPipe.fileHandleForReading
+        let progressTask = Task.detached(priority: .utility) {
+            let pattern = try? NSRegularExpression(pattern: #"\[(\d+\.?\d*)%\]"#)
+            var buffer = ""
+            while !Task.isCancelled {
+                let data = stderrHandle.availableData
+                if data.isEmpty { break }
+                if let chunk = String(data: data, encoding: .utf8) {
+                    buffer += chunk
+                    let lines = buffer.components(separatedBy: "\r")
+                    buffer = lines.last ?? ""
+                    for line in lines.dropLast() {
+                        if let match = pattern?.firstMatch(
+                            in: line,
+                            range: NSRange(location: 0, length: line.utf16.count)
+                        ), let range = Range(match.range(at: 1), in: line),
+                           let pct = Double(line[range]) {
+                            await progress?(pct / 100.0)
+                        }
+                    }
+                }
+            }
+            // 处理缓冲区中剩余内容
+            if !buffer.isEmpty, let match = pattern?.firstMatch(
+                in: buffer,
+                range: NSRange(location: 0, length: buffer.utf16.count)
+            ), let range = Range(match.range(at: 1), in: buffer),
+               let pct = Double(buffer[range]) {
+                await progress?(pct / 100.0)
+            }
+        }
+
+        // 用轮询替代 waitUntilExit，避免阻塞 cooperative thread pool
+        while process.isRunning {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        progressTask.cancel()
+
+        guard process.terminationStatus == 0 else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw SceneOfflineBakeError.bakeProcessFailed("wallpaper-wgpu bake 执行失败 (exit=\(process.terminationStatus))")
+        }
+
+        guard await inspectBakedVideo(at: tempURL, expectedWidth: width, expectedHeight: height) != nil else {
             try? FileManager.default.removeItem(at: tempURL)
             try? FileManager.default.removeItem(at: outURL)
-            throw SceneOfflineBakeError.bakeProcessFailed("BakeService 完成后未找到输出文件")
+            throw SceneOfflineBakeError.bakeProcessFailed("bake 完成后未找到输出文件")
         }
         try? FileManager.default.removeItem(at: outURL)
         try FileManager.default.moveItem(at: tempURL, to: outURL)
 
+        await MainActor.run { progress?(1.0) }
+
         return SceneBakeArtifact(
             analysisId: eligibility.analysisId,
             videoPath: outURL.path,
-            width: bakeResult.width,
-            height: bakeResult.height,
-            fps: bakeResult.fps,
-            durationSeconds: bakeResult.duration,
+            width: width,
+            height: height,
+            fps: Int(fps),
+            durationSeconds: durationSeconds,
             bakedAt: .now,
             renderer: .wallpaperWgpu
         )
@@ -609,7 +691,7 @@ enum SceneOfflineBakeService {
                         Thread.sleep(forTimeInterval: 0.08)
                     }
 
-                    let bakedInspection = inspectBakedVideo(at: outURL)
+                    let bakedInspection = inspectBakedVideoSync(at: outURL)
                     if let bakedInspection {
                         // wallpaperengine-cli 内部已直接将动态文本 JSON 写入 sidecar 文件
                         continuation.resume(returning: SceneBakeArtifact(
@@ -681,7 +763,7 @@ enum SceneOfflineBakeService {
         record: MediaDownloadRecord,
         durationSeconds: Double = 15,
         fps: Int32 = 30,
-        renderer: SceneBakeRenderer = .legacyCLI,
+        renderer: SceneBakeRenderer = .wallpaperWgpu,
         progress: (@MainActor (Double) -> Void)? = nil
     ) async throws -> SceneBakeArtifact {
         guard let eligibility = record.sceneBakeEligibility else {
@@ -739,7 +821,7 @@ enum SceneOfflineBakeService {
     }
 
     static func isUsableBakedVideo(at url: URL) -> Bool {
-        inspectBakedVideo(at: url) != nil
+        inspectBakedVideoSync(at: url) != nil
     }
 
     private static func mainDisplayPixelSize() -> (width: Int, height: Int) {
@@ -762,7 +844,7 @@ enum SceneOfflineBakeService {
         return (width, height)
     }
 
-    private static func inspectBakedVideo(at url: URL, expectedWidth: Int? = nil, expectedHeight: Int? = nil) -> BakedVideoInspection? {
+    private static func inspectBakedVideo(at url: URL, expectedWidth: Int? = nil, expectedHeight: Int? = nil) async -> BakedVideoInspection? {
         guard url.isFileURL,
               FileManager.default.fileExists(atPath: url.path),
               let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -772,10 +854,12 @@ enum SceneOfflineBakeService {
         }
 
         let asset = AVURLAsset(url: url)
-        let duration = asset.duration.seconds
-        guard duration.isFinite, duration > 0.5 else { return nil }
-        guard let track = asset.tracks(withMediaType: .video).first else { return nil }
-        let transformedSize = track.naturalSize.applying(track.preferredTransform)
+        let duration = try? await asset.load(.duration)
+        guard let durationSec = duration?.seconds, durationSec.isFinite, durationSec > 0.5 else { return nil }
+        guard let track = (try? await asset.loadTracks(withMediaType: .video))?.first else { return nil }
+        let naturalSize = (try? await track.load(.naturalSize)) ?? .zero
+        let preferredTransform = (try? await track.load(.preferredTransform)) ?? .identity
+        let transformedSize = naturalSize.applying(preferredTransform)
         let width = abs(Int(transformedSize.width.rounded()))
         let height = abs(Int(transformedSize.height.rounded()))
         guard width > 0, height > 0 else { return nil }
@@ -783,6 +867,20 @@ enum SceneOfflineBakeService {
             print("[SceneOfflineBake] invalid cached MP4 size: actual=\(width)x\(height) expected=\(expectedWidth)x\(expectedHeight) url=\(url.path)")
             return nil
         }
-        return BakedVideoInspection(duration: duration, width: width, height: height)
+        return BakedVideoInspection(duration: durationSec, width: width, height: height)
+    }
+
+    private static func inspectBakedVideoSync(at url: URL, expectedWidth: Int? = nil, expectedHeight: Int? = nil) -> BakedVideoInspection? {
+        final class Box: @unchecked Sendable { var value: BakedVideoInspection? }
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = Box()
+        DispatchQueue.global().async {
+            Task {
+                box.value = await inspectBakedVideo(at: url, expectedWidth: expectedWidth, expectedHeight: expectedHeight)
+                semaphore.signal()
+            }
+        }
+        semaphore.wait()
+        return box.value
     }
 }

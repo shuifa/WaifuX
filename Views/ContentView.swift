@@ -627,7 +627,7 @@ struct ContentView: View {
                         throw NetworkError.invalidResponse
                     }
                     // 3. 走标准下载流程，自动触发 DownloadProgressToastHost
-                    try await mediaViewModel.downloadMedia(resolved, option: best)
+                    _ = try await mediaViewModel.downloadMedia(resolved, option: best)
                 } catch {
                     AppLogger.error(.download, "猜你喜欢下载媒体失败",
                         metadata: ["id": media.id, "error": error.localizedDescription])

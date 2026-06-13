@@ -163,6 +163,17 @@ private struct WallpaperLoadMoreSentinelMinYPreferenceKey: PreferenceKey {
     }
 }
 
+private struct WallpaperExploreHeaderHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 {
+            value = next
+        }
+    }
+}
+
 private enum WallpaperLoadMoreScrollZone: Equatable {
     case near
     case armed
@@ -248,6 +259,8 @@ struct WallpaperExploreContentView: View {
     @State private var loadMoreCooldownUntil: Date? = nil
     /// syncAtmosphereIfNeeded 节流时间戳，避免 loadMore 高频触发时反复下载缩略图+CoreImage 采样。
     @State private var lastAtmosphereSyncTime: Date = .distantPast
+    @State private var measuredGridHeaderHeight: CGFloat = 0
+    @State private var isGridHeaderContentMounted = true
 
     private var shouldUseLightweightEffects: Bool {
         (videoWallpaperManager.isVideoWallpaperActive && !videoWallpaperManager.isPaused) ||
@@ -278,6 +291,8 @@ struct WallpaperExploreContentView: View {
                         grainIntensity: arcSettings.exploreGrainWallpaper,
                         lightweight: shouldUseLightweightEffects
                     )
+                    // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
+                    .drawingGroup(opaque: true)
                     .ignoresSafeArea()
                 }
 
@@ -330,6 +345,10 @@ struct WallpaperExploreContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .wallpaperDataSourceChanged)) { _ in
             handleDataSourceChange()
+            invalidateGridHeaderMeasurement()
+        }
+        .onChange(of: gridHeaderLayoutSignature) { _, _ in
+            invalidateGridHeaderMeasurement()
         }
         .onChange(of: category) { _, _ in
             handleCategoryChange()
@@ -346,10 +365,15 @@ struct WallpaperExploreContentView: View {
         .onChange(of: fourKSorting) { _, _ in handle4KSortingChange() }
         .onChange(of: konachanSorting) { _, _ in handleKonachanSortingChange() }
         .onChange(of: viewModel.wallpapers) { _, _ in
+            let count = viewModel.wallpapers.count
             WallpaperExploreDiagnostics.markWallpapersChanged(
-                totalCount: viewModel.wallpapers.count,
+                totalCount: count,
                 isLoading: viewModel.isLoading
             )
+            AppLogger.debug(.wallpaper, "[诊断] wallpapers 变化", metadata: [
+                "count": "\(count)",
+                "isLoading": "\(viewModel.isLoading)"
+            ])
             // ⚡ 3s 节流：loadMore 时 wallpapers 高频追加，syncAtmosphereIfNeeded 会下载缩略图
             // + CoreImage 颜色分析，不加节流会导致 CPU 持续满载。
             let now = Date()
@@ -358,12 +382,12 @@ struct WallpaperExploreContentView: View {
                 syncAtmosphereIfNeeded()
             }
 
-            // ✅ 异步防抖：取消上一次尚未执行的重算，开启新任务并等待 100ms 缓冲。
-            // scrollView 滚动加载（loadMore）时 wallpapers 高频追加，不加防抖会导致
-            // recomputeVisibleWallpapers 和瀑布流缓存重算在主线程堆积，引发卡死。
+            // ✅ 异步防抖：取消上一次尚未执行的重算，开启新任务并等待 200ms 缓冲。
+            // wallpapers 变更通知 + upsert 的 @Published 通知可能重叠，200ms 给 SwiftUI 足够时间
+            // 完成观察系统处理，避免与滚动期间的 view 更新竞态导致主线程死锁。
             recomputeTask?.cancel()
             recomputeTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms 缓冲
+                try? await Task.sleep(nanoseconds: 200_000_000) // 200ms 缓冲，避免与 SwiftUI 观察系统竞态
                 guard !Task.isCancelled else { return }
                 recomputeVisibleWallpapers()
             }
@@ -471,7 +495,6 @@ struct WallpaperExploreContentView: View {
                     self.scheduleLoadMoreFromScroll()
                 } else if newValue == .far {
                     // ⚡ 延迟重置 wasNearBottom，给 contentSize 足够时间稳定
-                    let prevWasNearBottom = scrollCoordinator.wasNearBottom
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
                         scrollCoordinator.wasNearBottom = false
                     }
@@ -479,8 +502,8 @@ struct WallpaperExploreContentView: View {
             })
             .onScrollGeometryChange(for: CGFloat.self, of: { geometry in
                 geometry.contentOffset.y
-            }, action: { _, _ in
-                WallpaperExploreScrollActivity.markActive()
+            }, action: { _, offset in
+                handleScrollOffset(offset)
             })
             .scrollDisabled(!isVisible)
             .onChange(of: outerScrollToTopToken) { _, _ in
@@ -508,6 +531,10 @@ struct WallpaperExploreContentView: View {
                 .frame(width: width, alignment: .leading)
                 .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
                 .environment(\.arcIsLightMode, arcSettings.isLightMode)
+                .background(
+                    ScrollToTopHelper(trigger: 0, onOffsetChange: handleScrollOffset)
+                        .frame(width: 0, height: 0)
+                )
             }
             .coordinateSpace(name: Self.scrollCoordinateSpaceName)
             .onChange(of: viewModel.wallpapers.count) { _, count in
@@ -937,6 +964,29 @@ struct WallpaperExploreContentView: View {
     }
 
     private var gridHeaderStack: some View {
+        Group {
+            if isGridHeaderContentMounted {
+                gridHeaderContent
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: WallpaperExploreHeaderHeightPreferenceKey.self,
+                                value: proxy.size.height
+                            )
+                        }
+                    )
+            } else {
+                Color.clear
+                    .frame(height: max(measuredGridHeaderHeight, 1))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onPreferenceChange(WallpaperExploreHeaderHeightPreferenceKey.self) { height in
+            updateMeasuredGridHeaderHeight(height)
+        }
+    }
+
+    private var gridHeaderContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             heroSection
             categorySection
@@ -949,6 +999,62 @@ struct WallpaperExploreContentView: View {
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var gridHeaderLayoutSignature: String {
+        [
+            WallpaperSourceManager.shared.activeSource.rawValue,
+            category.rawValue,
+            fourKCategory?.id ?? "none",
+            konachanCategory?.id ?? "none",
+            konachanHotTagName ?? "none",
+            hotTag?.id ?? "none",
+            viewModel.puritySFW ? "sfw1" : "sfw0",
+            viewModel.puritySketchy ? "sketchy1" : "sketchy0",
+            viewModel.purityNSFW ? "nsfw1" : "nsfw0",
+            viewModel.selectedColors.joined(separator: ",")
+        ].joined(separator: "|")
+    }
+
+    private func handleScrollOffset(_ offset: CGFloat) {
+        WallpaperExploreScrollActivity.markActive()
+        updateGridHeaderMountState(scrollOffset: offset)
+    }
+
+    private func updateGridHeaderMountState(scrollOffset: CGFloat) {
+        let headerHeight = measuredGridHeaderHeight > 1 ? measuredGridHeaderHeight : 260
+        let hideThreshold = headerHeight + 80
+        let showThreshold = max(0, headerHeight - 48)
+        let shouldMount = isGridHeaderContentMounted
+            ? scrollOffset < hideThreshold
+            : scrollOffset < showThreshold
+
+        guard shouldMount != isGridHeaderContentMounted else { return }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isGridHeaderContentMounted = shouldMount
+        }
+    }
+
+    private func updateMeasuredGridHeaderHeight(_ height: CGFloat) {
+        guard height > 1, abs(height - measuredGridHeaderHeight) > 1 else { return }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            measuredGridHeaderHeight = height
+        }
+    }
+
+    private func invalidateGridHeaderMeasurement() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isGridHeaderContentMounted = true
+            measuredGridHeaderHeight = 0
+        }
     }
 
     // MARK: - Grid & Cards
@@ -1230,6 +1336,12 @@ struct WallpaperExploreContentView: View {
             source: "triggerLoadMore",
             currentCount: viewModel.wallpapers.count
         )
+        // ⚠️ 诊断日志：检测 loadMore 触发
+        AppLogger.info(.wallpaper, "[诊断] triggerLoadMore 触发", metadata: [
+            "currentCount": "\(viewModel.wallpapers.count)",
+            "isLoading": "\(viewModel.isLoading)",
+            "hasMorePages": "\(viewModel.hasMorePages)"
+        ])
         isLoadingMore = true
         loadMoreFailed = false
         ForegroundPrefetchManager.shared.stop(namespace: "wallpaper-view-model")
@@ -1241,7 +1353,15 @@ struct WallpaperExploreContentView: View {
 
             guard !Task.isCancelled else { return }
             loadMoreFailed = false
+            let start = Date()
             await viewModel.loadMore()
+            let duration = Date().timeIntervalSince(start) * 1000
+            // ⚠️ 诊断日志：检测 loadMore 耗时
+            AppLogger.info(.wallpaper, "[诊断] loadMore 完成", metadata: [
+                "durationMS": String(format: "%.2f", duration),
+                "newCount": "\(viewModel.wallpapers.count)",
+                "hasMorePages": "\(viewModel.hasMorePages)"
+            ])
             guard !Task.isCancelled else { return }
             if viewModel.hasMorePages && viewModel.errorMessage != nil {
                 loadMoreFailed = true
@@ -1410,12 +1530,22 @@ struct WallpaperExploreContentView: View {
             lastVisibleIDs = newIDs
             visibleWallpapers = newVisible
         }
+        let duration = Date().timeIntervalSince(start) * 1000
         WallpaperExploreDiagnostics.markRecompute(
-            durationMS: Date().timeIntervalSince(start) * 1000,
+            durationMS: duration,
             totalCount: viewModel.wallpapers.count,
             visibleCount: newVisible.count,
             changed: changed
         )
+        // ⚠️ 诊断日志：检测 recompute 性能
+        if duration > 16 {
+            AppLogger.warn(.wallpaper, "[性能] recomputeVisibleWallpapers 耗时过长", metadata: [
+                "durationMS": String(format: "%.2f", duration),
+                "totalCount": "\(viewModel.wallpapers.count)",
+                "visibleCount": "\(newVisible.count)",
+                "changed": "\(changed)"
+            ])
+        }
     }
 
     // ❌ 已移除 refreshFavoriteIDs()，收藏状态改为视图在 ForEach 中
@@ -1503,6 +1633,7 @@ private struct WallpaperGridContainerView: View, Equatable {
                         ) {
                             onSelect(wallpaper)
                         }
+                        .equatable()
                         // ⚡ 显式设定卡片高度，让 LazyVStack 无需创建子视图即
                         // 可估算列总高度，确保真正的懒加载行为。
                         .frame(height: WallpaperCardView.estimatedHeight(
@@ -1562,12 +1693,21 @@ private final class WallpaperWaterfallLayoutCache {
         )
         cachedKey = key
         cachedColumns = columns
+        let duration = Date().timeIntervalSince(start) * 1000
         WallpaperExploreDiagnostics.markLayout(
-            durationMS: Date().timeIntervalSince(start) * 1000,
+            durationMS: duration,
             itemCount: wallpapers.count,
             columnCount: config.columnCount,
             reusedCache: false
         )
+        // ⚠️ 诊断日志：检测瀑布流布局计算性能
+        if duration > 16 {
+            AppLogger.warn(.wallpaper, "[性能] waterfallColumns 计算耗时过长", metadata: [
+                "durationMS": String(format: "%.2f", duration),
+                "itemCount": "\(wallpapers.count)",
+                "columnCount": "\(config.columnCount)"
+            ])
+        }
         return columns
     }
 }
@@ -1706,7 +1846,7 @@ private extension WallpaperExploreContentView {
         }
         if let hex = viewModel.selectedColors.first,
            let preset = WallhavenAPI.colorPreset(for: hex) {
-            chips.append(.init(kind: .color(hex), title: preset.displayName, subtitle: preset.displayHex, accentHex: hex))
+            chips.append(.init(kind: .color(hex), title: preset.displayHex, accentHex: hex))
         }
         return chips
     }

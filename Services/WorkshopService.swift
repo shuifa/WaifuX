@@ -887,17 +887,15 @@ class WorkshopService: ObservableObject {
 
             // 应用名
             let appEl = try container.select(".workshopItemApp").first()
-            let appName = (try appEl?.text())?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let _ = (try appEl?.text())?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
             // 日期
             let dateEls = try container.select(".workshopItemDate")
-            var subscribedDate: String?
-            var updatedDate: String?
             if dateEls.size() >= 1 {
-                subscribedDate = try dateEls.get(0).text()
+                let _ = try dateEls.get(0).text()
             }
             if dateEls.size() >= 2 {
-                updatedDate = try dateEls.get(1).text()
+                let _ = try dateEls.get(1).text()
             }
 
             let isAnimatedImage = previewSrc.lowercased().contains(".gif")

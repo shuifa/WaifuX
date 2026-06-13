@@ -592,7 +592,7 @@ final class VideoWallpaperManager: ObservableObject {
         // 多屏场景下，如果 CLI 正在渲染另一块屏的壁纸而本屏不需要 CLI，不杀 CLI 进程。
         if let targetScreen {
             if WallpaperEngineXBridge.shared.isManaging(screen: targetScreen) {
-                WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper()
+                WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper(for: targetScreen)
             }
         } else {
             WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper()

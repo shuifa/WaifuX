@@ -25,7 +25,7 @@ final class LockScreenFramePusher {
             sessions.removeValue(forKey: displayID)
             return old
         }
-        if oldSession == nil, isPushing(displayID: displayID) {
+        if oldSession == nil, sessionsLock.withLock({ $0[displayID]?.matches(videoURL: videoURL, surfaceIDs: surfaceIDs) == true }) {
             os_log(.debug, log: Session.sessionLog, "[FramePusher] 已在推送，跳过重复启动 display=%{public}u video=%{public}@", displayID, videoURL.lastPathComponent)
             return
         }
@@ -146,7 +146,21 @@ extension LockScreenFramePusher {
             }
 
             let asset = AVURLAsset(url: videoURL)
-            guard let track = asset.tracks(withMediaType: .video).first else {
+            let semaphore = DispatchSemaphore(value: 0)
+            final class TrackBox: @unchecked Sendable { var track: AVAssetTrack?; var fps: Float = 0 }
+            let box = TrackBox()
+            DispatchQueue.global().async {
+                Task {
+                    let tracks = try? await asset.loadTracks(withMediaType: .video)
+                    box.track = tracks?.first
+                    if let t = box.track {
+                        box.fps = (try? await t.load(.nominalFrameRate)) ?? 0
+                    }
+                    semaphore.signal()
+                }
+            }
+            semaphore.wait()
+            guard let track = box.track else {
                 os_log(.error, log: Self.sessionLog, "[FramePusher] ❌ 无视频轨道: %{public}@", videoURL.lastPathComponent)
                 notifyPusherStopped(reason: "无视频轨道")
                 return
@@ -156,7 +170,7 @@ extension LockScreenFramePusher {
             var ptsOffset: CMTime = .zero
             var lastEnqueuedEnd: CMTime = .zero
             var currentSurfaceIDs = surfaceIDs
-            let nominalFPS = track.nominalFrameRate > 0 ? track.nominalFrameRate : 30
+            let nominalFPS = box.fps > 0 ? box.fps : 30
             let fallbackFrameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, Int32(nominalFPS.rounded()))))
             let convergenceCheckInterval = 60  // 每 ~2 秒检查一次 surface ID 是否更新
 

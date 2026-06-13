@@ -94,7 +94,7 @@ final class IOSurfaceFrameRenderer: @unchecked Sendable {
                 .allocSize: allocSize,
                 .pixelFormat: 0x4247_5241, // 'BGRA'
             ]
-            props[IOSurfacePropertyKey(rawValue: kIOSurfaceIsGlobal as String)] = true
+            props[IOSurfacePropertyKey(rawValue: "IOSurfaceIsGlobal")] = true
             surfaces[i] = IOSurface(properties: props)
             if #available(macOS 15.0, *), let surfaceID = surfaces[i]?.surfaceID {
                 extLog("[IOSurfaceRenderer] surface[\(i)] id=\(surfaceID) global=true")
@@ -108,6 +108,27 @@ final class IOSurfaceFrameRenderer: @unchecked Sendable {
         guard #available(macOS 15.0, *) else { return nil }
         let idleIndex = 1 - activeIndex
         return surfaces[idleIndex]?.surfaceID
+    }
+
+    /// 显示器几何变化时重新布局。调用方在主线程上执行。
+    func relayout(rootLayer: CALayer) {
+        displayLayer.frame = rootLayer.bounds
+        displayLayer.contentsScale = rootLayer.contentsScale
+        extLog("[IOSurfaceRenderer] relayout display=\(displayID) bounds=\(Int(rootLayer.bounds.width))x\(Int(rootLayer.bounds.height)) scale=\(rootLayer.contentsScale)")
+    }
+
+    /// 显示器分辨率变化时重新分配 surface 并返回新 ID。
+    /// 调用方在主线程上调用，完成后通过 socket 重新注册 surface。
+    @available(macOS 15.0, *)
+    func reallocateSurfacesIfNeeded(width: Int, height: Int) -> (surfaceID0: IOSurfaceID, surfaceID1: IOSurfaceID)? {
+        let currentWidth = surfaces[0]?.width ?? 0
+        let currentHeight = surfaces[0]?.height ?? 0
+        guard currentWidth != width || currentHeight != height else { return nil }
+
+        extLog("[IOSurfaceRenderer] reallocating surfaces display=\(displayID) \(currentWidth)x\(currentHeight) -> \(width)x\(height)")
+        allocateSurfaces(width: width, height: height)
+        guard let s0 = surfaces[0]?.surfaceID, let s1 = surfaces[1]?.surfaceID else { return nil }
+        return (s0, s1)
     }
 
     /// App 通知新帧已写入指定 surface（由 FrameChannel 回调调用）。

@@ -27,6 +27,8 @@ final class DynamicWallpaperAutoPauseManager {
     private var globalAutoPausedExternalEngine = false
     /// 当前被全屏窗口覆盖的屏幕 ID 列表。
     private var fullscreenCoveredScreenIDs: Set<String> = []
+    /// 全屏检测后台队列（避免 CGWindowListCopyWindowInfo 阻塞主线程）
+    private let fullscreenDetectionQueue = DispatchQueue(label: "com.waifux.fullscreen-detection", qos: .utility)
     /// 因全屏覆盖而被自动暂停的原生视频屏幕。
     private var fullscreenAutoPausedScreenIDs: Set<String> = []
     /// 是否因全屏覆盖而自动暂停过 Wallpaper Engine。
@@ -190,9 +192,21 @@ final class DynamicWallpaperAutoPauseManager {
         // Timer 驱动的检测仅处理全屏覆盖（前台应用检测已由通知驱动）
         guard pauseWhenFullscreenCovers else { return }
 
-        // 获取被全屏覆盖的屏幕列表
-        let fullscreenCoveredScreens = getFullscreenCoveredScreens()
-        let newFullscreenIDs = Set(fullscreenCoveredScreens.map { $0.wallpaperScreenIdentifier })
+        // CGWindowListCopyWindowInfo 是重量级系统调用，移到后台线程避免阻塞主线程
+        fullscreenDetectionQueue.async { [weak self] in
+            guard let self else { return }
+            let fullscreenCoveredScreens = self.getFullscreenCoveredScreens()
+            let newFullscreenIDs = Set(fullscreenCoveredScreens.map { $0.wallpaperScreenIdentifier })
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.applyFullscreenDetectionResult(newFullscreenIDs: newFullscreenIDs, fullscreenCoveredScreens: fullscreenCoveredScreens)
+            }
+        }
+    }
+
+    /// 在主线程处理全屏检测结果
+    private func applyFullscreenDetectionResult(newFullscreenIDs: Set<String>, fullscreenCoveredScreens: [NSScreen]) {
         guard newFullscreenIDs != fullscreenCoveredScreenIDs else {
             pendingFullscreenCoveredScreenIDs = nil
             pendingFullscreenSampleCount = 0
@@ -281,12 +295,6 @@ final class DynamicWallpaperAutoPauseManager {
         guard hasNative || hasExternal else { return }
         guard !VideoWallpaperManager.shared.isScreenLocked else { return }
 
-        // 在 accessory 模式下（菜单栏后台运行），不因前台应用切换而暂停壁纸。
-        // 用户已明确选择将 App 放入后台，壁纸应继续播放。
-        if NSApp.activationPolicy() == .accessory {
-            return
-        }
-
         appSwitchDebounceTask?.cancel()
         appSwitchDebounceTask = Task { [weak self] in
             do {
@@ -337,9 +345,9 @@ final class DynamicWallpaperAutoPauseManager {
         return !getFullscreenCoveredScreens().isEmpty
     }
 
-    /// 获取被全屏窗口覆盖的屏幕列表
+    /// 获取被全屏窗口覆盖的屏幕列表（可在后台线程调用）
     /// 通过 CGWindowList 检测 layer 0 且覆盖屏幕绝大部分区域的窗口
-    private func getFullscreenCoveredScreens() -> [NSScreen] {
+    nonisolated private func getFullscreenCoveredScreens() -> [NSScreen] {
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
@@ -382,7 +390,7 @@ final class DynamicWallpaperAutoPauseManager {
         return coveredScreens
     }
 
-    private func normalizedWindowBounds(_ bounds: CGRect, screens: [NSScreen], desktopFrame: CGRect) -> CGRect {
+    nonisolated private func normalizedWindowBounds(_ bounds: CGRect, screens: [NSScreen], desktopFrame: CGRect) -> CGRect {
         guard !desktopFrame.isNull else { return bounds }
         let flippedBounds = CGRect(
             x: bounds.origin.x,

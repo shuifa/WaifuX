@@ -1011,8 +1011,14 @@ struct MediaDetailSheet: View {
                     isBakingScene = false
                     bakeProgress = 0
                     if shouldAutoApplyAfterBake {
-                        scheduleSceneBakeSuccessFlash()
-                        applyWorkshopVideoWallpaper(videoURL: videoURL, preferPosterFrameFromVideo: true)
+                        // 实时渲染模式下，烘焙产物不自动设置到桌面（已由 wallpaper-wgpu 实时渲染）
+                        if UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled") {
+                            sceneBakeStatusFlash = t("sceneBake.cached")
+                            print("[MediaDetailSheet] 实时渲染模式：烘焙完成，产物已缓存用于锁屏推送")
+                        } else {
+                            scheduleSceneBakeSuccessFlash()
+                            applyWorkshopVideoWallpaper(videoURL: videoURL, preferPosterFrameFromVideo: true)
+                        }
                     } else {
                         sceneBakeStatusFlash = t("sceneBake.cached")
                     }
@@ -1275,6 +1281,23 @@ struct MediaDetailSheet: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isBakingScene)
+            }
+
+            // 复制静态图片
+            if isAlreadyDownloaded || WallpaperEngineXBridge.shared.isControllingExternalEngine {
+                Button {
+                    showMoreOptionsPopover = false
+                    copyStaticImageToPasteboard()
+                } label: {
+                    HStack {
+                        Image(systemName: "photo.on.rectangle")
+                        Text("复制静态图片")
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
             }
         }
         .frame(width: 192)
@@ -2055,8 +2078,17 @@ struct MediaDetailSheet: View {
 
         switch contentType {
         case .scene:
-            // Scene 壁纸不再使用实时渲染，始终走烘焙产物
-            applySceneWallpaperPreferringBake(sceneContentRoot: contentRoot, cliPath: localURL.path)
+            if UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled") {
+                // 实时渲染模式：直接用 wallpaper-wgpu 渲染桌面，后台烘焙推锁屏
+                applyWorkshopRendererWallpaper(
+                    path: contentRoot.path,
+                    posterURL: preferredWorkshopPosterForVideo,
+                    statusKey: "applyingWallpaper.realtime"
+                )
+            } else {
+                // 非实时渲染模式：走烘焙产物
+                applySceneWallpaperPreferringBake(sceneContentRoot: contentRoot, cliPath: localURL.path)
+            }
         case .web:
             applyWorkshopWebWallpaper(webDirPath: localURL.path, posterURL: preferredWorkshopPosterForVideo)
         case .image:
@@ -2162,12 +2194,12 @@ struct MediaDetailSheet: View {
                 }
                 let cacheKey = persistID ?? SceneOfflineBakeService.stableOrphanCacheItemID(contentRootPath: sceneContentRoot.path)
 
-                // 使用 legacyCLI 烘焙
+                // 使用 wallpaper-wgpu bake 子命令烘焙
                 let artifact = try await SceneOfflineBakeService.bake(
                     eligibility: eligibility,
                     contentRoot: sceneContentRoot,
                     cacheItemID: cacheKey,
-                    renderer: .legacyCLI,
+                    renderer: .wallpaperWgpu,
                     persistArtifactToItemID: persistID,
                     progress: { [self] progress in
                         Task { @MainActor in
@@ -2210,6 +2242,59 @@ struct MediaDetailSheet: View {
         guard let url else { return }
         let items = SystemShareSupport.itemsForLocalFile(at: url)
         SystemShareSupport.presentPicker(items: items, anchorView: sharePickerAnchorView)
+    }
+
+    /// 复制当前壁纸的静态图片到剪贴板
+    private func copyStaticImageToPasteboard() {
+        Task { @MainActor in
+            var imageURL: URL?
+
+            // 1. 优先从烘焙产物抽帧
+            if let record = currentDownloadRecord,
+               let artifact = record.sceneBakeArtifact,
+               SceneOfflineBakeService.isUsableBakedVideo(at: URL(fileURLWithPath: artifact.videoPath)) {
+                imageURL = await VideoThumbnailCache.shared.sceneBakePosterJPEGFileURL(
+                    forLocalVideo: URL(fileURLWithPath: artifact.videoPath),
+                    itemID: record.item.id
+                )
+            }
+
+            // 2. Web 壁纸截图
+            if imageURL == nil, WallpaperEngineXBridge.shared.isCurrentWallpaperWeb {
+                let webCapture = "/tmp/wallpaperengine-web-capture.png"
+                if FileManager.default.fileExists(atPath: webCapture) {
+                    imageURL = URL(fileURLWithPath: webCapture)
+                }
+            }
+
+            // 3. 实时渲染壁纸的静态帧
+            if imageURL == nil, WallpaperEngineXBridge.shared.isControllingExternalEngine {
+                if let path = WallpaperEngineXBridge.shared.currentWallpaperPathForDesign {
+                    let hash = abs(path.hashValue)
+                    let cacheKey = "cached_frame_\(hash)"
+                    if let cachedPath = UserDefaults.standard.string(forKey: cacheKey),
+                       FileManager.default.fileExists(atPath: cachedPath) {
+                        imageURL = URL(fileURLWithPath: cachedPath)
+                    }
+                }
+            }
+
+            guard let imageURL, FileManager.default.fileExists(atPath: imageURL.path) else {
+                print("[MediaDetailSheet] ⚠️ 未找到可复制的静态图片")
+                return
+            }
+
+            if let image = NSImage(contentsOf: imageURL) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.writeObjects([image])
+                showCopyLinkToast = true
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    showCopyLinkToast = false
+                }
+                print("[MediaDetailSheet] ✅ 已复制静态图片到剪贴板")
+            }
+        }
     }
 
     private func resolvedShareableFileFromRecordOrCover() -> URL? {
@@ -2881,13 +2966,21 @@ struct MediaDetailSheet: View {
             isSettingWallpaper = true
             Task { @MainActor in
                 do {
-                    print("[MediaDetailSheet] 调用 WallpaperEngineXBridge.setWallpaper...")
+                    let isRealtime = UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled")
+                    let userProps = isRealtime ? SceneWallpaperPropertiesService.propertiesOverrideJSON(for: path) : nil
+                    print("[MediaDetailSheet] 调用 WallpaperEngineXBridge.setWallpaper (realtime=\(isRealtime))...")
                     try await WallpaperEngineXBridge.shared.setWallpaper(
                         path: path,
-                        targetScreens: selectedScreen.map { [$0] }
+                        targetScreens: selectedScreen.map { [$0] },
+                        userProperties: userProps
                     )
                     print("[MediaDetailSheet] ✅ 壁纸设置成功")
                     WallpaperSchedulerService.shared.notifyManualWallpaperChange(screenID: selectedScreen?.wallpaperScreenIdentifier)
+
+                    // 实时渲染模式下，后台触发烘焙用于锁屏（不自动应用到桌面）
+                    if isRealtime {
+                        scheduleBackgroundBakeForLockScreen(path: path)
+                    }
                 } catch {
                     print("[MediaDetailSheet] ❌ 设置壁纸失败: \(error.localizedDescription)")
                     errorMessage = Self.truncateErrorMessage(error.localizedDescription)
@@ -2909,6 +3002,81 @@ struct MediaDetailSheet: View {
         }
     }
 
+    /// 实时渲染模式下，后台触发烘焙用于锁屏推送（不自动设置桌面壁纸）
+    private func scheduleBackgroundBakeForLockScreen(path: String) {
+        guard #available(macOS 26.0, *) else { return }
+        guard VideoWallpaperManager.shared.isLockScreenEnabled else { return }
+        guard UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true else { return }
+        guard let record = currentDownloadRecord,
+              let eligibility = record.sceneBakeEligibility else { return }
+        let contentRoot = URL(fileURLWithPath: eligibility.contentRootPath)
+        guard FileManager.default.fileExists(atPath: contentRoot.path) else { return }
+
+        let targetScreens = NSScreen.screens
+        let displayIDs = targetScreens.compactMap { screen -> UInt32? in
+            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        }
+        guard !displayIDs.isEmpty else { return }
+
+        // 如果已有缓存的烘焙产物，直接推送到锁屏
+        if let artifact = record.sceneBakeArtifact,
+           SceneOfflineBakeService.isUsableBakedVideo(at: URL(fileURLWithPath: artifact.videoPath)) {
+            print("[MediaDetailSheet] 实时渲染模式：已有烘焙产物，直接推送锁屏")
+            let videoURL = URL(fileURLWithPath: artifact.videoPath)
+            let videoID = record.item.id
+            Task {
+                await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
+                    videoURL: videoURL,
+                    videoID: videoID,
+                    displayIDs: displayIDs
+                )
+            }
+            return
+        }
+
+        // 后台触发烘焙，完成后推送到锁屏
+        let itemID = record.item.id
+        Task { @MainActor in
+            do {
+                let artifact = try await SceneOfflineBakeService.bake(
+                    eligibility: eligibility,
+                    contentRoot: contentRoot,
+                    cacheItemID: itemID,
+                    renderer: .wallpaperWgpu,
+                    persistArtifactToItemID: itemID
+                )
+                print("[MediaDetailSheet] ✅ 后台烘焙完成，推送到锁屏: \(artifact.videoPath)")
+                let videoURL = URL(fileURLWithPath: artifact.videoPath)
+
+                // 有动态锁屏 → 推送到锁屏扩展
+                if #available(macOS 26.0, *), VideoWallpaperManager.shared.isLockScreenEnabled {
+                    await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
+                        videoURL: videoURL,
+                        videoID: itemID,
+                        displayIDs: displayIDs
+                    )
+                } else {
+                    // 无动态锁屏 → 从烘焙产物抽帧设为静态桌面壁纸（系统锁屏会跟随）
+                    if let posterURL = await VideoThumbnailCache.shared.sceneBakePosterJPEGFileURL(
+                        forLocalVideo: videoURL,
+                        itemID: itemID
+                    ) {
+                        let fillOptions: [NSWorkspace.DesktopImageOptionKey: Any] = [
+                            .imageScaling: NSImageScaling.scaleAxesIndependently.rawValue,
+                            .fillColor: NSColor.black
+                        ]
+                        for screen in NSScreen.screens {
+                            try? NSWorkspace.shared.setDesktopImageURLForAllSpaces(posterURL, for: screen, options: fillOptions)
+                        }
+                        print("[MediaDetailSheet] ✅ 已将烘焙产物抽帧设为静态桌面壁纸（无动态锁屏）")
+                    }
+                }
+            } catch {
+                print("[MediaDetailSheet] ⚠️ 后台烘焙失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// 应用 Workshop 静态图片壁纸：无 type/file、有 background 指向图片的资源，不走 CLI，直接设静态桌面。
     private func applyWorkshopImageWallpaper(imageURL: URL) {
         guard FileManager.default.fileExists(atPath: imageURL.path) else {
@@ -2924,7 +3092,7 @@ struct MediaDetailSheet: View {
                 isSettingWallpaper = true
                 Task { @MainActor in
                     defer { isSettingWallpaper = false }
-                    WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper()
+                    WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper(for: selectedScreen)
                     VideoWallpaperManager.shared.stopNativeVideoWallpaperOnly(for: selectedScreen)
                     let targetScreens = selectedScreen.map { [$0] } ?? screens
                     let displayIDs = targetScreens.compactMap { screen -> UInt32? in
@@ -2954,10 +3122,6 @@ struct MediaDetailSheet: View {
             return
         }
 
-        // 停止视频层和 CLI，避免冲突
-        VideoWallpaperManager.shared.stopNativeVideoWallpaperOnly()
-        WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper()
-
         // macOS 26+：仅当用户未启用动态锁屏时才清空帧源缓存。
         // 使用持久化设置 isLockScreenEnabled 而非 isLockScreenMirroringActive。
         if #available(macOS 26.0, *) {
@@ -2976,6 +3140,8 @@ struct MediaDetailSheet: View {
                 Task { @MainActor in
                     do {
                         let targetScreens = selectedScreen.map { [$0] } ?? screens
+                        WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper(for: selectedScreen)
+                        VideoWallpaperManager.shared.stopNativeVideoWallpaperOnly(for: selectedScreen)
                         for screen in targetScreens {
                             try NSWorkspace.shared.setDesktopImageURLForAllSpaces(imageURL, for: screen)
                             DesktopWallpaperSyncManager.shared.registerWallpaperSet(imageURL, for: screen)
@@ -2993,6 +3159,8 @@ struct MediaDetailSheet: View {
             isSettingWallpaper = true
             Task { @MainActor in
                 do {
+                    WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper(for: screens.first)
+                    VideoWallpaperManager.shared.stopNativeVideoWallpaperOnly(for: screens.first)
                     if let mainScreen = screens.first {
                         try NSWorkspace.shared.setDesktopImageURLForAllSpaces(imageURL, for: mainScreen)
                         DesktopWallpaperSyncManager.shared.registerWallpaperSet(imageURL, for: mainScreen)

@@ -114,11 +114,11 @@ final class FrameChannel: @unchecked Sendable {
         // 连接
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        socketPath.withCString { src in
-            Darwin.strncpy(UnsafeMutablePointer<CChar>(&addr.sun_path.0), src, MemoryLayout.size(ofValue: addr.sun_path))
+        _ = socketPath.withCString { src in
+            Darwin.strncpy(&addr.sun_path.0, src, MemoryLayout.size(ofValue: addr.sun_path))
         }
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-        guard Darwin.connect(fd, UnsafeRawPointer(&addr).assumingMemoryBound(to: sockaddr.self), len) == 0 else {
+        guard withUnsafeMutablePointer(to: &addr, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, len) } }) == 0 else {
             return false
         }
         if !hasLoggedConnection {
@@ -130,7 +130,7 @@ final class FrameChannel: @unchecked Sendable {
         let subMsg = "subscribe_frames"
         var msgLen = UInt32(subMsg.utf8.count + 1).bigEndian
         write(fd, &msgLen, 4)
-        subMsg.withCString { write(fd, $0, subMsg.utf8.count + 1) }
+        _ = subMsg.withCString { write(fd, $0, subMsg.utf8.count + 1) }
 
         // 避免连接断开时收到 SIGPIPE 导致崩溃
         var noSigPipe: Int32 = 1

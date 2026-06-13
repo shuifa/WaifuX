@@ -603,7 +603,7 @@ class WallpaperViewModel: ObservableObject {
         )
 
         let response = try await fetchWallpapers(parameters: parameters)
-        response.data.forEach { wallpaperLibrary.upsert($0) }
+        wallpaperLibrary.upsertBatch(response.data)
         return Array(response.data.prefix(limit))
     }
 
@@ -635,7 +635,7 @@ class WallpaperViewModel: ObservableObject {
         )
 
         let response = try await fetchWallpapers(parameters: parameters)
-        response.data.forEach { wallpaperLibrary.upsert($0) }
+        wallpaperLibrary.upsertBatch(response.data)
         return response.data
     }
 
@@ -671,7 +671,7 @@ class WallpaperViewModel: ObservableObject {
                 try Task.checkCancellation()
 
                 currentRandomSeed = sortingOption == .random ? (results.meta.seed ?? currentRandomSeed) : nil
-                results.data.forEach { wallpaperLibrary.upsert($0) }
+                wallpaperLibrary.upsertBatch(results.data)
 
                 var existingIDs = Set(wallpapers.map(\.id))
                 let appended = results.data.filter { existingIDs.insert($0.id).inserted }
@@ -1202,7 +1202,7 @@ class WallpaperViewModel: ObservableObject {
         if let targetScreen = targetScreen {
             // 切到静态图前如果目标屏幕被 CLI 管理则停 CLI 引擎
             if WallpaperEngineXBridge.shared.isManaging(screen: targetScreen) {
-                WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper()
+                WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper(for: targetScreen)
             }
             // 只停目标屏幕的动态壁纸，避免影响其他屏幕
             VideoWallpaperManager.shared.stopNativeVideoWallpaperOnly(for: targetScreen)

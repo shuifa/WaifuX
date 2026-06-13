@@ -23,7 +23,7 @@ using namespace metal;
 
 // MARK: - 常量
 
-constant float PI = 3.14159265358979323846;
+// constant float PI = 3.14159265358979323846;
 
 // MARK: - 顶点结构
 

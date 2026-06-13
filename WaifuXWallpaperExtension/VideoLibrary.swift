@@ -91,12 +91,11 @@ final class VideoLibrary: Sendable {
             return videoURL(for: entry)
         }
         let sorted = variants.sorted { $0.fps > $1.fps }
-        let chosen: VideoVariant
         switch policy {
         case .paused: return videoURL(for: entry)
-        case .full: chosen = sorted.first!
-        case .minimal: chosen = sorted.last!
-        case .reduced: chosen = sorted[sorted.count / 2]
+        case .full: _ = sorted.first!
+        case .minimal: _ = sorted.last!
+        case .reduced: _ = sorted[sorted.count / 2]
         }
         return videoURL(for: entry) // 简化：实际应用中需要 variantURL 逻辑
     }

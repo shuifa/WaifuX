@@ -47,6 +47,7 @@ COPILOT.md
 .1code/
 .claude/
 .vscode/
+.mimocode/
 .workbuddy/
 *.swp
 *~

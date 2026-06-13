@@ -464,7 +464,7 @@ class WallpaperSchedulerService: ObservableObject {
                     // 无本机视频壁纸（静态图片 / Web CLI 壁纸等）：自动选取一个视频开始播放
                     if isWebWallpaper {
                         print("\(logTag) On-end mode: stopping CLI Web wallpaper to switch to video")
-                        WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper()
+                        WallpaperEngineXBridge.shared.ensureStoppedForNonCLIWallpaper(for: screen)
                     }
                     print("\(logTag) On-end mode: no active video, auto-selecting first video wallpaper for screen \(screenID)")
                     self.triggerNextWallpaper(for: screenID)
@@ -747,10 +747,19 @@ class WallpaperSchedulerService: ObservableObject {
                             return false
                         }
                         print("\(logTag) Using CLI renderer for WE \(type): \(resolvedRoot.path)")
+                        let isRealtime = UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled")
+                        let userProps = isRealtime
+                            ? SceneWallpaperPropertiesService.propertiesOverrideJSON(for: resolvedRoot.path)
+                            : nil
                         try await WallpaperEngineXBridge.shared.setWallpaper(
                             path: resolvedRoot.path,
-                            targetScreens: [screen]
+                            targetScreens: [screen],
+                            userProperties: userProps
                         )
+                        // 实时渲染模式下，同步烘焙产物到锁屏
+                        if isRealtime {
+                            scheduleLockScreenSyncForRealtime(path: resolvedRoot.path, screen: screen)
+                        }
                         // 注：CLI 壁纸由 daemon 自身管理桌面 capture，不注册到 DesktopWallpaperSyncManager
                     }
                 } else {
@@ -795,6 +804,44 @@ class WallpaperSchedulerService: ObservableObject {
         } catch {
             print("\(logTag) applyItem failed for '\(item.title)' (\(fileURL.lastPathComponent)): \(error)")
             return false
+        }
+    }
+
+    /// 实时渲染模式下，同步烘焙产物到锁屏
+    private func scheduleLockScreenSyncForRealtime(path: String, screen: NSScreen?) {
+        guard #available(macOS 26.0, *) else { return }
+        guard VideoWallpaperManager.shared.isLockScreenEnabled else { return }
+        guard UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true else { return }
+
+        let displayIDs: [UInt32]
+        if let screen {
+            if let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value {
+                displayIDs = [id]
+            } else { return }
+        } else {
+            displayIDs = NSScreen.screens.compactMap { s in
+                (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            }
+        }
+        guard !displayIDs.isEmpty else { return }
+
+        // 查找该壁纸的烘焙产物
+        let resolvedPath = WorkshopService.resolveWallpaperEngineProjectRoot(startingAt: URL(fileURLWithPath: path)).path
+        if let record = MediaLibraryService.shared.downloadRecord(forLocalFilePath: resolvedPath),
+           let artifact = record.sceneBakeArtifact,
+           SceneOfflineBakeService.isUsableBakedVideo(at: URL(fileURLWithPath: artifact.videoPath)) {
+            let videoURL = URL(fileURLWithPath: artifact.videoPath)
+            let videoID = record.item.id
+            Task {
+                await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
+                    videoURL: videoURL,
+                    videoID: videoID,
+                    displayIDs: displayIDs
+                )
+                print("[WallpaperScheduler] ✅ 实时渲染模式：已同步锁屏 video=\(videoID)")
+            }
+        } else {
+            print("[WallpaperScheduler] ⚠️ 实时渲染模式：未找到烘焙产物，锁屏同步跳过")
         }
     }
 

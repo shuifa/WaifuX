@@ -12,6 +12,17 @@ private struct AnimeLoadMoreSentinelMinYPreferenceKey: PreferenceKey {
     }
 }
 
+private struct AnimeExploreHeaderHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 {
+            value = next
+        }
+    }
+}
+
 private final class AnimeExploreScrollCoordinator: ObservableObject {
     var sentinelDebounceTask: DispatchWorkItem?
     var pendingLoadMoreTask: DispatchWorkItem?
@@ -65,6 +76,8 @@ struct AnimeExploreView: View {
     @State private var loadMoreTask: Task<Void, Never>?
     /// loadMore 冷却期，防止 contentSize 增长 → isNearBottom 翻转 → 立即重试的无限级联。
     @State private var loadMoreCooldownUntil: Date? = nil
+    @State private var measuredHeaderHeight: CGFloat = 0
+    @State private var isHeaderContentMounted = true
     @StateObject private var scrollCoordinator = AnimeExploreScrollCoordinator()
 
     private var shouldUseLightweightEffects: Bool {
@@ -94,6 +107,8 @@ struct AnimeExploreView: View {
                         grainIntensity: arcSettings.exploreGrainAnime,
                         lightweight: shouldUseLightweightEffects
                     )
+                    // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
+                    .drawingGroup(opaque: true)
                     .ignoresSafeArea()
                 }
 
@@ -145,6 +160,9 @@ struct AnimeExploreView: View {
         .onChange(of: searchText) { _, newValue in handleSearchChange(newValue) }
         .onChange(of: viewModel.animeItems.count) { _, _ in
             syncAtmosphereIfNeeded()
+        }
+        .onChange(of: headerLayoutSignature) { _, _ in
+            invalidateHeaderMeasurement()
         }
     }
 
@@ -321,6 +339,29 @@ struct AnimeExploreView: View {
     // MARK: - Header Stack
 
     private var headerStack: some View {
+        Group {
+            if isHeaderContentMounted {
+                headerContent
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: AnimeExploreHeaderHeightPreferenceKey.self,
+                                value: proxy.size.height
+                            )
+                        }
+                    )
+            } else {
+                Color.clear
+                    .frame(height: max(measuredHeaderHeight, 1))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onPreferenceChange(AnimeExploreHeaderHeightPreferenceKey.self) { height in
+            updateMeasuredHeaderHeight(height)
+        }
+    }
+
+    private var headerContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             heroSection
             categorySection
@@ -334,6 +375,54 @@ struct AnimeExploreView: View {
         .fixedSize(horizontal: false, vertical: true)
         .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
         .environment(\.arcIsLightMode, arcSettings.isLightMode)
+    }
+
+    private var headerLayoutSignature: String {
+        [
+            selectedCategory.rawValue,
+            selectedHotTag?.id ?? "none",
+            searchText.isEmpty ? "empty" : "searching"
+        ].joined(separator: "|")
+    }
+
+    private func handleScrollOffset(_ offset: CGFloat) {
+        updateHeaderMountState(scrollOffset: offset)
+    }
+
+    private func updateHeaderMountState(scrollOffset: CGFloat) {
+        let headerHeight = measuredHeaderHeight > 1 ? measuredHeaderHeight : 220
+        let hideThreshold = headerHeight + 80
+        let showThreshold = max(0, headerHeight - 48)
+        let shouldMount = isHeaderContentMounted
+            ? scrollOffset < hideThreshold
+            : scrollOffset < showThreshold
+
+        guard shouldMount != isHeaderContentMounted else { return }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isHeaderContentMounted = shouldMount
+        }
+    }
+
+    private func updateMeasuredHeaderHeight(_ height: CGFloat) {
+        guard height > 1, abs(height - measuredHeaderHeight) > 1 else { return }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            measuredHeaderHeight = height
+        }
+    }
+
+    private func invalidateHeaderMeasurement() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isHeaderContentMounted = true
+            measuredHeaderHeight = 0
+        }
     }
 
     // MARK: - Grid
@@ -359,6 +448,7 @@ struct AnimeExploreView: View {
                         ) {
                             selectedAnime = anime
                         }
+                        .equatable()
                         // ⚡ 显式设定卡片高度，让 LazyVStack 实现真正的懒加载。
                         .frame(height: cardWidth * 1.4 + 44)
                     }
@@ -416,6 +506,10 @@ struct AnimeExploreView: View {
                 .frame(width: geometry.size.width, alignment: .leading)
                 .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
                 .environment(\.arcIsLightMode, arcSettings.isLightMode)
+                .background(
+                    ScrollToTopHelper(trigger: 0, onOffsetChange: handleScrollOffset)
+                        .frame(width: 0, height: 0)
+                )
             }
             .coordinateSpace(name: Self.scrollCoordinateSpaceName)
             .onChange(of: viewModel.animeItems.count) { _, count in
@@ -471,6 +565,10 @@ struct AnimeExploreView: View {
                 .frame(width: geometry.size.width, alignment: .leading)
                 .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
                 .environment(\.arcIsLightMode, arcSettings.isLightMode)
+                .background(
+                    ScrollToTopHelper(trigger: 0, onOffsetChange: handleScrollOffset)
+                        .frame(width: 0, height: 0)
+                )
             }
             .coordinateSpace(name: Self.scrollCoordinateSpaceName)
             .onChange(of: viewModel.animeItems.count) { _, count in

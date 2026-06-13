@@ -104,6 +104,8 @@
 		717F2D69DE35DAF815D0AF7A /* WallpaperPrefs.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50A2C1E05CEFE851FCCE28B /* WallpaperPrefs.swift */; };
 		71CA95FCFE98D1F5968921DE /* ViewExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19A8887CFC60BA0605B2EDBD /* ViewExtensions.swift */; };
 		7343F89CDCC99040C1C36BB1 /* SceneWallpaperDesignService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E50322DB4E41F88D665BEC8 /* SceneWallpaperDesignService.swift */; };
+		7A8B9C0D1E2F3A4B5C6D7E8F /* SceneWallpaperPropertiesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B9C0D1E2F3A4B5C6D7E8F90 /* SceneWallpaperPropertiesService.swift */; };
+		7B9C0D1E2F3A4B5C6D7E8F91 /* SceneWallpaperPropertiesPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C0D1E2F3A4B5C6D7E8F9012 /* SceneWallpaperPropertiesPanel.swift */; };
 		749738A0B446DAC24558DE5B /* ExploreGridLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E59748FA75E24603AC8DF96 /* ExploreGridLayout.swift */; };
 		74F53BC54E220339B4BF073F /* DownloadPathManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14E3DF54D73DDABA010A0185 /* DownloadPathManager.swift */; };
 		75696C3161C7E24D39E88480 /* WallpaperSchedulerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14D73C39F92D4787695466A1 /* WallpaperSchedulerService.swift */; };
@@ -362,6 +364,8 @@
 		7CF588585C18394E4A84E4F3 /* RuleLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleLoader.swift; sourceTree = "<group>"; };
 		7E087E594159B2CA1EFC903C /* NSScreen+Wallpaper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NSScreen+Wallpaper.swift"; sourceTree = "<group>"; };
 		7E50322DB4E41F88D665BEC8 /* SceneWallpaperDesignService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperDesignService.swift; sourceTree = "<group>"; };
+		8B9C0D1E2F3A4B5C6D7E8F90 /* SceneWallpaperPropertiesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperPropertiesService.swift; sourceTree = "<group>"; };
+		8C0D1E2F3A4B5C6D7E8F9012 /* SceneWallpaperPropertiesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperPropertiesPanel.swift; sourceTree = "<group>"; };
 		822E5DF14D2A26714C4EA62C /* TabSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabSearchField.swift; sourceTree = "<group>"; };
 		83707A763B2805C336790529 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
 		8461FE463B12837648DB1F26 /* DynamicWallpaperItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DynamicWallpaperItem.swift; sourceTree = "<group>"; };
@@ -653,6 +657,7 @@
 				304B848F37E8916539F5D7C0 /* SceneBakeEligibilityService.swift */,
 				6F629610BC109E8BDF65491C /* SceneOfflineBakeService.swift */,
 				7E50322DB4E41F88D665BEC8 /* SceneWallpaperDesignService.swift */,
+				8B9C0D1E2F3A4B5C6D7E8F90 /* SceneWallpaperPropertiesService.swift */,
 				B15A8B186373E1E4F65348F7 /* SearchTranslationService.swift */,
 				0536692A0BF2778A553D8E82 /* SleepPreventer.swift */,
 				2FF8A1F8B7C857E9D5DE0A6B /* StaticWallpaperGrainManager.swift */,
@@ -724,6 +729,7 @@
 				D600194FF5989B7E11C9E138 /* MyLibraryContentView.swift */,
 				5147F264943106E0DEC95DF3 /* RuleMarketView.swift */,
 				EBB7ADD11EE352129A30930A /* SceneWallpaperDesignPanel.swift */,
+				8C0D1E2F3A4B5C6D7E8F9012 /* SceneWallpaperPropertiesPanel.swift */,
 				515C4AEC66B49CF22219FE39 /* SettingsSharedComponents.swift */,
 				529BA816ECB669D20AAFD914 /* SettingsView.swift */,
 				DDACF870010A59BA3EC37538 /* SourceRulesSettingsView.swift */,
@@ -1140,6 +1146,8 @@
 				E989D6EC4EC646557E114D01 /* SceneOfflineBakeService.swift in Sources */,
 				B790F4E3B85754D0249F2203 /* SceneWallpaperDesignPanel.swift in Sources */,
 				7343F89CDCC99040C1C36BB1 /* SceneWallpaperDesignService.swift in Sources */,
+				7A8B9C0D1E2F3A4B5C6D7E8F /* SceneWallpaperPropertiesService.swift in Sources */,
+				7B9C0D1E2F3A4B5C6D7E8F91 /* SceneWallpaperPropertiesPanel.swift in Sources */,
 				B6DE4FC5F0D5A362A10A956F /* SchedulerConfig.swift in Sources */,
 				125C55DCCB210DEEC2C877E3 /* ScrollBottomSentinel.swift in Sources */,
 				F8DEFE14F4E15588CBE6DA3D /* SearchOverlay.swift in Sources */,

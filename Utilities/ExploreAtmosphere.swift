@@ -102,7 +102,8 @@ actor AnimatedImageProbeCache {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
             forHTTPHeaderField: "User-Agent"
         )
-        request.setValue("image/gif,image/webp,image/apng,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        // 只接受 GIF，阻止 CDN 转换为 WebP 等格式
+        request.setValue("image/gif,*/*;q=0.1", forHTTPHeaderField: "Accept")
         if let host = url.host?.lowercased() {
             if host.contains("steam") || host.contains("akamaihd") {
                 request.setValue("https://steamcommunity.com/", forHTTPHeaderField: "Referer")
@@ -124,16 +125,16 @@ actor AnimatedImageProbeCache {
             return false
         }
 
-        let looksLikeGIF = response.mimeType?.lowercased().contains("gif") == true
-            || dataLooksLikeGIF(data)
+        let mimeType = response.mimeType?.lowercased() ?? ""
+        let looksLikeGIF = mimeType.contains("gif") || dataLooksLikeGIF(data)
         guard looksLikeGIF else { return false }
 
         return imagePropertiesWithinBudget(
             data,
             maxPixelCount: maxPixelCount,
             maxFrameCount: maxFrameCount,
-            requireAnimatedFrameCount: false
-        ) || gifHeaderDimensionsWithinBudget(data, maxPixelCount: maxPixelCount)
+            requireAnimatedFrameCount: true
+        )
     }
 
     private static func dataLooksLikeGIF(_ data: Data) -> Bool {

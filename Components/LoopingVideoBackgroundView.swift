@@ -96,7 +96,7 @@ struct LoopingVideoBackgroundView: NSViewRepresentable {
                 object: item,
                 queue: .main
             ) { [weak self] _ in
-                self?.onReady?()
+                MainActor.assumeIsolated { self?.onReady?() }
             }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in

@@ -2387,17 +2387,28 @@ final class MediaExploreViewModel: ObservableObject {
     /// 下载指定的 Workshop 物品列表
     /// - Parameter mediaItems: 要下载的媒体项
     func downloadWorkshopItems(_ mediaItems: [MediaItem]) async throws -> Int {
-        var successCount = 0
-        for item in mediaItems {
-            guard !Task.isCancelled else { break }
-            do {
-                try await downloadWorkshopWallpaper(item)
-                successCount += 1
-            } catch {
-                AppLogger.error(.media, "batch download failed", metadata: ["id": item.id, "error": "\(error)"])
+        // 并发提交所有下载任务，SteamCMD 下载限制器会自动控制并发（最多 2 个同时下载）
+        return await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+            for item in mediaItems {
+                group.addTask { [weak self] in
+                    guard let self else { return false }
+                    guard !Task.isCancelled else { return false }
+                    do {
+                        try await self.downloadWorkshopWallpaper(item)
+                        return true
+                    } catch {
+                        AppLogger.error(.media, "batch download failed", metadata: ["id": item.id, "error": "\(error)"])
+                        return false
+                    }
+                }
             }
+            
+            var successCount = 0
+            for await success in group {
+                if success { successCount += 1 }
+            }
+            return successCount
         }
-        return successCount
     }
 
     /// 同步用户已订阅的 Workshop 壁纸（获取列表后排队下载）
@@ -2433,22 +2444,33 @@ final class MediaExploreViewModel: ObservableObject {
         }
         AppLogger.info(.media, "syncSubscribedWorkshopItems: \(toDownload.count) new, \(alreadyDownloaded.count) already downloaded")
 
-        // 3. 转换为 MediaItem 并排队下载
+        // 3. 转换为 MediaItem 并并发提交到下载队列
+        // SteamCMD 下载限制器会自动控制并发（最多 2 个同时下载），超出的会排队等待
         let mediaItems = workshopService.convertToMediaItems(toDownload)
-        var newCount = 0
-        for item in mediaItems {
-            guard !Task.isCancelled else { break }
-            do {
-                try await downloadWorkshopWallpaper(item)
-                newCount += 1
-            } catch {
-                AppLogger.error(.media, "syncSubscribedWorkshopItems download failed", metadata: ["id": item.id, "error": "\(error)"])
-                // 继续下载下一个，不中断整体流程
+        
+        return await withTaskGroup(of: Bool.self, returning: (Int, Int).self) { group in
+            for item in mediaItems {
+                group.addTask { [weak self] in
+                    guard let self else { return false }
+                    guard !Task.isCancelled else { return false }
+                    do {
+                        try await self.downloadWorkshopWallpaper(item)
+                        return true
+                    } catch {
+                        AppLogger.error(.media, "syncSubscribedWorkshopItems download failed", metadata: ["id": item.id, "error": "\(error)"])
+                        return false
+                    }
+                }
             }
+            
+            var newCount = 0
+            for await success in group {
+                if success { newCount += 1 }
+            }
+            
+            AppLogger.info(.media, "syncSubscribedWorkshopItems completed: \(newCount) new downloads")
+            return (newCount, totalSubscribed)
         }
-
-        AppLogger.info(.media, "syncSubscribedWorkshopItems completed: \(newCount) new downloads")
-        return (newCount, totalSubscribed)
     }
 }
 

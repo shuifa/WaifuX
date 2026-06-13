@@ -44,7 +44,7 @@ enum WallpaperExploreScrollActivity {
 
 // MARK: - SwiftUI 壁纸卡片
 
-struct WallpaperCardView: View {
+struct WallpaperCardView: View, @preconcurrency Equatable {
     let wallpaper: Wallpaper
     let isFavorite: Bool
     let cardWidth: CGFloat
@@ -60,6 +60,12 @@ struct WallpaperCardView: View {
     private static let maxAspectRatioClamp: ClosedRange<CGFloat> = 0.35...3.6
 
     private let cornerRadius: CGFloat = 22
+
+    static func == (lhs: WallpaperCardView, rhs: WallpaperCardView) -> Bool {
+        lhs.wallpaper.id == rhs.wallpaper.id &&
+        lhs.isFavorite == rhs.isFavorite &&
+        lhs.cardWidth == rhs.cardWidth
+    }
 
     static func effectiveAspectRatio(for wallpaper: Wallpaper) -> CGFloat {
         min(max(CGFloat(wallpaper.effectiveAspectRatioValue), maxAspectRatioClamp.lowerBound), maxAspectRatioClamp.upperBound)
@@ -132,7 +138,7 @@ struct WallpaperCardView: View {
                 bottomBar
                     .frame(height: Self.bottomBarHeight)
             }
-            .background(Color(hex: "1A1D24").opacity(0.6))
+            .background(Color(hex: "1A1D24"))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
 
             RoundedRectangle(cornerRadius: cornerRadius)
@@ -144,6 +150,7 @@ struct WallpaperCardView: View {
             topTrailingBadge
                 .padding(12)
         }
+        .drawingGroup(opaque: true)
         .frame(width: cardWidth, height: cardHeight)
         .contentShape(Rectangle())
         .onTapGesture { onTap?() }
@@ -298,8 +305,10 @@ struct WallpaperCardView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 22)
-        .background(Color.black.opacity(0.22))
-        .cornerRadius(11)
+        .background(
+            RoundedRectangle(cornerRadius: 11)
+                .fill(Color.black.opacity(0.22))
+        )
     }
 
     private func statView(symbol: String, value: String, tint: Color) -> some View {
@@ -342,8 +351,10 @@ struct WallpaperCardView: View {
             .foregroundColor(badgeTextColor)
             .padding(.horizontal, 8)
             .frame(height: 20)
-            .background(Color.black.opacity(0.3))
-            .cornerRadius(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.black.opacity(0.3))
+            )
     }
 
     // MARK: - Helpers

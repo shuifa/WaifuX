@@ -143,7 +143,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
 
         guard !contexts.isEmpty else { return }
 
-        let applyBlock = {
+        let applyBlock: @Sendable () -> Void = {
             for active in contexts {
                 let targetDisplayID = displayID ?? active.displayID
                 guard let targetDisplayID else { continue }
@@ -166,6 +166,29 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                 active.rootLayer.bounds = CGRect(origin: .zero, size: targetSize)
                 active.rootLayer.contentsScale = targetScale
                 active.renderer?.relayoutForCurrentDisplayGeometry()
+
+                // IOSurface 渲染器也需要重新布局
+                if let ioRenderer = WallpaperState.shared.ioSurfaceRenderer(for: targetDisplayID) {
+                    ioRenderer.relayout(rootLayer: active.rootLayer)
+
+                    // 分辨率变化时重新分配 surface 并通知 App
+                    let pixelWidth = Int(targetSize.width * targetScale)
+                    let pixelHeight = Int(targetSize.height * targetScale)
+                    if #available(macOS 15.0, *) {
+                        if let newIDs = ioRenderer.reallocateSurfacesIfNeeded(width: pixelWidth, height: pixelHeight) {
+                            Task {
+                                _ = await UnixSocketClient.shared.registerSurfaces(
+                                    displayID: targetDisplayID,
+                                    surfaceID0: newIDs.surfaceID0,
+                                    surfaceID1: newIDs.surfaceID1,
+                                    videoID: active.videoID ?? ""
+                                )
+                                extLog("[Geometry] re-registered surfaces display=\(targetDisplayID) [\(newIDs.surfaceID0), \(newIDs.surfaceID1)]")
+                            }
+                        }
+                    }
+                }
+
                 CATransaction.commit()
 
                 if let wallpaperID, active.displayID != targetDisplayID {
@@ -199,9 +222,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         var destSize = CGSize(width: 1920, height: 1080)
         var didParseDestinationSize = false
         var scaleFactor: CGFloat = 1.0
-        var isPreview = false
         var choiceConfiguration: String?
-        var choiceFiles: [URL] = []
 
         if let reqObj = request as? NSObject {
             let mirror = Mirror(reflecting: reqObj)
@@ -229,7 +250,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                         scaleFactor = CGFloat(Double(after[..<end.lowerBound].trimmingCharacters(in: .whitespaces)) ?? 1.0)
                     }
                 }
-                isPreview = desc.contains("isPreview: true")
+                _ = desc.contains("isPreview: true")
                 // 尝试解析 String 格式的 configuration: Optional("display-instance-id")
                 if let cRange = desc.range(of: "configuration: Optional(\""), let cEnd = desc[cRange.upperBound...].range(of: "\")") {
                     choiceConfiguration = String(desc[cRange.upperBound..<cEnd.lowerBound])
@@ -277,7 +298,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                             }
                         } else if descProp.label == "files" {
                             if let urls = descProp.value as? [URL] {
-                                choiceFiles = urls
+                                _ = urls
                             }
                         }
                     }

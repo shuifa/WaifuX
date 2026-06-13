@@ -65,7 +65,7 @@ private var socketURL: URL? {
 /// 生命周期由 WaifuXApp/AppDelegate 管理。App 启动时 start()，退出时 stop()。
 /// 可用显示器实例列表通过 `updateVideos(_:)` 设置。
 final class WallpaperExtensionSocketServer: @unchecked Sendable {
-    nonisolated(unsafe) static let shared = WallpaperExtensionSocketServer()
+    static let shared = WallpaperExtensionSocketServer()
 
     private var isRunning = false
     private let queue = DispatchQueue(label: "wallpaper-ext-ipc", qos: .userInitiated)
@@ -220,6 +220,19 @@ final class WallpaperExtensionSocketServer: @unchecked Sendable {
         os_log(.info, log: appLog, "已广播 App 即将退出通知")
     }
 
+    /// 通知扩展重载：App 更新后启动时调用，旧扩展进程退出后 macOS WallpaperAgent 从新 bundle 重新加载。
+    func notifyExtensionReload() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        CFNotificationCenterPostNotification(
+            center,
+            CFNotificationName("com.waifux.app.wallpaper.extensionReload" as CFString),
+            nil,
+            nil,
+            true
+        )
+        os_log(.info, log: appLog, "已广播扩展重载通知")
+    }
+
     /// 检查扩展是否已有活跃的渲染管线（任何显示器）。
     /// 如果已有活跃管线，App 不应自动切换视频或设置静态桌面壁纸。
     var hasActivePipeline: Bool {
@@ -364,12 +377,12 @@ final class WallpaperExtensionSocketServer: @unchecked Sendable {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        sockURL.path.withCString { src in
-            Darwin.strncpy(UnsafeMutablePointer<CChar>(&addr.sun_path.0), src, MemoryLayout.size(ofValue: addr.sun_path))
+        _ = sockURL.path.withCString { src in
+            Darwin.strncpy(&addr.sun_path.0, src, MemoryLayout.size(ofValue: addr.sun_path))
         }
 
         let addrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
-        guard Darwin.bind(sock, UnsafeRawPointer(&addr).assumingMemoryBound(to: sockaddr.self), addrLen) == 0 else {
+        guard withUnsafeMutablePointer(to: &addr, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(sock, $0, addrLen) } }) == 0 else {
             os_log(.error, log: appLog, "bind() 失败: %d", errno)
             close(sock)
             return
@@ -384,8 +397,8 @@ final class WallpaperExtensionSocketServer: @unchecked Sendable {
         isRunning = true
 
         // 非阻塞 accept
-        var flags = fcntl(sock, F_GETFL, 0)
-        fcntl(sock, F_SETFL, flags | O_NONBLOCK)
+        let flags = fcntl(sock, F_GETFL, 0)
+        _ = fcntl(sock, F_SETFL, flags | O_NONBLOCK)
 
         queue.async { [weak self] in
             self?.acceptLoop(sock)
@@ -645,7 +658,7 @@ final class WallpaperExtensionSocketServer: @unchecked Sendable {
         while isRunning {
             var addr = sockaddr_un()
             var addrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
-            let client = Darwin.accept(sock, UnsafeMutableRawPointer(&addr).assumingMemoryBound(to: sockaddr.self), &addrLen)
+            let client = withUnsafeMutablePointer(to: &addr, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.accept(sock, $0, &addrLen) } })
 
             guard client >= 0 else {
                 if errno == EAGAIN || errno == EWOULDBLOCK {

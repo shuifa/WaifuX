@@ -125,12 +125,12 @@ final class UnixSocketClient: Sendable {
         // 连接
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        socketPath.withCString { src in
-            Darwin.strncpy(UnsafeMutablePointer<CChar>(&addr.sun_path.0), src, MemoryLayout.size(ofValue: addr.sun_path))
+        _ = socketPath.withCString { src in
+            Darwin.strncpy(&addr.sun_path.0, src, MemoryLayout.size(ofValue: addr.sun_path))
         }
 
         let addrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
-        guard Darwin.connect(sock, UnsafeRawPointer(&addr).assumingMemoryBound(to: sockaddr.self), addrLen) == 0 else { return nil }
+        guard withUnsafeMutablePointer(to: &addr, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(sock, $0, addrLen) } }) == 0 else { return nil }
 
         // 发送 4 字节长度前缀 + JSON 数据
         var len = UInt32(data.count).bigEndian

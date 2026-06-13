@@ -280,19 +280,21 @@ class ExploreGridItem: NSCollectionViewItem {
                 guard let self, !Task.isCancelled else { return }
                 self.coverImageView.image = finalImage
             }
-            // 用原始数据检测 GIF（不依赖 URL 后缀，Steam Workshop 动图预览后缀是 .png 但内容为 GIF）
-            guard !Task.isCancelled, let firstURL = urls.first else { return }
-            var req = URLRequest(url: firstURL)
-            req.timeoutInterval = 15
-            if let host = firstURL.host?.lowercased(),
-               host.contains("steam") || host.contains("akamaihd") {
-                req.setValue("https://steamcommunity.com/", forHTTPHeaderField: "Referer")
-            }
-            guard let (data, resp) = try? await URLSession.shared.data(for: req),
-                  resp.mimeType?.hasPrefix("image/gif") == true || data.prefix(3) == Data("GIF".utf8)
-            else { return }
-            await MainActor.run { [weak self] in
-                self?.startAnimatingIfAnimated(data: data)
+            // GIF 探测：用 AnimatedImageProbeCache 缓存结果，避免重复探测。
+            // 快速滚动时 debounce 200ms，卡片滑过不触发探测。
+            guard !Task.isCancelled, let probeURL = urls.first else { return }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard !Task.isCancelled else { return }
+            let isGIF = await AnimatedImageProbeCache.shared.isAnimatedGIF(
+                probeURL,
+                maxByteCount: 18 * 1024 * 1024
+            )
+            guard !Task.isCancelled, isGIF, let image = bestImage else { return }
+            // 是 GIF：从已下载的图片获取 GIF 数据播放动画
+            if let gifData = image.kf.gifRepresentation() {
+                await MainActor.run { [weak self] in
+                    self?.startAnimatingIfAnimated(data: gifData)
+                }
             }
         }
     }
@@ -308,8 +310,8 @@ class ExploreGridItem: NSCollectionViewItem {
         let count = CGImageSourceGetCount(cgSource)
         guard count > 1 else { return }
 
-        // 限制最大帧数并计算采样步长
-        let maxFrames = 50
+        // 限制最大帧数并计算采样步长（列表中 20 帧足够流畅，减少内存和解码压力）
+        let maxFrames = 20
         let frameStep = max(1, count / maxFrames)
         let maxPixel = Int(max(coverImageView.bounds.width, coverImageView.bounds.height) * 3)
 
@@ -351,9 +353,12 @@ class ExploreGridItem: NSCollectionViewItem {
         let dur = max(animatedFrames[currentFrameIndex].duration, 0.05)
         animationTimer = Timer.scheduledTimer(withTimeInterval: dur, repeats: false) { [weak self] _ in
             guard let self else { return }
-            currentFrameIndex = (currentFrameIndex + 1) % animatedFrames.count
-            coverImageView.image = animatedFrames[currentFrameIndex].image
-            advanceFrameRepeating()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                currentFrameIndex = (currentFrameIndex + 1) % animatedFrames.count
+                coverImageView.image = animatedFrames[currentFrameIndex].image
+                advanceFrameRepeating()
+            }
         }
     }
 

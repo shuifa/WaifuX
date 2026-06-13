@@ -43,6 +43,12 @@ class SettingsViewModel: ObservableObject {
     @Published var pauseOnBatteryPower = false { didSet { UserDefaults.standard.set(pauseOnBatteryPower, forKey: "pause_on_battery_power") } }
     @Published var hdrEnabled = true { didSet { UserDefaults.standard.set(hdrEnabled, forKey: "hdr_enabled") } }
     @Published var showAllWorkshopContent = false { didSet { UserDefaults.standard.set(showAllWorkshopContent, forKey: "show_all_workshop_content") } }
+    /// 场景壁纸实时渲染模式开关
+    /// 开启后，设置场景壁纸将使用 wallpaper-wgpu 实时渲染桌面，而非烘焙视频
+    @Published var sceneRealtimeRenderingEnabled = false {
+        didSet { UserDefaults.standard.set(sceneRealtimeRenderingEnabled, forKey: "scene_realtime_rendering_enabled") }
+    }
+
     /// 动态锁屏壁纸开关（仅 macOS 26+ 可用，关闭后走旧逻辑）
     @Published var dynamicLockScreenEnabled = false {
         didSet {
@@ -152,6 +158,7 @@ class SettingsViewModel: ObservableObject {
         pauseOnBatteryPower = defaults.bool(forKey: "pause_on_battery_power")
         hdrEnabled = defaults.object(forKey: "hdr_enabled") as? Bool ?? true
         showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
+        sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
         dynamicLockScreenEnabled = defaults.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? false
         // 非 macOS 26+ 系统强制关闭动态锁屏
         if #available(macOS 26.0, *) { } else {

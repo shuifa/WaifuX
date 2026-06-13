@@ -376,6 +376,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             if #available(macOS 26.0, *) {
                                 WallpaperExtensionSocketServer.shared.start()
                                 LockScreenWallpaperService.shared.syncInstanceCatalogToSocketServer()
+                                // 通知旧扩展进程退出，macOS WallpaperAgent 从新 bundle 重新加载
+                                WallpaperExtensionSocketServer.shared.notifyExtensionReload()
                             }
 
                             // 恢复刘海隐藏设置（纯 UI 覆盖层，不依赖壁纸）
@@ -787,7 +789,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// 计算需要清理的过期扩展列表。
     /// 只读取当前进程表和 PlugInKit 登记项，避免启动时枚举 `/private/tmp` / build 大目录。
-    private func computeStaleWallpaperExtensionCandidates(currentExtensionURL: URL, currentAppURL: URL) -> [URL] {
+    nonisolated private func computeStaleWallpaperExtensionCandidates(currentExtensionURL: URL, currentAppURL: URL) -> [URL] {
         let candidates = wallpaperExtensionRegistrationCandidates(currentAppURL: currentAppURL)
         return candidates.filter { candidate in
             guard candidate.standardizedFileURL.path != currentExtensionURL.standardizedFileURL.path else {
@@ -800,17 +802,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func registerBundleWithLaunchServices(_ url: URL) {
+    nonisolated private func registerBundleWithLaunchServices(_ url: URL) {
         let tool = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         guard FileManager.default.isExecutableFile(atPath: tool) else { return }
         runRegistrationTool(tool, arguments: ["-f", url.path], label: "lsregister")
     }
 
-    private func registerBundleWithPlugInKit(_ url: URL) {
+    nonisolated private func registerBundleWithPlugInKit(_ url: URL) {
         runRegistrationTool("/usr/bin/pluginkit", arguments: ["-a", url.path], label: "pluginkit add")
     }
 
-    private func wallpaperExtensionRegistrationCandidates(currentAppURL: URL) -> [URL] {
+    nonisolated private func wallpaperExtensionRegistrationCandidates(currentAppURL: URL) -> [URL] {
         var result: [URL] = []
         var seen = Set<String>()
 
@@ -836,7 +838,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return result
     }
 
-    private func runningWallpaperExtensionCandidates() -> [URL] {
+    nonisolated private func runningWallpaperExtensionCandidates() -> [URL] {
         let output = processOutput(
             launchPath: "/bin/ps",
             arguments: ["-axo", "command="]
@@ -858,7 +860,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return result
     }
 
-    private func plugInKitWallpaperExtensionCandidates() -> [URL] {
+    nonisolated private func plugInKitWallpaperExtensionCandidates() -> [URL] {
         let output = processOutput(
             launchPath: "/usr/bin/pluginkit",
             arguments: ["-m", "-A", "-D", "-v", "-i", "com.waifux.app.wallpaperextension"]
@@ -880,13 +882,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return result
     }
 
-    private func unregisterBundleWithLaunchServices(_ url: URL) {
+    nonisolated private func unregisterBundleWithLaunchServices(_ url: URL) {
         let tool = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         guard FileManager.default.isExecutableFile(atPath: tool) else { return }
         runRegistrationTool(tool, arguments: ["-u", url.path], label: "lsregister unregister")
     }
 
-    private func hostAppURL(forWallpaperExtensionURL url: URL) -> URL? {
+    nonisolated private func hostAppURL(forWallpaperExtensionURL url: URL) -> URL? {
         let plugInsURL = url.deletingLastPathComponent()
         guard plugInsURL.lastPathComponent == "PlugIns" else { return nil }
         let contentsURL = plugInsURL.deletingLastPathComponent()
@@ -896,13 +898,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return appURL
     }
 
-    private func wallpaperExtensionBundleID(at url: URL) -> String? {
+    nonisolated private func wallpaperExtensionBundleID(at url: URL) -> String? {
         // ⚠️ 只能在后台线程调用，不能使用 Bundle(url:)（非线程安全）
         let infoURL = url.appendingPathComponent("Contents/Info.plist")
         return (NSDictionary(contentsOf: infoURL) as? [String: Any])?["CFBundleIdentifier"] as? String
     }
 
-    private func isStaleWaifuXBuildPath(_ url: URL) -> Bool {
+    nonisolated private func isStaleWaifuXBuildPath(_ url: URL) -> Bool {
         let path = url.standardizedFileURL.path
         if path.hasPrefix("/private/tmp/") {
             return true
@@ -945,7 +947,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func terminateStaleWallpaperExtensionProcessesByPID(currentAppURL: URL) {
+    nonisolated private func terminateStaleWallpaperExtensionProcessesByPID(currentAppURL: URL) {
         let currentPrefix = currentAppURL.standardizedFileURL.path + "/"
         let output = processOutput(
             launchPath: "/bin/ps",
@@ -977,7 +979,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func waitForProcessExit(pid: pid_t, timeout: TimeInterval) -> Bool {
+    nonisolated private func waitForProcessExit(pid: pid_t, timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while kill(pid, 0) == 0 && Date() < deadline {
             usleep(100_000)
@@ -986,7 +988,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @discardableResult
-    private func forceKillProcessIfNeeded(pid: pid_t, label: String) -> Bool {
+    nonisolated private func forceKillProcessIfNeeded(pid: pid_t, label: String) -> Bool {
         guard kill(pid, 0) == 0 else { return true }
         guard kill(pid, SIGKILL) == 0 else {
             print("[WaifuXApp] Failed to SIGKILL stale wallpaper extension pid=\(pid): errno=\(errno) label=\(label)")
@@ -999,7 +1001,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return didExit
     }
 
-    private func runRegistrationTool(_ launchPath: String, arguments: [String], label: String) {
+    nonisolated private func runRegistrationTool(_ launchPath: String, arguments: [String], label: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
@@ -1015,7 +1017,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func processOutput(launchPath: String, arguments: [String]) -> String {
+    nonisolated private func processOutput(launchPath: String, arguments: [String]) -> String {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: launchPath)
@@ -1222,29 +1224,41 @@ struct AutoUpdateSheet: View {
                     }
 
                     // 更新内容
-                    if let commit = commit {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(t("updateContent"))
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.45))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(t("updateContent"))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.45))
 
-                            Text(commit.shortMessage)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.88))
-                                .lineLimit(3)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                if let body = release.body, !body.isEmpty {
+                                    formattedReleaseNotes(body)
+                                } else if let commit = commit {
+                                    Text(commit.fullMessage)
+                                        .font(.system(size: 12, weight: .regular))
+                                        .foregroundStyle(.white.opacity(0.85))
+                                        .textSelection(.enabled)
 
-                            Text(commit.shortSHA)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.35))
+                                    Text(commit.shortSHA)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(.white.opacity(0.35))
+                                        .padding(.top, 4)
+                                } else {
+                                    Text(t("noReleaseNotes"))
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.5))
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(.white.opacity(0.04))
-                        )
+                        .frame(maxHeight: 280)
                     }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.white.opacity(0.04))
+                    )
 
                     // 下载进度
                     if updateManager.state.isDownloading || updateManager.state.isInstalling {
@@ -1338,7 +1352,7 @@ struct AutoUpdateSheet: View {
                     }
                 }
                 .padding(24)
-                .frame(width: 360, height: 440)
+                .frame(width: 360, height: 500)
                 .background(
                     DarkLiquidGlassBackground(
                         cornerRadius: 20,
@@ -1347,6 +1361,120 @@ struct AutoUpdateSheet: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             }
+    }
+
+    // MARK: - 格式化 Release Notes
+
+    @ViewBuilder
+    private func formattedReleaseNotes(_ text: String) -> some View {
+        let lines = text.components(separatedBy: .newlines)
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty {
+                    // 空行作为段落分隔
+                    Spacer().frame(height: 6)
+                } else if trimmed.hasPrefix("## ") {
+                    // 二级标题
+                    Text(String(trimmed.dropFirst(3)))
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .padding(.top, 4)
+                } else if trimmed.hasPrefix("# ") {
+                    // 一级标题
+                    Text(String(trimmed.dropFirst(2)))
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .padding(.top, 6)
+                } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
+                    // 列表项
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("•")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .frame(width: 10)
+                        Text(String(trimmed.dropFirst(2)))
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .textSelection(.enabled)
+                    }
+                } else if trimmed.range(of: #"^\d+\.\s"#, options: .regularExpression) != nil {
+                    // 有序列表
+                    let parts = trimmed.split(separator: " ", maxSplits: 1)
+                    if parts.count >= 2 {
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(String(parts[0]))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.5))
+                                .frame(width: 16, alignment: .trailing)
+                            Text(String(parts[1]))
+                                .font(.system(size: 12, weight: .regular))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .textSelection(.enabled)
+                        }
+                    } else {
+                        normalText(trimmed)
+                    }
+                } else if trimmed.hasPrefix("> ") {
+                    // 引用
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(Color.accentColor.opacity(0.5))
+                            .frame(width: 3)
+                            .padding(.trailing, 8)
+                        Text(String(trimmed.dropFirst(2)))
+                            .font(.system(size: 12, weight: .regular, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .italic()
+                            .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 2)
+                } else if trimmed.hasPrefix("```") {
+                    // 代码块标记，跳过
+                    EmptyView()
+                } else {
+                    normalText(trimmed)
+                }
+            }
+        }
+    }
+
+    private func normalText(_ text: String) -> some View {
+        Text(parseInlineMarkdown(text))
+            .font(.system(size: 12, weight: .regular))
+            .foregroundStyle(.white.opacity(0.85))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: - 内联 Markdown 解析
+
+    private func parseInlineMarkdown(_ text: String) -> AttributedString {
+        var result = AttributedString(text)
+
+        // 粗体 **text** 或 __text__
+        while let boldRange = result.range(of: #"\*\*(.+?)\*\*|__(.+?)__"#, options: .regularExpression) {
+            let matched = String(result[boldRange].characters)
+            let inner = matched.replacingOccurrences(of: "**", with: "")
+                                .replacingOccurrences(of: "__", with: "")
+            var replacement = AttributedString(inner)
+            replacement.font = .system(size: 12, weight: .bold)
+            replacement.foregroundColor = .white.opacity(0.95)
+            result.replaceSubrange(boldRange, with: replacement)
+        }
+
+        // 行内代码 `code`
+        while let codeRange = result.range(of: #"`([^`]+)`"#, options: .regularExpression) {
+            let matched = String(result[codeRange].characters)
+            let inner = matched.replacingOccurrences(of: "`", with: "")
+            var replacement = AttributedString(inner)
+            replacement.font = .system(size: 11, weight: .medium, design: .monospaced)
+            replacement.foregroundColor = Color.accentColor.opacity(0.9)
+            replacement.backgroundColor = .white.opacity(0.06)
+            result.replaceSubrange(codeRange, with: replacement)
+        }
+
+        return result
     }
 
     // MARK: - 辅助属性

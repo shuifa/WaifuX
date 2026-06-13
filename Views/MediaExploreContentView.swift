@@ -14,6 +14,17 @@ private struct MediaLoadMoreSentinelMinYPreferenceKey: PreferenceKey {
     }
 }
 
+private struct MediaExploreHeaderHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 {
+            value = next
+        }
+    }
+}
+
 private final class MediaExploreScrollCoordinator: ObservableObject {
     var sentinelDebounceTask: DispatchWorkItem?
     var pendingLoadMoreTask: DispatchWorkItem?
@@ -65,6 +76,8 @@ struct MediaExploreContentView: View {
     @State private var mediaSearchQuery: String = ""
     /// loadMore 冷却期，防止 contentSize 增长 → isNearBottom 翻转 → 立即重试的无限级联。
     @State private var loadMoreCooldownUntil: Date? = nil
+    @State private var measuredHeaderHeight: CGFloat = 0
+    @State private var isHeaderContentMounted = true
     @StateObject private var scrollCoordinator = MediaExploreScrollCoordinator()
     private var shouldUseLightweightEffects: Bool {
         (videoWallpaperManager.isVideoWallpaperActive && !videoWallpaperManager.isPaused) ||
@@ -118,6 +131,8 @@ struct MediaExploreContentView: View {
                         grainIntensity: arcSettings.exploreGrainMedia,
                         lightweight: shouldUseLightweightEffects
                     )
+                    // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
+                    .drawingGroup(opaque: true)
                     .ignoresSafeArea()
                 }
 
@@ -195,6 +210,10 @@ struct MediaExploreContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .workshopSourceChanged)) { _ in
             handleSourceChange()
+            invalidateHeaderMeasurement()
+        }
+        .onChange(of: headerLayoutSignature) { _, _ in
+            invalidateHeaderMeasurement()
         }
     }
 
@@ -236,6 +255,10 @@ struct MediaExploreContentView: View {
                 .padding(.horizontal, 28)
                 .frame(width: fullWidth, alignment: .leading)
                 .coordinateSpace(name: Self.scrollCoordinateSpaceName)
+                .background(
+                    ScrollToTopHelper(trigger: 0, onOffsetChange: handleScrollOffset)
+                        .frame(width: 0, height: 0)
+                )
             }
             .onScrollGeometryChange(for: ScrollNearBottomState.self, of: { geometry in
                 let bottomOffset = geometry.contentOffset.y + geometry.containerSize.height
@@ -285,6 +308,10 @@ struct MediaExploreContentView: View {
                 .padding(.horizontal, 28)
                 .frame(width: fullWidth, alignment: .leading)
                 .coordinateSpace(name: Self.scrollCoordinateSpaceName)
+                .background(
+                    ScrollToTopHelper(trigger: 0, onOffsetChange: handleScrollOffset)
+                        .frame(width: 0, height: 0)
+                )
             }
             .onPreferenceChange(MediaLoadMoreSentinelMinYPreferenceKey.self) { sentinelMinY in
                 scrollCoordinator.sentinelDebounceTask?.cancel()
@@ -356,6 +383,29 @@ struct MediaExploreContentView: View {
     // MARK: - Header
 
     private var headerStack: some View {
+        Group {
+            if isHeaderContentMounted {
+                headerContent
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: MediaExploreHeaderHeightPreferenceKey.self,
+                                value: proxy.size.height
+                            )
+                        }
+                    )
+            } else {
+                Color.clear
+                    .frame(height: max(measuredHeaderHeight, 1))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onPreferenceChange(MediaExploreHeaderHeightPreferenceKey.self) { height in
+            updateMeasuredHeaderHeight(height)
+        }
+    }
+
+    private var headerContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             heroSection
             categorySection
@@ -378,6 +428,63 @@ struct MediaExploreContentView: View {
         .fixedSize(horizontal: false, vertical: true)
         .environment(\.explorePageAtmosphereTint, exploreAtmosphere.tint)
         .environment(\.arcIsLightMode, arcSettings.isLightMode)
+    }
+
+    private var headerLayoutSignature: String {
+        [
+            workshopSourceManager.activeSource.rawValue,
+            selectedCategory.rawValue,
+            selectedHotTag?.id ?? "none",
+            selectedWorkshopType.id,
+            selectedWorkshopContentLevel?.id ?? "none",
+            selectedWorkshopResolution?.id ?? "none",
+            selectedWorkshopTags.map(\.id).sorted().joined(separator: ","),
+            selectedWallsflowCategorySlug,
+            selectedDongTaiCategories.map(\.rawValue).sorted().joined(separator: ","),
+            dongtaiFilterAudio.map(String.init) ?? "nil",
+            dongtaiFilterFourK.map(String.init) ?? "nil"
+        ].joined(separator: "|")
+    }
+
+    private func handleScrollOffset(_ offset: CGFloat) {
+        MediaExploreScrollActivity.markActive()
+        updateHeaderMountState(scrollOffset: offset)
+    }
+
+    private func updateHeaderMountState(scrollOffset: CGFloat) {
+        let headerHeight = measuredHeaderHeight > 1 ? measuredHeaderHeight : 260
+        let hideThreshold = headerHeight + 80
+        let showThreshold = max(0, headerHeight - 48)
+        let shouldMount = isHeaderContentMounted
+            ? scrollOffset < hideThreshold
+            : scrollOffset < showThreshold
+
+        guard shouldMount != isHeaderContentMounted else { return }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isHeaderContentMounted = shouldMount
+        }
+    }
+
+    private func updateMeasuredHeaderHeight(_ height: CGFloat) {
+        guard height > 1, abs(height - measuredHeaderHeight) > 1 else { return }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            measuredHeaderHeight = height
+        }
+    }
+
+    private func invalidateHeaderMeasurement() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isHeaderContentMounted = true
+            measuredHeaderHeight = 0
+        }
     }
 
     // MARK: - Sections
@@ -1143,6 +1250,7 @@ struct MediaExploreContentView: View {
                             viewModel.preserveExploreFeedForDetailNavigation()
                             selectedMedia = media
                         }
+                        .equatable()
                         // ⚡ 显式设定卡片高度，让 LazyVStack 无需创建子视图即
                         // 可估算列总高度，确保真正的懒加载行为。
                         .frame(height: Self.mediaCardHeight(cardWidth: cardWidth, media: media))

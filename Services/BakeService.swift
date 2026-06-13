@@ -792,11 +792,12 @@ final class BakeService: ObservableObject {
         // 完成写入
         videoInput.markAsFinished()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            writer.finishWriting {
-                if writer.status == .completed {
+            nonisolated(unsafe) let w = writer
+            w.finishWriting {
+                if w.status == .completed {
                     continuation.resume()
                 } else {
-                    continuation.resume(throwing: BakeError.writerFailed(writer.error?.localizedDescription ?? "finishWriting 失败"))
+                    continuation.resume(throwing: BakeError.writerFailed(w.error?.localizedDescription ?? "finishWriting 失败"))
                 }
             }
         }
@@ -1794,7 +1795,7 @@ private func CGSResizeWindow(_ cgsWindow: UInt32, _ size: CGSize) {
     var region: OpaquePointer?
     guard newRegion(&rect, &region) == .success, let region else { return }
     _ = setShape(CGSDefaultConnectionFn?() ?? 0, cgsWindow, region)
-    releaseRegion(region)
+    _ = releaseRegion(region)
 }
 
 /// 检查是否有屏幕录制权限
@@ -1827,7 +1828,7 @@ private let CGSSetWindowLevelFunc: (@convention(c) (UInt32, Int32) -> Int32)? = 
 }()
 
 private func CGSWindowSetLevel(_ cgsWindow: UInt32, _ level: Int32) {
-    CGSSetWindowLevelFunc?(cgsWindow, level)
+    _ = CGSSetWindowLevelFunc?(cgsWindow, level)
 }
 
 // MARK: - 错误类型

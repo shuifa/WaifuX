@@ -284,7 +284,7 @@ private extension WallsflowService {
             return "Live Wallpapers"
         }()
 
-        let categorySlug: String? = {
+        let _: String? = {
             if let breadcrumb = try? article.select("a[href*=\"/live-wallpapers/\"][href$=\"/\"]").first(),
                let href = try? breadcrumb.attr("href") {
                 return href.trimmingCharacters(in: CharacterSet(charactersIn: "/")).split(separator: "/").last.map(String.init)
@@ -303,7 +303,7 @@ private extension WallsflowService {
         }()
 
         // 评论数
-        let commentsCount: Int? = {
+        let _: Int? = {
             if let commentsDiv = try? article.select("[title^=\"Comments:\"]").first(),
                let title = try? commentsDiv.attr("title"),
                let num = Int(title.replacingOccurrences(of: "Comments: ", with: "")) {
@@ -473,7 +473,7 @@ private extension WallsflowService {
             return nil
         }()
 
-        let authorURL: URL? = {
+        let _: URL? = {
             if let author = article["author"] as? [String: Any],
                let urlStr = author["url"] as? String {
                 return URL(string: urlStr).flatMap { $0.scheme != nil ? $0 : URL(string: "https://wallsflow.com\(urlStr)") }
@@ -492,13 +492,13 @@ private extension WallsflowService {
         }()
 
         // 从页面 DOM 补充视频 URL、标签等（JSON-LD 不包含这些）
-        let (videoURL, tags, resolution, fileSizeText, sourceName, sourceURL, downloadURL) = parseDetailSupplemental(document: document)
+        let (videoURL, tags, resolution, fileSizeText, _, _, _) = parseDetailSupplemental(document: document)
 
         // 从 URL 提取 ID
         let id = extractID(from: pageURL.absoluteString) ?? pageURL.lastPathComponent.replacingOccurrences(of: ".html", with: "")
 
         // 解析分辨率
-        let (exactResolution, width, height): (String?, Int?, Int?) = parseResolution(resolution)
+        let (exactResolution, _, _): (String?, Int?, Int?) = parseResolution(resolution)
 
         // 解析文件大小
         let fileSizeBytes = parseFileSize(fileSizeText)
@@ -588,7 +588,7 @@ private extension WallsflowService {
         }()
 
         // 补充字段
-        let (videoURL, tags, resolution, fileSizeText, sourceName, sourceURL, downloadURL) = parseDetailSupplemental(document: document)
+        let (videoURL, tags, resolution, fileSizeText, _, _, _) = parseDetailSupplemental(document: document)
 
         let id = extractID(from: pageURL.absoluteString) ?? pageURL.lastPathComponent.replacingOccurrences(of: ".html", with: "")
         let sourceNameValue = t("wallsflow")

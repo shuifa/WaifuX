@@ -61,6 +61,15 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
     /// 权限是否已获取
     @Published public private(set) var isAuthorized = false
 
+    // MARK: - FFT 缓存（避免每帧重建）
+
+    nonisolated(unsafe) private var fftSetup: FFTSetup?
+    nonisolated(unsafe) private var hannWindow: [Float] = []
+
+    /// UI 更新节流（~30fps）
+    nonisolated(unsafe) private var lastUIUpdateTime: UInt64 = 0
+    nonisolated(unsafe) private static let uiUpdateIntervalNs: UInt64 = 33_000_000 // ~30fps
+
     private override init() {
         super.init()
     }
@@ -87,6 +96,16 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
         print("[AudioCapture] ScreenCaptureKit 音频捕获已停止")
     }
 
+    private func resetSpectrum() {
+        lastSpectrum16 = .init(repeating: 0, count: 16)
+        lastSpectrum32 = .init(repeating: 0, count: 32)
+        lastSpectrum64 = .init(repeating: 0, count: 64)
+        spectrum16 = .init(repeating: 0, count: 16)
+        spectrum32 = .init(repeating: 0, count: 32)
+        spectrum64 = .init(repeating: 0, count: 64)
+        averageEnergy = 0
+    }
+
     // MARK: - 权限与启动
 
     private func requestPermissionAndStart() async {
@@ -109,6 +128,15 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
     }
 
     private func startSCStream() async {
+        // 预创建 FFT 资源（避免每帧分配）
+        if fftSetup == nil {
+            fftSetup = vDSP_create_fftsetup(vDSP_Length(fftSizeLog2), FFTRadix(kFFTRadix2))
+        }
+        if hannWindow.isEmpty {
+            hannWindow = [Float](repeating: 0, count: fftSize)
+            vDSP_hann_window(&hannWindow, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+        }
+
         do {
             // 获取可捕获的内容（显示器列表）
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -149,16 +177,6 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
             self.stream = nil
             self.isRunning = false
         }
-    }
-
-    private func resetSpectrum() {
-        lastSpectrum16 = .init(repeating: 0, count: 16)
-        lastSpectrum32 = .init(repeating: 0, count: 32)
-        lastSpectrum64 = .init(repeating: 0, count: 64)
-        spectrum16 = .init(repeating: 0, count: 16)
-        spectrum32 = .init(repeating: 0, count: 32)
-        spectrum64 = .init(repeating: 0, count: 64)
-        averageEnergy = 0
     }
 }
 
@@ -213,33 +231,35 @@ extension SystemAudioCaptureService {
 
     /// 非主线程 FFT 计算（纯数学运算，不涉及 UI）
     nonisolated private func performFFT(samples: [Float]) {
-        guard let fftSetup = vDSP_create_fftsetup(vDSP_Length(fftSizeLog2), FFTRadix(kFFTRadix2)) else { return }
+        guard let fftSetup = fftSetup else { return }
+        guard hannWindow.count == fftSize else { return }
 
         var realPart = [Float](repeating: 0, count: fftSize / 2)
         var imagPart = [Float](repeating: 0, count: fftSize / 2)
-        var splitComplex = DSPSplitComplex(realp: &realPart, imagp: &imagPart)
-
-        // 汉宁窗
-        var window = [Float](repeating: 0, count: fftSize)
-        vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
-        var windowedSamples = [Float](repeating: 0, count: fftSize)
-        vDSP_vmul(samples, 1, window, 1, &windowedSamples, 1, vDSP_Length(fftSize))
-
-        windowedSamples.withUnsafeMutableBufferPointer { ptr in
-            ptr.baseAddress?.withMemoryRebound(to: DSPComplex.self, capacity: fftSize / 2) { complexPtr in
-                vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(fftSize / 2))
-            }
-        }
-
-        vDSP_fft_zrip(fftSetup, &splitComplex, 1, vDSP_Length(fftSizeLog2), FFTDirection(kFFTDirection_Forward))
 
         var magnitudes = [Float](repeating: 0, count: fftSize / 2)
-        vDSP_zvmags(&splitComplex, 1, &magnitudes, 1, vDSP_Length(fftSize / 2))
-
         var scalar: Float = 1.0 / Float(fftSize)
-        vDSP_vsmul(magnitudes, 1, &scalar, &magnitudes, 1, vDSP_Length(fftSize / 2))
 
-        vDSP_destroy_fftsetup(fftSetup)
+        realPart.withUnsafeMutableBufferPointer { realBuf in
+        imagPart.withUnsafeMutableBufferPointer { imagBuf in
+            var splitComplex = DSPSplitComplex(realp: realBuf.baseAddress!, imagp: imagBuf.baseAddress!)
+
+            // 使用缓存的 Hann 窗
+            var windowedSamples = [Float](repeating: 0, count: fftSize)
+            vDSP_vmul(samples, 1, hannWindow, 1, &windowedSamples, 1, vDSP_Length(fftSize))
+
+            windowedSamples.withUnsafeMutableBufferPointer { ptr in
+                ptr.baseAddress?.withMemoryRebound(to: DSPComplex.self, capacity: fftSize / 2) { complexPtr in
+                    vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(fftSize / 2))
+                }
+            }
+
+            vDSP_fft_zrip(fftSetup, &splitComplex, 1, vDSP_Length(fftSizeLog2), FFTDirection(kFFTDirection_Forward))
+            vDSP_zvmags(&splitComplex, 1, &magnitudes, 1, vDSP_Length(fftSize / 2))
+        }
+        }
+
+        vDSP_vsmul(magnitudes, 1, &scalar, &magnitudes, 1, vDSP_Length(fftSize / 2))
 
         // dB 映射
         var dbValues = [Float](repeating: 0, count: fftSize / 2)
@@ -251,6 +271,11 @@ extension SystemAudioCaptureService {
         let new16 = downsample(dbValues, targetCount: 16)
         let new32 = downsample(dbValues, targetCount: 32)
         let new64 = downsample(dbValues, targetCount: 64)
+
+        // UI 更新节流（~30fps，避免每帧音频都向主线程派发）
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now - lastUIUpdateTime >= SystemAudioCaptureService.uiUpdateIntervalNs else { return }
+        lastUIUpdateTime = now
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }

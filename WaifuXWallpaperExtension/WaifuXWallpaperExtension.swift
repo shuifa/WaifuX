@@ -153,6 +153,7 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             observePowerStateChanges()
             observeSocketCommands()
             observeSocketCommandNotifications()
+            observeExtensionReload()
         } else {
             let err = String(cString: dlerror())
             extLog("INIT — dlopen failed: \(err)")
@@ -179,6 +180,30 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             nil,
             .deliverImmediately
         )
+    }
+
+    /// 监听 App 重启时的扩展重载通知。
+    /// App 更新后启动时发送此通知，旧扩展进程退出，macOS WallpaperAgent 从新 bundle 重新加载。
+    /// App 正常退出不触发此通知，扩展继续运行以保持锁屏壁纸不中断。
+    private func observeExtensionReload() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        CFNotificationCenterAddObserver(
+            center,
+            observer,
+            { _, _, _, _, _ in
+                extLog("[Extension] Reload requested by app — exiting to allow new version to load")
+                FrameChannel.shared.stop()
+                let removed = WallpaperState.shared.removeAllContexts()
+                WallpaperPrefs.shared.setActive(false)
+                extLog("[Extension] Released \(removed.count) active context(s), exiting")
+                exit(0)
+            },
+            "com.waifux.app.wallpaper.extensionReload" as CFString,
+            nil,
+            .deliverImmediately
+        )
+        extLog("[Extension] Reload notification observer registered")
     }
 
     // MARK: - SnapshotXPC Swizzle
@@ -334,11 +359,11 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        socketPath.withCString { src in
-            Darwin.strncpy(UnsafeMutablePointer<CChar>(&addr.sun_path.0), src, MemoryLayout.size(ofValue: addr.sun_path))
+        _ = socketPath.withCString { src in
+            Darwin.strncpy(&addr.sun_path.0, src, MemoryLayout.size(ofValue: addr.sun_path))
         }
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-        guard Darwin.connect(sock, UnsafeRawPointer(&addr).assumingMemoryBound(to: sockaddr.self), len) == 0 else { return false }
+        guard withUnsafeMutablePointer(to: &addr, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(sock, $0, len) } }) == 0 else { return false }
 
         var reqLen = UInt32(data.count).bigEndian
         guard write(sock, &reqLen, 4) == 4 else { return false }
@@ -391,7 +416,7 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                     } else if let active = WallpaperState.shared.activeContextForCommand(displayID: displayID) {
                         // handleSocketCommand 始终在主线程调用，rootLayer 在此之后
                         // 不会被其他线程修改，使用 nonisolated(unsafe) 绕过严格的 Sendable 检查。
-                        nonisolated(unsafe) let rootLayer = active.rootLayer
+                        let rootLayer = active.rootLayer
                         // ⚠️ 必须 @MainActor：AVSampleBufferDisplayLayer 的创建和添加到 rootLayer
                         // 需要在主线程执行，否则视频不会动画（displayLayer 无帧输出）。
                         Task { @MainActor in

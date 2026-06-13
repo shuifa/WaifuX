@@ -1417,6 +1417,16 @@ private struct WorkshopSettingsTab: View {
                     }
                 }
 
+                // 场景壁纸实时渲染模式
+                MacSettingsSection {
+                    MacSettingsRow(title: t("workshop.sceneRealtimeRendering"), subtitle: t("workshop.sceneRealtimeRenderingDesc"), showDivider: false) {
+                        MacToggle(isOn: Binding(
+                            get: { viewModel.sceneRealtimeRenderingEnabled },
+                            set: { viewModel.sceneRealtimeRenderingEnabled = $0 }
+                        ))
+                    }
+                }
+
                 // 显示全部内容（仅登录 Steam 后显示）
                 if sourceManager.isSteamAuthenticated {
                     MacSettingsSection {

@@ -51,7 +51,7 @@ final class VideoRenderer: @unchecked Sendable {
         }
 
         let bounds = rootLayer.bounds
-        let videoSize = Self.displaySize(for: track)
+        let videoSize = await Self.displaySize(for: track)
         let layout = Self.aspectFillLayout(videoSize: videoSize, in: bounds)
 
         extLog("[VideoRenderer] video=\(Int(videoSize.width))x\(Int(videoSize.height)) display=\(Int(bounds.width))x\(Int(bounds.height)) fillScale=\(layout.scale)")
@@ -107,12 +107,27 @@ final class VideoRenderer: @unchecked Sendable {
         generateBackgroundFrame(for: asset)
     }
 
-    private static func displaySize(for track: AVAssetTrack) -> CGSize {
-        let naturalSize = track.naturalSize
-        let transformedSize = naturalSize.applying(track.preferredTransform)
+    private static func displaySize(for track: AVAssetTrack) async -> CGSize {
+        let naturalSize = (try? await track.load(.naturalSize)) ?? .zero
+        let preferredTransform = (try? await track.load(.preferredTransform)) ?? .identity
+        let transformedSize = naturalSize.applying(preferredTransform)
         let videoWidth = max(1, abs(transformedSize.width))
         let videoHeight = max(1, abs(transformedSize.height))
         return CGSize(width: videoWidth, height: videoHeight)
+    }
+
+    private static func displaySizeSync(for track: AVAssetTrack) -> CGSize {
+        let semaphore = DispatchSemaphore(value: 0)
+        final class Box: @unchecked Sendable { var value = CGSize.zero }
+        let box = Box()
+        DispatchQueue.global().async {
+            Task {
+                box.value = await displaySize(for: track)
+                semaphore.signal()
+            }
+        }
+        semaphore.wait()
+        return box.value
     }
 
     private static func aspectFillLayout(videoSize: CGSize, in bounds: CGRect) -> (frame: CGRect, scale: CGFloat) {
@@ -129,7 +144,7 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     private func applyAspectFillLayout(for track: AVAssetTrack) {
-        let videoSize = Self.displaySize(for: track)
+        let videoSize = Self.displaySizeSync(for: track)
         if Thread.isMainThread {
             applyAspectFillLayout(videoSize: videoSize)
         } else {

@@ -217,7 +217,7 @@ final class WebWallpaperDesignViewModel: ObservableObject {
             }
         }
         currentValues = resetValues
-        saveMessage = "已重置为默认值"
+        saveMessage = t("design.resetDone")
         errorMessage = nil
         do {
             try service.saveOverrides(for: wallpaperPath, properties: properties, currentValues: currentValues)
@@ -233,7 +233,7 @@ final class WebWallpaperDesignViewModel: ObservableObject {
 
     private func update(_ value: WebWallpaperPropertyValue, for property: WebWallpaperProperty) {
         currentValues[property.key] = value
-        saveMessage = "已保存"
+        saveMessage = t("design.saved")
         errorMessage = nil
 
         do {
@@ -311,7 +311,7 @@ struct WebWallpaperDesignPanel: View {
                         }
 
                         if viewModel.editablePropertyCount == 0 {
-                            Text("这个 Web 壁纸没有可编辑属性。")
+                            Text(t("design.noEditableProperties"))
                                 .font(.system(size: 12))
                                 .foregroundStyle(LiquidGlassColors.textSecondary)
                         }
@@ -361,7 +361,7 @@ struct WebWallpaperDesignPanel: View {
                 .background(accentTint.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("设计壁纸")
+                Text(t("design.designWallpaper"))
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(LiquidGlassColors.textPrimary)
 
@@ -547,7 +547,7 @@ struct WebWallpaperDesignPanel: View {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.system(size: 12, weight: .semibold))
-                Text("重置为默认值")
+                Text(t("design.resetToDefault"))
                     .font(.system(size: 12, weight: .semibold))
             }
             .foregroundStyle(accentTint)
@@ -560,7 +560,7 @@ struct WebWallpaperDesignPanel: View {
 
     private func fileDisplayText(_ property: WebWallpaperProperty) -> String {
         let value = viewModel.fileValue(for: property)
-        guard !value.isEmpty else { return "未选择文件" }
+        guard !value.isEmpty else { return t("design.noFileSelected") }
         return URL(fileURLWithPath: value).lastPathComponent
     }
 
@@ -643,7 +643,7 @@ struct WebWallpaperDesignPanel: View {
             HStack(spacing: 6) {
                 Text(fileName)
                     .font(.system(size: 11))
-                    .foregroundStyle(fileName == "未选择文件" ? LiquidGlassColors.textQuaternary : LiquidGlassColors.textSecondary)
+                    .foregroundStyle(fileName == t("design.noFileSelected") ? LiquidGlassColors.textQuaternary : LiquidGlassColors.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -651,10 +651,10 @@ struct WebWallpaperDesignPanel: View {
                     .frame(height: 28)
                     .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                glassCapsuleButton("选择", action: onChoose)
+                glassCapsuleButton(t("design.select"), action: onChoose)
 
                 if let onClear {
-                    glassCapsuleButton("清除", action: onClear)
+                    glassCapsuleButton(t("design.clear"), action: onClear)
                 }
             }
         }
@@ -678,7 +678,7 @@ struct WebWallpaperDesignPanel: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 14))
                     .foregroundStyle(accentTint)
-                Text("无法打开设计面板")
+                Text(t("design.cannotOpenPanel"))
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(LiquidGlassColors.textPrimary)
             }

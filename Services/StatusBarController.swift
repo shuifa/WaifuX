@@ -574,7 +574,12 @@ final class StatusBarController: NSObject {
             return
         }
         if weBridge.isCurrentWallpaperScene {
-            SceneWallpaperDesignPanelController.shared.present(for: wallpaperPath)
+            // 实时渲染模式下，显示属性编辑面板；否则显示文本设计面板
+            if UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled") {
+                SceneWallpaperPropertiesPanelController.shared.present(for: wallpaperPath)
+            } else {
+                SceneWallpaperDesignPanelController.shared.present(for: wallpaperPath)
+            }
             return
         }
         NSSound.beep()

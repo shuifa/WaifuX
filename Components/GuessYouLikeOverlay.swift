@@ -132,7 +132,7 @@ private struct GuessYouLikeCardCell: View {
                     .delay(Double(index) * 0.08),
                 value: dealt
             )
-            .onChange(of: dealt) { newValue in
+            .onChange(of: dealt) { _, newValue in
                 if newValue {
                     // 动画触发后，在预计完成时标记 hasAnimated
                     let delay = 0.5 + Double(index) * 0.08 + 0.1

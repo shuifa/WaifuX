@@ -32,6 +32,18 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg || true
 
+      - name: Copy ffmpeg to Resources
+        run: |
+          # macOS CI runners have ffmpeg via Homebrew
+          FFMPEG_BIN="$(readlink -f "$(which ffmpeg)" 2>/dev/null || which ffmpeg)"
+          if [[ -f "$FFMPEG_BIN" ]]; then
+            cp "$FFMPEG_BIN" "Resources/ffmpeg"
+            chmod +x "Resources/ffmpeg"
+            echo "✅ ffmpeg copied to Resources/ffmpeg"
+          else
+            echo "⚠️ ffmpeg not found, bake feature will not work"
+          fi
+
       - name: Update Version in project.yml
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
