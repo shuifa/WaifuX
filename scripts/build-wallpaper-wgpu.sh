@@ -27,6 +27,37 @@ mkdir -p "$DEST_DIR" "$DEST_LIB_DIR"
 
 echo "🔧 wallpaper-wgpu 部署开始..."
 
+fix_ffmpeg_install_names() {
+  local ffmpeg_bin="$1"
+  local lib_dir="$2"
+
+  if [[ ! -f "$ffmpeg_bin" || ! -d "$lib_dir" ]] || ! command -v otool >/dev/null 2>&1 || ! command -v install_name_tool >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local changed=false
+  while IFS= read -r dep_path; do
+    [[ -n "$dep_path" ]] || continue
+    case "$dep_path" in
+      /opt/homebrew/*)
+        local dep_base
+        dep_base="$(basename "$dep_path")"
+        if [[ -e "$lib_dir/$dep_base" ]]; then
+          install_name_tool -change "$dep_path" "@loader_path/lib/$dep_base" "$ffmpeg_bin" 2>/dev/null || true
+          changed=true
+        else
+          echo "  ⚠️  ffmpeg 依赖未捆绑: $dep_base"
+        fi
+        ;;
+    esac
+  done < <(otool -L "$ffmpeg_bin" 2>/dev/null | awk 'NR > 1 { print $1 }')
+
+  if [[ "$changed" == true ]]; then
+    codesign --force --sign - "$ffmpeg_bin" 2>/dev/null || true
+    echo "  ✅ ffmpeg dylib 路径已改为 @loader_path/lib"
+  fi
+}
+
 # ── 1. 复制 wallpaper-wgpu ──────────────────────────────────────
 WGUI_SRC="${WAIFUX_WGPU_SRC:-}"
 if [[ -z "$WGUI_SRC" ]]; then
@@ -64,6 +95,7 @@ fi
 if [[ -f "$FFMPEG_SRC" ]]; then
   cp "$FFMPEG_SRC" "$DEST_DIR/ffmpeg"
   chmod +x "$DEST_DIR/ffmpeg"
+  fix_ffmpeg_install_names "$DEST_DIR/ffmpeg" "$DEST_LIB_DIR"
   echo "  ✅ ffmpeg → $DEST_DIR/ffmpeg"
 else
   echo "  ⚠️  ffmpeg 未找到($FFMPEG_SRC), bake 功能将不可用"

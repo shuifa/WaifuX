@@ -23,6 +23,49 @@ require_packaged_file() {
   fi
 }
 
+fix_ffmpeg_install_names() {
+  local ffmpeg_bin="$1"
+  local lib_dir="$2"
+
+  if [[ ! -f "$ffmpeg_bin" || ! -d "$lib_dir" ]] || ! command -v otool >/dev/null 2>&1 || ! command -v install_name_tool >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local changed=false
+  while IFS= read -r dep_path; do
+    [[ -n "$dep_path" ]] || continue
+    case "$dep_path" in
+      /opt/homebrew/*)
+        local dep_base
+        dep_base="$(basename "$dep_path")"
+        if [[ -e "$lib_dir/$dep_base" ]]; then
+          install_name_tool -change "$dep_path" "@loader_path/lib/$dep_base" "$ffmpeg_bin" 2>/dev/null || true
+          changed=true
+        else
+          echo "⚠️ ffmpeg 依赖未捆绑: $dep_base"
+        fi
+        ;;
+    esac
+  done < <(otool -L "$ffmpeg_bin" 2>/dev/null | awk 'NR > 1 { print $1 }')
+
+  if [[ "$changed" == true ]]; then
+    codesign --force --sign - "$ffmpeg_bin" 2>/dev/null || true
+    echo "✅ ffmpeg dylib 路径已改为 @loader_path/lib"
+  fi
+}
+
+verify_packaged_ffmpeg() {
+  local ffmpeg_bin="$1"
+  if [[ ! -f "$ffmpeg_bin" ]]; then
+    return 0
+  fi
+  if ! "$ffmpeg_bin" -hide_banner -version >/dev/null 2>&1; then
+    echo "❌ ffmpeg 无法启动: $ffmpeg_bin"
+    echo "请先运行 ./scripts/build-wallpaper-wgpu.sh 修复并提交 Resources/ffmpeg"
+    exit 1
+  fi
+}
+
 # wallpaper-wgpu + DXC 部署。
 # CI / GitHub 打包默认使用仓库里已提交的二进制与内嵌 assets object；
 # 只有本地缺文件或显式设置 WAIFUX_FORCE_WGPU_REBUILD=1 时才重建，避免 CI 在
@@ -53,6 +96,8 @@ require_packaged_file "$PROJECT_DIR/Resources/dxc" "dxc"
 require_packaged_file "$PROJECT_DIR/Resources/lib/libdxcompiler.dylib" "libdxcompiler.dylib"
 require_packaged_file "$PROJECT_DIR/Resources/zip_data.o" "wallpaper-wgpu embedded assets object"
 require_packaged_file "$PROJECT_DIR/Resources/zip_accessor.o" "wallpaper-wgpu embedded assets accessor object"
+fix_ffmpeg_install_names "$PROJECT_DIR/Resources/ffmpeg" "$PROJECT_DIR/Resources/lib"
+verify_packaged_ffmpeg "$PROJECT_DIR/Resources/ffmpeg"
 
 # 旧 wallpaperengine-cli 仅作为离线烘焙的可选 renderer 2 保留。
 # 实时设置壁纸仍走 wallpaper-wgpu。
@@ -111,6 +156,7 @@ echo "🔏 签名渲染器二进制..."
 for f in "$PROJECT_DIR"/Resources/wallpaper-wgpu \
          "$PROJECT_DIR"/Resources/wallpaperengine-cli \
          "$PROJECT_DIR"/wallpaperengine-cli \
+         "$PROJECT_DIR"/Resources/ffmpeg \
          "$PROJECT_DIR"/Resources/dxc \
          "$PROJECT_DIR"/Resources/lib/*.dylib \
          "$PROJECT_DIR"/Resources/lib/Python; do
