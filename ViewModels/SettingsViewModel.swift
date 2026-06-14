@@ -45,8 +45,15 @@ class SettingsViewModel: ObservableObject {
     @Published var showAllWorkshopContent = false { didSet { UserDefaults.standard.set(showAllWorkshopContent, forKey: "show_all_workshop_content") } }
     /// 场景壁纸实时渲染模式开关
     /// 开启后，设置场景壁纸将使用 wallpaper-wgpu 实时渲染桌面，而非烘焙视频
+    /// 与桌面动态元素（时钟、音频柱状图等）互斥
     @Published var sceneRealtimeRenderingEnabled = false {
-        didSet { UserDefaults.standard.set(sceneRealtimeRenderingEnabled, forKey: "scene_realtime_rendering_enabled") }
+        didSet {
+            UserDefaults.standard.set(sceneRealtimeRenderingEnabled, forKey: "scene_realtime_rendering_enabled")
+            // 与桌面动态元素互斥
+            if sceneRealtimeRenderingEnabled {
+                LiquidGlassClockSettings.shared.update { $0.enabled = false }
+            }
+        }
     }
 
     /// 超分辨率模式开关

@@ -1412,7 +1412,13 @@ private struct WorkshopSettingsTab: View {
                     MacSettingsRow(title: t("workshop.desktopDynamicElements"), subtitle: t("workshop.desktopDynamicElementsDesc"), showDivider: false) {
                         MacToggle(isOn: Binding(
                             get: { clockSettings.config.enabled },
-                            set: { newValue in clockSettings.update { $0.enabled = newValue } }
+                            set: { newValue in
+                                clockSettings.update { $0.enabled = newValue }
+                                // 与场景壁纸实时渲染互斥
+                                if newValue && viewModel.sceneRealtimeRenderingEnabled {
+                                    viewModel.sceneRealtimeRenderingEnabled = false
+                                }
+                            }
                         ))
                     }
                 }
@@ -1422,7 +1428,13 @@ private struct WorkshopSettingsTab: View {
                     MacSettingsRow(title: t("workshop.sceneRealtimeRendering"), subtitle: t("workshop.sceneRealtimeRenderingDesc"), showDivider: false) {
                         MacToggle(isOn: Binding(
                             get: { viewModel.sceneRealtimeRenderingEnabled },
-                            set: { viewModel.sceneRealtimeRenderingEnabled = $0 }
+                            set: { newValue in
+                                viewModel.sceneRealtimeRenderingEnabled = newValue
+                                // 与桌面动态元素互斥
+                                if newValue && clockSettings.config.enabled {
+                                    clockSettings.update { $0.enabled = false }
+                                }
+                            }
                         ))
                     }
                 }

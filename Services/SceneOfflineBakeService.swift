@@ -602,7 +602,9 @@ enum SceneOfflineBakeService {
         process.executableURL = wgpuBinary
         process.currentDirectoryURL = wgpuBinary.deletingLastPathComponent()
         process.arguments = args
-        process.environment = SceneOfflineBakeService.rendererLaunchEnvironment(for: wgpuBinary)
+        var env = SceneOfflineBakeService.rendererLaunchEnvironment(for: wgpuBinary)
+        env["RUST_LOG"] = env["RUST_LOG"] ?? "warn"
+        process.environment = env
 
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
@@ -610,10 +612,32 @@ enum SceneOfflineBakeService {
 
         try process.run()
 
-        final class MutableDataBox: @unchecked Sendable {
-            var data = Data()
+        final class StderrCapture: @unchecked Sendable {
+            private let maxTailBytes = 256 * 1024
+            var tail = Data()
+            let logURL: URL
+            let logHandle: FileHandle?
+
+            init() {
+                logURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("waifux-wallpaper-wgpu-bake-\(UUID().uuidString).log")
+                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+                logHandle = try? FileHandle(forWritingTo: logURL)
+            }
+
+            func append(_ data: Data) {
+                logHandle?.write(data)
+                tail.append(data)
+                if tail.count > maxTailBytes {
+                    tail.removeFirst(tail.count - maxTailBytes)
+                }
+            }
+
+            func close() {
+                try? logHandle?.close()
+            }
         }
-        let stderrData = MutableDataBox()
+        let stderrCapture = StderrCapture()
 
         // 监控 stderr 中的进度信息
         // 格式: \r[bake] {message} [{progress * 100:.0}%]
@@ -624,7 +648,7 @@ enum SceneOfflineBakeService {
             while !Task.isCancelled {
                 let data = stderrHandle.availableData
                 if data.isEmpty { break }
-                stderrData.data.append(data)
+                stderrCapture.append(data)
                 if let chunk = String(data: data, encoding: .utf8) {
                     buffer += chunk
                     let lines = buffer.components(separatedBy: "\r")
@@ -655,19 +679,26 @@ enum SceneOfflineBakeService {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         await progressTask.value
+        stderrCapture.close()
 
         guard process.terminationStatus == 0 else {
             try? FileManager.default.removeItem(at: tempURL)
-            let stderrString = String(data: stderrData.data, encoding: .utf8) ?? ""
+            let stderrString = String(data: stderrCapture.tail, encoding: .utf8) ?? ""
             let cleanStderr = stderrString
+                .replacingOccurrences(of: "\r", with: "\n")
                 .components(separatedBy: "\n")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+                .filter {
+                    !$0.isEmpty
+                    && !$0.contains(" INFO ")
+                    && !$0.hasPrefix("[bake] 预热 ")
+                    && !$0.hasPrefix("[bake] 烘焙 ")
+                }
                 .suffix(20)
                 .joined(separator: "\n")
             let message = cleanStderr.isEmpty
-                ? "wallpaper-wgpu bake 执行失败 (exit=\(process.terminationStatus))"
-                : "wallpaper-wgpu bake 执行失败 (exit=\(process.terminationStatus))\n\(cleanStderr)"
+                ? "wallpaper-wgpu bake 执行失败 (exit=\(process.terminationStatus))\n完整日志: \(stderrCapture.logURL.path)"
+                : "wallpaper-wgpu bake 执行失败 (exit=\(process.terminationStatus))\n\(cleanStderr)\n完整日志: \(stderrCapture.logURL.path)"
             throw SceneOfflineBakeError.bakeProcessFailed(message)
         }
 
