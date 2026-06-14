@@ -139,7 +139,6 @@ struct WallpaperCardView: View, @preconcurrency Equatable {
                     .frame(height: Self.bottomBarHeight)
             }
             .background(Color(hex: "1A1D24"))
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
 
             RoundedRectangle(cornerRadius: cornerRadius)
                 .stroke(borderColor, lineWidth: borderWidth)
@@ -151,6 +150,7 @@ struct WallpaperCardView: View, @preconcurrency Equatable {
                 .padding(12)
         }
         .drawingGroup(opaque: true)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .frame(width: cardWidth, height: cardHeight)
         .contentShape(Rectangle())
         .onTapGesture { onTap?() }

@@ -198,127 +198,22 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
     public var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 0) {
-                // 图片区域
-                ZStack {
-                    if detectedGIF {
-                        NativeGIFView(url: listThumbnailURL, isPlaying: shouldAnimateGIF)
-                            .frame(width: cardWidth, height: thumbnailHeight)
-                            .clipped()
-                    } else {
-                        KFImage(listThumbnailURL)
-                            .setProcessor(DownsamplingImageProcessor(size: targetImageSize))
-                            .cacheMemoryOnly(false)
-                            .memoryCacheExpiration(.seconds(300))
-                            .placeholder { _ in
-                                SkeletonCard(width: cardWidth, height: thumbnailHeight, cornerRadius: 0)
-                            }
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: cardWidth, height: thumbnailHeight)
-                            .clipped()
-                            .id(thumbnailRefreshID)
-                    }
+                coverSurface
+                    .frame(width: cardWidth, height: thumbnailHeight)
 
-                    // 左上角：编辑模式显示复选框，非编辑模式显示 subtitle tag
-                    if isEditing {
-                        VStack {
-                            HStack {
-                                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 22, weight: .semibold))
-                                    .foregroundStyle(isSelected ? accent : .white.opacity(0.8))
-                                    .background(
-                                        Circle()
-                                            .fill(isSelected ? .white : Color.black.opacity(0.4))
-                                            .frame(width: 20, height: 20)
-                                    )
-                                    .padding(12)
-
-                                Spacer()
-                            }
-                            Spacer()
-                        }
-                    } else {
-                        VStack {
-                            HStack(spacing: 8) {
-                                Text(item.subtitle)
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.82))
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 8)
-                                    .frame(height: 20)
-                                    .background(
-                                        Capsule(style: .continuous)
-                                            .fill(Color.black.opacity(0.3))
-                                    )
-
-                                Spacer()
-                            }
-                            Spacer()
-                        }
-                        .padding(12)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    }
-
-                    // 右上角标签（非编辑模式下显示）
-                    if !isEditing && !badgeText.isEmpty {
-                        VStack {
-                            HStack {
-                                Spacer()
-                                Text(badgeText)
-                                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.82))
-                                    .padding(.horizontal, 10)
-                                    .frame(height: 22)
-                                    .background(
-                                        Capsule(style: .continuous)
-                                            .fill(Color.black.opacity(0.3))
-                                    )
-                                    .padding(12)
-                            }
-                            Spacer()
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    }
-
-                    // 选中时的遮罩
-                    if isEditing && isSelected {
-                        Color.black.opacity(0.3)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
-
-                // 信息区域
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(item.title)
-                        .font(.system(size: 14.5, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .lineLimit(1)
-
-                    // 未完成时显示进度块
-                    if let progress, progress < 1.0 {
-                        DownloadCardProgressBlock(
-                            progress: progress,
-                            label: progressLabel ?? t("status.downloading"),
-                            tint: progressTint ?? accent
-                        )
-                        .padding(.top, 6)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(width: cardWidth, alignment: .leading)
+                bottomInfoBar
             }
             .frame(width: cardWidth, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(Color(hex: "1A1D24"))
             )
-            .drawingGroup(opaque: true)
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(Color.white.opacity(isHovered ? 0.18 : 0.08), lineWidth: isHovered ? 1.5 : 1)
             )
+            .frame(width: cardWidth, alignment: .leading)
             .scaleEffect(isHovered ? 1.01 : 1.0)
         }
         .buttonStyle(.plain)
@@ -384,6 +279,117 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
                 triggerThumbnailIfNeeded()
             }
         }
+    }
+
+    private var coverSurface: some View {
+        coverImage
+            .frame(width: cardWidth, height: thumbnailHeight)
+            .clipped()
+            .overlay(alignment: .topLeading) {
+                if !isEditing {
+                    mediaBadgeRow
+                        .padding(12)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if isEditing {
+                    editSelectionControl
+                }
+            }
+            .overlay {
+                if isEditing && isSelected {
+                    Color.black.opacity(0.3)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var coverImage: some View {
+        if detectedGIF {
+            NativeGIFView(url: listThumbnailURL, isPlaying: shouldAnimateGIF)
+                .frame(width: cardWidth, height: thumbnailHeight)
+                .clipped()
+        } else {
+            KFImage(listThumbnailURL)
+                .setProcessor(DownsamplingImageProcessor(size: targetImageSize))
+                .cacheMemoryOnly(false)
+                .memoryCacheExpiration(.seconds(300))
+                .placeholder { _ in
+                    SkeletonCard(width: cardWidth, height: thumbnailHeight, cornerRadius: 0)
+                }
+                .resizable()
+                .scaledToFill()
+                .frame(width: cardWidth, height: thumbnailHeight)
+                .clipped()
+                .id(thumbnailRefreshID)
+        }
+    }
+
+    private var mediaBadgeRow: some View {
+        HStack(alignment: .top, spacing: 8) {
+            mediaBadgeText(item.subtitle)
+
+            Spacer(minLength: 0)
+
+            if !badgeText.isEmpty {
+                mediaBadgeText(badgeText)
+            }
+        }
+        .frame(width: max(0, cardWidth - 24), alignment: .topLeading)
+    }
+
+    private func mediaBadgeText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.82))
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .frame(height: 20)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.black.opacity(0.3))
+            )
+    }
+
+    private var editSelectionControl: some View {
+        VStack {
+            HStack {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(isSelected ? accent : .white.opacity(0.8))
+                    .background(
+                        Circle()
+                            .fill(isSelected ? .white : Color.black.opacity(0.4))
+                            .frame(width: 20, height: 20)
+                    )
+                    .padding(12)
+
+                Spacer()
+            }
+            Spacer()
+        }
+    }
+
+    private var bottomInfoBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.title)
+                .font(.system(size: 14.5, weight: .bold))
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1)
+
+            if let progress, progress < 1.0 {
+                DownloadCardProgressBlock(
+                    progress: progress,
+                    label: progressLabel ?? t("status.downloading"),
+                    tint: progressTint ?? accent
+                )
+                .padding(.top, 6)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: cardWidth, alignment: .leading)
+        .background(Color(hex: "1A1D24"))
     }
 
     @MainActor
@@ -596,7 +602,6 @@ public struct WallpaperEditCard: View, @preconcurrency Equatable {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(Color(hex: "1A1D24"))
             )
-            .drawingGroup(opaque: true)
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)

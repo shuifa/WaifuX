@@ -2977,9 +2977,13 @@ struct MediaDetailSheet: View {
                     print("[MediaDetailSheet] ✅ 壁纸设置成功")
                     WallpaperSchedulerService.shared.notifyManualWallpaperChange(screenID: selectedScreen?.wallpaperScreenIdentifier)
 
-                    // 实时渲染模式下，后台触发烘焙用于锁屏（不自动应用到桌面）
+                    // 实时渲染模式下，后台触发烘焙；完成后若动态锁屏开启，则推送到对应锁屏实例。
                     if isRealtime {
-                        scheduleBackgroundBakeForLockScreen(path: path)
+                        SceneOfflineBakeService.scheduleRealtimeCompanionBake(
+                            path: path,
+                            targetScreens: selectedScreen.map { [$0] },
+                            reason: "manual-apply"
+                        )
                     }
                 } catch {
                     print("[MediaDetailSheet] ❌ 设置壁纸失败: \(error.localizedDescription)")
@@ -2999,81 +3003,6 @@ struct MediaDetailSheet: View {
             }
         } else {
             runSetWallpaper(nil)
-        }
-    }
-
-    /// 实时渲染模式下，后台触发烘焙用于锁屏推送（不自动设置桌面壁纸）
-    private func scheduleBackgroundBakeForLockScreen(path: String) {
-        guard #available(macOS 26.0, *) else { return }
-        guard VideoWallpaperManager.shared.isLockScreenEnabled else { return }
-        guard UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true else { return }
-        guard let record = currentDownloadRecord,
-              let eligibility = record.sceneBakeEligibility else { return }
-        let contentRoot = URL(fileURLWithPath: eligibility.contentRootPath)
-        guard FileManager.default.fileExists(atPath: contentRoot.path) else { return }
-
-        let targetScreens = NSScreen.screens
-        let displayIDs = targetScreens.compactMap { screen -> UInt32? in
-            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
-        }
-        guard !displayIDs.isEmpty else { return }
-
-        // 如果已有缓存的烘焙产物，直接推送到锁屏
-        if let artifact = record.sceneBakeArtifact,
-           SceneOfflineBakeService.isUsableBakedVideo(at: URL(fileURLWithPath: artifact.videoPath)) {
-            print("[MediaDetailSheet] 实时渲染模式：已有烘焙产物，直接推送锁屏")
-            let videoURL = URL(fileURLWithPath: artifact.videoPath)
-            let videoID = record.item.id
-            Task {
-                await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
-                    videoURL: videoURL,
-                    videoID: videoID,
-                    displayIDs: displayIDs
-                )
-            }
-            return
-        }
-
-        // 后台触发烘焙，完成后推送到锁屏
-        let itemID = record.item.id
-        Task { @MainActor in
-            do {
-                let artifact = try await SceneOfflineBakeService.bake(
-                    eligibility: eligibility,
-                    contentRoot: contentRoot,
-                    cacheItemID: itemID,
-                    renderer: .wallpaperWgpu,
-                    persistArtifactToItemID: itemID
-                )
-                print("[MediaDetailSheet] ✅ 后台烘焙完成，推送到锁屏: \(artifact.videoPath)")
-                let videoURL = URL(fileURLWithPath: artifact.videoPath)
-
-                // 有动态锁屏 → 推送到锁屏扩展
-                if #available(macOS 26.0, *), VideoWallpaperManager.shared.isLockScreenEnabled {
-                    await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
-                        videoURL: videoURL,
-                        videoID: itemID,
-                        displayIDs: displayIDs
-                    )
-                } else {
-                    // 无动态锁屏 → 从烘焙产物抽帧设为静态桌面壁纸（系统锁屏会跟随）
-                    if let posterURL = await VideoThumbnailCache.shared.sceneBakePosterJPEGFileURL(
-                        forLocalVideo: videoURL,
-                        itemID: itemID
-                    ) {
-                        let fillOptions: [NSWorkspace.DesktopImageOptionKey: Any] = [
-                            .imageScaling: NSImageScaling.scaleAxesIndependently.rawValue,
-                            .fillColor: NSColor.black
-                        ]
-                        for screen in NSScreen.screens {
-                            try? NSWorkspace.shared.setDesktopImageURLForAllSpaces(posterURL, for: screen, options: fillOptions)
-                        }
-                        print("[MediaDetailSheet] ✅ 已将烘焙产物抽帧设为静态桌面壁纸（无动态锁屏）")
-                    }
-                }
-            } catch {
-                print("[MediaDetailSheet] ⚠️ 后台烘焙失败: \(error.localizedDescription)")
-            }
         }
     }
 

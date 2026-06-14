@@ -37,6 +37,8 @@ final class WallpaperState: Sendable {
         /// IOSurface 帧渲染器（每显示器），用于帧通道回调
         var ioSurfaceRenderers: [UInt32: IOSurfaceFrameRenderer] = [:]
         var ioSurfaceRendererGenerations: [UInt32: UUID] = [:]
+        /// 待处理的视频切换：当 switch_video 到达但无活跃上下文时缓存，上下文创建后自动应用
+        var pendingVideoSwitches: [UInt32: URL] = [:]
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
@@ -222,6 +224,26 @@ final class WallpaperState: Sendable {
                 videoID: videoID ?? old.videoID
             )
             return old.renderer
+        }
+    }
+
+    // MARK: - Pending Video Switches
+
+    /// 缓存待处理的视频切换请求（当 switch_video 到达但无活跃上下文时调用）
+    func setPendingVideo(_ url: URL, for displayID: UInt32) {
+        lock.withLock { $0.pendingVideoSwitches[displayID] = url }
+    }
+
+    /// 取出并清除待处理的视频切换（上下文创建后调用）
+    func takePendingVideo(for displayID: UInt32) -> URL? {
+        lock.withLock { $0.pendingVideoSwitches.removeValue(forKey: displayID) }
+    }
+
+    /// 取出任意一个待处理的视频切换（当 displayID 不确定时使用）
+    func takeAnyPendingVideo() -> (displayID: UInt32, url: URL)? {
+        lock.withLock { state in
+            guard let first = state.pendingVideoSwitches.first else { return nil }
+            return state.pendingVideoSwitches.removeValue(forKey: first.key).map { (first.key, $0) }
         }
     }
 

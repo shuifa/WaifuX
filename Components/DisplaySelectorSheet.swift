@@ -10,7 +10,7 @@ struct DisplaySelectorSheet: View {
     let onCancel: () -> Void
 
     @State private var isVisible = false
-    @State private var selectedScreenID: String? = NSScreen.main?.screenIdentifier
+    @State private var selectedScreenID: String? = nil
 
     private var screens: [NSScreen] {
         NSScreen.screens
@@ -132,9 +132,6 @@ struct DisplaySelectorSheet: View {
             .scaleEffect(isVisible ? 1.0 : 0.88)
             .opacity(isVisible ? 1.0 : 0.0)
             .onAppear {
-                if selectedScreenID == nil, let firstScreen = screens.first {
-                    selectedScreenID = firstScreen.screenIdentifier
-                }
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                     isVisible = true
                 }

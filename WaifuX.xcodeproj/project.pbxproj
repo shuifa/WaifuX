@@ -104,8 +104,6 @@
 		717F2D69DE35DAF815D0AF7A /* WallpaperPrefs.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50A2C1E05CEFE851FCCE28B /* WallpaperPrefs.swift */; };
 		71CA95FCFE98D1F5968921DE /* ViewExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19A8887CFC60BA0605B2EDBD /* ViewExtensions.swift */; };
 		7343F89CDCC99040C1C36BB1 /* SceneWallpaperDesignService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E50322DB4E41F88D665BEC8 /* SceneWallpaperDesignService.swift */; };
-		7A8B9C0D1E2F3A4B5C6D7E8F /* SceneWallpaperPropertiesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B9C0D1E2F3A4B5C6D7E8F90 /* SceneWallpaperPropertiesService.swift */; };
-		7B9C0D1E2F3A4B5C6D7E8F91 /* SceneWallpaperPropertiesPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C0D1E2F3A4B5C6D7E8F9012 /* SceneWallpaperPropertiesPanel.swift */; };
 		749738A0B446DAC24558DE5B /* ExploreGridLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E59748FA75E24603AC8DF96 /* ExploreGridLayout.swift */; };
 		74F53BC54E220339B4BF073F /* DownloadPathManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14E3DF54D73DDABA010A0185 /* DownloadPathManager.swift */; };
 		75696C3161C7E24D39E88480 /* WallpaperSchedulerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14D73C39F92D4787695466A1 /* WallpaperSchedulerService.swift */; };
@@ -116,6 +114,8 @@
 		794175C5335B913A37694C7E /* CacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6153F969E14544894B925D32 /* CacheService.swift */; };
 		7A599DE765CF1CC79C17B9FA /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6136D9FACBC166FFE1B697 /* MediaItem.swift */; };
 		7A5CA2BA6D3C63B7CB949C6C /* DesktopIconManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D154DF41056CBDAB804D79D2 /* DesktopIconManager.swift */; };
+		7A8B9C0D1E2F3A4B5C6D7E8F /* SceneWallpaperPropertiesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B9C0D1E2F3A4B5C6D7E8F90 /* SceneWallpaperPropertiesService.swift */; };
+		7B9C0D1E2F3A4B5C6D7E8F91 /* SceneWallpaperPropertiesPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C0D1E2F3A4B5C6D7E8F9012 /* SceneWallpaperPropertiesPanel.swift */; };
 		7BE02314734DADA1C09E6947 /* DesktopWallpaperSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26E549172081FEBF234C3A56 /* DesktopWallpaperSyncManager.swift */; };
 		7CABDFC2219873A3F5923405 /* VideoPreloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 346599B5EA4571FB1FEAA1F3 /* VideoPreloader.swift */; };
 		7CE9D7595407EF27D532FE30 /* DanmakuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDB6DD5A499E7BFC1DB6DB1B /* DanmakuView.swift */; };
@@ -364,8 +364,6 @@
 		7CF588585C18394E4A84E4F3 /* RuleLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleLoader.swift; sourceTree = "<group>"; };
 		7E087E594159B2CA1EFC903C /* NSScreen+Wallpaper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NSScreen+Wallpaper.swift"; sourceTree = "<group>"; };
 		7E50322DB4E41F88D665BEC8 /* SceneWallpaperDesignService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperDesignService.swift; sourceTree = "<group>"; };
-		8B9C0D1E2F3A4B5C6D7E8F90 /* SceneWallpaperPropertiesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperPropertiesService.swift; sourceTree = "<group>"; };
-		8C0D1E2F3A4B5C6D7E8F9012 /* SceneWallpaperPropertiesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperPropertiesPanel.swift; sourceTree = "<group>"; };
 		822E5DF14D2A26714C4EA62C /* TabSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabSearchField.swift; sourceTree = "<group>"; };
 		83707A763B2805C336790529 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
 		8461FE463B12837648DB1F26 /* DynamicWallpaperItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DynamicWallpaperItem.swift; sourceTree = "<group>"; };
@@ -374,6 +372,8 @@
 		88C460F3033A25320800D73A /* ExploreComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreComponents.swift; sourceTree = "<group>"; };
 		8AC7AB66938ECBF5BAEB6C50 /* PlaybackProgressCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackProgressCache.swift; sourceTree = "<group>"; };
 		8AD24D6CC8E7DEC9CE467C9E /* AnimeContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeContentView.swift; sourceTree = "<group>"; };
+		8B9C0D1E2F3A4B5C6D7E8F90 /* SceneWallpaperPropertiesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperPropertiesService.swift; sourceTree = "<group>"; };
+		8C0D1E2F3A4B5C6D7E8F9012 /* SceneWallpaperPropertiesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperPropertiesPanel.swift; sourceTree = "<group>"; };
 		8C8932A52A3285AF06BC5DED /* CodableShims.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableShims.swift; sourceTree = "<group>"; };
 		8CAD6E3F8ECF4F3C50EA34BC /* WaifuXApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaifuXApp.swift; sourceTree = "<group>"; };
 		8D47711E7464F497AF7C6D86 /* HTMLXPathParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLXPathParser.swift; sourceTree = "<group>"; };
@@ -857,8 +857,6 @@
 			dependencies = (
 			);
 			name = WaifuXWallpaperExtension;
-			packageProductDependencies = (
-			);
 			productName = WaifuXWallpaperExtension;
 			productReference = 27870E65B78B16ACC80035D1 /* WaifuXWallpaperExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -896,6 +894,7 @@
 				CF90BE4B76A6DBEDBB2A4DFF /* XCRemoteSwiftPackageReference "Kingfisher" */,
 				9780DABD8DD91C37A69DF031 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 			);
+			productRefGroup = 346FAD1EEA2CE3D78685888C /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (

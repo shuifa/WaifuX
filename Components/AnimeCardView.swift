@@ -38,7 +38,6 @@ struct AnimeCardView: View, @preconcurrency Equatable {
                     .frame(height: bottomBarHeight)
             }
             .background(Color(hex: "1A1D24"))
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
 
             RoundedRectangle(cornerRadius: cornerRadius)
                 .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
@@ -50,6 +49,7 @@ struct AnimeCardView: View, @preconcurrency Equatable {
             }
         }
         .drawingGroup(opaque: true)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .frame(width: cardWidth, height: cardHeight)
         .contentShape(Rectangle())
         .onTapGesture { onTap?() }

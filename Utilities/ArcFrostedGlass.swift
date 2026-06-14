@@ -310,13 +310,12 @@ struct ArcDotGridBackground: View {
     let dotOpacity: Double
 
     var body: some View {
-        TiledPatternOverlay(
-            image: isLightMode ? ArcDotGridTile.blackImage : ArcDotGridTile.whiteImage,
-            opacity: dotOpacity
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
+        Image(nsImage: isLightMode ? ArcDotGridTile.blackImage : ArcDotGridTile.whiteImage)
+            .resizable(resizingMode: .tile)
+            .opacity(dotOpacity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
     }
 }
 
@@ -433,11 +432,14 @@ struct ArcAtmosphereBackground: View {
 
             // 5. 噪点纹理
             if useNoise {
-                GrainOverlay(opacity: grainIntensity * 0.20)
-                .blendMode(.softLight)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+                Image(nsImage: GrainTextureTile.image)
+                    .resizable(resizingMode: .tile)
+                    .interpolation(.none)
+                    .opacity(grainIntensity * 0.20)
+                    .blendMode(.softLight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
             }
         }
     }

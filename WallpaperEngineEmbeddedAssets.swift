@@ -13,18 +13,107 @@ func getZipDataSize() -> UInt
 enum WallpaperEngineEmbeddedAssets {
     private static let prepLock = NSLock()
     private static nonisolated(unsafe) var cachedAssetsRoot: String?
+    /// 后台解压完成后的路径，通过 continuation 通知等待方
+    private static nonisolated(unsafe) var preparationTask: Task<String?, Never>?
 
-    /// 供渲染器使用的 **assets 根目录**（内含 materials、shaders 等）；首次调用时从 Mach-O 嵌入段解压。
+    /// 供渲染器使用的 **assets 根目录**（内含 materials、shaders 等）。
+    /// 仅返回已缓存/已解压的路径，**不做任何 I/O**，可安全在主线程调用。
     static func materializedAssetsRootIfPresent() -> String? {
         prepLock.lock()
         defer { prepLock.unlock() }
 
         if let cached = cachedAssetsRoot,
            FileManager.default.fileExists(atPath: cached) {
-            print("[WallpaperEngineEmbeddedAssets] 使用缓存的 assets: \(cached)")
             return cached
         }
 
+        // 检查磁盘上是否已有解压产物（上次启动时解压的）
+        if let diskPath = findExistingExtractOnDisk() {
+            cachedAssetsRoot = diskPath
+            return diskPath
+        }
+
+        return nil
+    }
+
+    /// 在后台线程解压 assets。App 启动时调用一次即可。
+    /// 如果已缓存则立即返回；否则异步解压，完成后更新缓存。
+    static func prepareAssetsInBackground() {
+        prepLock.lock()
+        // 已经在准备中或已就绪
+        if preparationTask != nil {
+            prepLock.unlock()
+            return
+        }
+        // 如果磁盘上已有解压产物，直接标记缓存
+        if let diskPath = findExistingExtractOnDisk() {
+            cachedAssetsRoot = diskPath
+            prepLock.unlock()
+            return
+        }
+        let task = Task.detached(priority: .utility) {
+            return extractAssets()
+        }
+        preparationTask = task
+        prepLock.unlock()
+
+        // 完成后写入缓存
+        Task.detached(priority: .utility) {
+            let result = await task.value
+            await MainActor.run {
+                Self.prepLock.lock()
+                if let result {
+                    Self.cachedAssetsRoot = result
+                }
+                Self.preparationTask = nil
+                Self.prepLock.unlock()
+            }
+        }
+    }
+
+    /// 异步等待 assets 就绪（可安全在主线程调用）。
+    static func awaitAssetsReady() async -> String? {
+        if let ready = materializedAssetsRootIfPresent() {
+            return ready
+        }
+        // 触发后台解压
+        prepareAssetsInBackground()
+        // 等待完成（通过轮询检查，避免在 async 上下文使用锁）
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            if let ready = materializedAssetsRootIfPresent() {
+                return ready
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+        return materializedAssetsRootIfPresent()
+    }
+
+    // MARK: - Private
+
+    /// 在磁盘缓存目录中查找已存在的解压产物
+    private static func findExistingExtractOnDisk() -> String? {
+        guard let zipData = readEmbeddedZip() else { return nil }
+        let digest = SHA256.hash(data: zipData)
+        let cacheKey = digest.map { String(format: "%02x", $0) }.joined()
+        guard let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let extractRoot = cacheBase
+            .appendingPathComponent("com.waifux.wallpaperengine", isDirectory: true)
+            .appendingPathComponent("embedded-assets", isDirectory: true)
+            .appendingPathComponent(cacheKey, isDirectory: true)
+        let assetsDir = extractRoot.appendingPathComponent("assets", isDirectory: true)
+        let readyURL = extractRoot.appendingPathComponent(".extracted", isDirectory: false)
+        if FileManager.default.fileExists(atPath: readyURL.path),
+           FileManager.default.fileExists(atPath: assetsDir.path) {
+            return assetsDir.path
+        }
+        return nil
+    }
+
+    /// 在当前线程执行解压（应在线程池调用，不在主线程）
+    private static func extractAssets() -> String? {
         guard let zipData = readEmbeddedZip() else {
             print("[WallpaperEngineEmbeddedAssets] ⚠️ 无内嵌 ZIP 数据（readEmbeddedZip 返回 nil）")
             return nil
@@ -46,10 +135,10 @@ enum WallpaperEngineEmbeddedAssets {
         let assetsDir = extractRoot.appendingPathComponent("assets", isDirectory: true)
         let readyURL = extractRoot.appendingPathComponent(".extracted", isDirectory: false)
 
+        // 二次检查（其他线程可能已解压完成）
         if FileManager.default.fileExists(atPath: readyURL.path),
            FileManager.default.fileExists(atPath: assetsDir.path) {
             print("[WallpaperEngineEmbeddedAssets] 使用已解压的 assets: \(assetsDir.path)")
-            cachedAssetsRoot = assetsDir.path
             return assetsDir.path
         }
 
@@ -99,7 +188,6 @@ enum WallpaperEngineEmbeddedAssets {
         }
 
         try? "ok".write(to: readyURL, atomically: true, encoding: .utf8)
-        cachedAssetsRoot = assetsDir.path
         print("[WallpaperEngineEmbeddedAssets] ✅ assets 解压成功: \(assetsDir.path)")
         return assetsDir.path
     }

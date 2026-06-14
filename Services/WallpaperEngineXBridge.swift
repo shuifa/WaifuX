@@ -50,12 +50,6 @@ private func requestScreenCapturePermission() async -> Bool {
     return true
 }
 
-private struct RendererWrapperBundle: Sendable {
-    let bundleURL: URL
-    let executableURL: URL
-    let renderedBinaryURL: URL
-}
-
 // MARK: - CGS 私有 API 桥接（桌面层级/标签设置）
 // macOS 26 已移除 CGSWindowByID，且 `--wallpaper`/`--background` 参数已自带后台壁纸渲染能力，
 // 因此不再使用 CGS API。窗口标签（Stationary/CanJoinAllSpaces）由二进制处理。
@@ -63,8 +57,10 @@ private struct RendererWrapperBundle: Sendable {
 /// 单个屏幕的 wallpaper-wgpu 进程信息
 private struct ScreenProcessInfo {
     let pid: pid_t
-    let bundleURL: URL?
+    let process: Process
     let generation: UInt64
+    let screenID: String
+    let logFile: FileHandle?
 }
 
 /// 负责与 wallpaper-wgpu 渲染器通信的桥接层
@@ -169,7 +165,6 @@ final class WallpaperEngineXBridge: ObservableObject {
     /// 屏幕参数变化（分辨率、显示器热插拔等）时重启渲染进程
     private var screenChangeRestartWorkItem: DispatchWorkItem?
     private var lastAppliedScreenConfigurations: [ScreenConfigurationSignature] = []
-    private static let rendererWrapperBundleIdentifier = "com.waifux.wallpaperwgpu.wrapper"
 
     // MARK: - 初始化
 
@@ -313,7 +308,7 @@ final class WallpaperEngineXBridge: ObservableObject {
 
         // 如果目标屏幕原先由旧 Web daemon 管理，需要停掉 daemon；不要误伤其他屏幕的 Web 壁纸。
         if renderKind != .web && shouldStopWebForTargets {
-            Self.killLegacyDaemonIfRunning(waitForExit: true)
+            await Self.killLegacyDaemonIfRunning(waitForExit: true)
             webRenderer.stop()
             screenRenderStates = screenRenderStates.filter { $0.value.renderKind != .web }
         }
@@ -325,11 +320,11 @@ final class WallpaperEngineXBridge: ObservableObject {
             return
         }
 
-        // 4. 解析 assets 路径
+        // 4. 解析 assets 路径（如果内嵌 assets 未解压完成，异步等待后台解压）
         let resolvedAssets: String
         if let ap = assetsPath, !ap.isEmpty {
             resolvedAssets = ap
-        } else if let embedded = WallpaperEngineEmbeddedAssets.materializedAssetsRootIfPresent() {
+        } else if let embedded = await WallpaperEngineEmbeddedAssets.awaitAssetsReady() {
             resolvedAssets = embedded
         } else {
             resolvedAssets = ""
@@ -361,15 +356,6 @@ final class WallpaperEngineXBridge: ObservableObject {
 
         print("[WallpaperEngineXBridge] 启动命令: \(cliURL.lastPathComponent) \(args.joined(separator: " "))")
 
-        let wrapper: RendererWrapperBundle
-        do {
-            wrapper = try Self.prepareRendererWrapper(for: cliURL)
-        } catch {
-            print("[WallpaperEngineXBridge] ❌ 准备 wallpaper-wgpu wrapper 失败: \(error.localizedDescription)")
-            isControllingExternalEngine = false
-            throw WallpaperEngineError.executionFailed("准备 wallpaper-wgpu wrapper 失败: \(error.localizedDescription)")
-        }
-
         // 为每个目标屏幕启动独立的 wallpaper-wgpu 进程
         for screen in effectiveScreens {
             let f = screen.frame
@@ -385,8 +371,20 @@ final class WallpaperEngineXBridge: ObservableObject {
             print("[WallpaperEngineXBridge] 启动屏幕 \(screenID) 进程: \(cliURL.lastPathComponent) \(perScreenArgs.joined(separator: " "))")
 
             do {
-                let launchedPID = try await launchRendererWrapper(wrapper, arguments: perScreenArgs)
-                screenProcesses[screenID] = ScreenProcessInfo(pid: launchedPID, bundleURL: wrapper.bundleURL, generation: launchGeneration)
+                let process = try launchRendererProcess(
+                    executableURL: cliURL,
+                    arguments: perScreenArgs,
+                    generation: launchGeneration,
+                    screenID: screenID
+                )
+                let launchedPID = process.process.processIdentifier
+                screenProcesses[screenID] = ScreenProcessInfo(
+                    pid: launchedPID,
+                    process: process.process,
+                    generation: launchGeneration,
+                    screenID: screenID,
+                    logFile: process.logFile
+                )
                 screenRenderStates[screenID] = ScreenRenderState(
                     screenID: screenID,
                     screenFingerprint: screen.wallpaperScreenFingerprint,
@@ -398,7 +396,7 @@ final class WallpaperEngineXBridge: ObservableObject {
                 print("[WallpaperEngineXBridge] ✅ 屏幕 \(screenID) wallpaper-wgpu 已启动 (pid=\(launchedPID))")
             } catch {
                 print("[WallpaperEngineXBridge] ❌ 屏幕 \(screenID) 启动失败: \(error.localizedDescription)")
-                screenProcesses.removeValue(forKey: screenID)
+                removeScreenProcess(screenID)
                 screenRenderStates.removeValue(forKey: screenID)
                 // 如果没有任何屏幕成功启动，清除全局状态
                 updateControlStateFromScreenStates()
@@ -415,13 +413,19 @@ final class WallpaperEngineXBridge: ObservableObject {
         persistState()
         DynamicWallpaperAutoPauseManager.shared.reevaluateCurrentState()
 
-        // 6. 渲染已启动，UI 可立即结束"设置中"状态。
-        //    静态帧由烘焙产物抽帧提供，无需屏幕录制捕获。
-        for (screenID, info) in screenProcesses {
-            let pid = info.pid
-            Task { @MainActor in
-                guard self.screenProcesses[screenID]?.pid == pid, self.lastWallpaperPath == resolvedPath else { return }
-                await self.adoptRenderWindow(pid: pid)
+        // 强制恢复 App 焦点（wallpaper-wgpu 启动会抢占焦点，导致渲染器不渲染）
+        // 多次延迟尝试确保焦点恢复
+        func forceActivateApp() {
+            NSApp.activate(ignoringOtherApps: true)
+            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            forceActivateApp()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                forceActivateApp()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    forceActivateApp()
+                }
             }
         }
     }
@@ -502,11 +506,12 @@ final class WallpaperEngineXBridge: ObservableObject {
         stopRenderProcess()
         // 同步杀掉旧 CLI daemon（fire-and-forget 的 client 命令在 App 退出场景来不及发出，
         // 且 stop client 自己还会再 fork daemon — 直接按 PID kill 最稳妥）
-        Self.killLegacyDaemonIfRunning(waitForExit: false)
+        Task { await Self.killLegacyDaemonIfRunning(waitForExit: false) }
         webRenderer.stop()
         activeRenderKind = nil
         isControllingExternalEngine = false
         isExternalPaused = false
+        closeRendererLogs()
         screenProcesses.removeAll()
         _deinitPIDs.removeAll()
         targetScreenIDs.removeAll()
@@ -535,7 +540,7 @@ final class WallpaperEngineXBridge: ObservableObject {
         let targetState = renderState(for: targetScreen)
         if targetState?.renderKind == .web || (targetState == nil && activeRenderKind == .web) {
             webRenderer.stop()
-            Self.killLegacyDaemonIfRunning(waitForExit: false)
+            Task { await Self.killLegacyDaemonIfRunning(waitForExit: false) }
         }
 
         if let info = screenProcesses[screenID] {
@@ -551,7 +556,7 @@ final class WallpaperEngineXBridge: ObservableObject {
             }
             screenWatchdogs[pid] = watchdog
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: watchdog)
-            screenProcesses.removeValue(forKey: screenID)
+            removeScreenProcess(screenID)
             _deinitPIDs.remove(pid)
         }
 
@@ -560,28 +565,19 @@ final class WallpaperEngineXBridge: ObservableObject {
         persistState()
     }
 
-    /// 应用退出前调用：终止当前接管的 renderer，但保留持久化状态，方便下次启动恢复。
+    /// 应用退出前调用：立即杀死所有渲染进程，不等待退出，避免阻塞主线程导致 App 卡死。
     func prepareForAppTermination() {
-        // 终止所有屏幕进程
+        // 直接 SIGKILL 所有屏幕渲染进程，不做 graceful terminate + 等待
         for (_, info) in screenProcesses {
-            terminateRenderer(pid: info.pid)
-        }
-        let deadline = Date().addingTimeInterval(2.0)
-        while !screenProcesses.isEmpty && Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
-            processPendingTermination()
-        }
-        for (_, info) in screenProcesses where kill(info.pid, 0) == 0 {
-            print("[WallpaperEngineXBridge] 退出前 renderer 未及时退出，发送 SIGKILL (pid=\(info.pid))")
             kill(info.pid, SIGKILL)
         }
+        // 同步杀掉旧 CLI daemon
+        Self.killLegacyDaemonSync()
+        closeRendererLogs()
         screenProcesses.removeAll()
         _deinitPIDs.removeAll()
         screenWatchdogs.values.forEach { $0.cancel() }
         screenWatchdogs.removeAll()
-        // 必须同步等待 daemon 退出 — App 一旦走 NSApp.terminate，Task/异步 client 全部来不及执行，
-        // daemon 子进程不是主进程的子进程组成员，不会被自动清理，会导致 web 壁纸残留。
-        Self.killLegacyDaemonIfRunning(waitForExit: true)
         webRenderer.stop()
         isControllingExternalEngine = false
         isExternalPaused = false
@@ -592,7 +588,7 @@ final class WallpaperEngineXBridge: ObservableObject {
 
     /// 同步终止 `/tmp/wallpaperengine-cli.pid` 指向的 daemon 进程（无视 `activeRenderKind`）。
     /// App 退出 / 切换壁纸时使用，避免遗留 daemon 持续渲染 web 壁纸。
-    private static func killLegacyDaemonIfRunning(waitForExit: Bool) {
+    private static func killLegacyDaemonIfRunning(waitForExit: Bool) async {
         let pidPath = "/tmp/wallpaperengine-cli.pid"
         guard let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8) else {
             return
@@ -610,18 +606,33 @@ final class WallpaperEngineXBridge: ObservableObject {
         if waitForExit {
             let deadline = Date().addingTimeInterval(1.5)
             while kill(pid, 0) == 0 && Date() < deadline {
-                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+                try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
             }
             if kill(pid, 0) == 0 {
                 print("[WallpaperEngineXBridge] daemon 未响应 SIGTERM，改发 SIGKILL")
                 kill(pid, SIGKILL)
                 let killDeadline = Date().addingTimeInterval(0.5)
                 while kill(pid, 0) == 0 && Date() < killDeadline {
-                    RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+                    try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
                 }
             }
         }
 
+        try? FileManager.default.removeItem(atPath: pidPath)
+    }
+
+    /// App 退出时同步杀死旧 CLI daemon，不等待退出，避免阻塞主线程。
+    private static func killLegacyDaemonSync() {
+        let pidPath = "/tmp/wallpaperengine-cli.pid"
+        guard let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8) else { return }
+        let trimmed = pidStr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let pid = pid_t(trimmed), pid > 0 else {
+            try? FileManager.default.removeItem(atPath: pidPath)
+            return
+        }
+        if kill(pid, 0) == 0 {
+            kill(pid, SIGKILL)
+        }
         try? FileManager.default.removeItem(atPath: pidPath)
     }
 
@@ -768,107 +779,101 @@ final class WallpaperEngineXBridge: ObservableObject {
         return env
     }
 
-    private static func prepareRendererWrapper(for rendererURL: URL) throws -> RendererWrapperBundle {
-        let fm = FileManager.default
-        let cacheBase = fm.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        let wrapperRoot = cacheBase
-            .appendingPathComponent("com.waifux.wallpaperengine", isDirectory: true)
-            .appendingPathComponent("RendererWrapper", isDirectory: true)
-        let bundleURL = wrapperRoot.appendingPathComponent("WallpaperWGPUAgent.app", isDirectory: true)
-        let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
-        let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
-        let executableURL = macOSURL.appendingPathComponent("wallpaper-wgpu-launcher")
-
-        try fm.createDirectory(at: macOSURL, withIntermediateDirectories: true)
-
-        let infoPlist = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>CFBundleDevelopmentRegion</key>
-            <string>en</string>
-            <key>CFBundleExecutable</key>
-            <string>wallpaper-wgpu-launcher</string>
-            <key>CFBundleIdentifier</key>
-            <string>\(Self.rendererWrapperBundleIdentifier)</string>
-            <key>CFBundleInfoDictionaryVersion</key>
-            <string>6.0</string>
-            <key>CFBundleName</key>
-            <string>Wallpaper WGPU Agent</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>CFBundleShortVersionString</key>
-            <string>1.0</string>
-            <key>CFBundleVersion</key>
-            <string>1</string>
-            <key>LSBackgroundOnly</key>
-            <false/>
-            <key>LSUIElement</key>
-            <true/>
-            <key>NSHighResolutionCapable</key>
-            <true/>
-        </dict>
-        </plist>
-        """
-        try infoPlist.data(using: .utf8)?.write(to: contentsURL.appendingPathComponent("Info.plist"), options: .atomic)
-
-        let launcher = """
-        #!/bin/zsh
-        cd \(Self.shellSingleQuoted(rendererURL.deletingLastPathComponent().path))
-        exec \(Self.shellSingleQuoted(rendererURL.path)) "$@"
-        """
-        try launcher.data(using: .utf8)?.write(to: executableURL, options: .atomic)
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
-
-        return RendererWrapperBundle(
-            bundleURL: bundleURL,
-            executableURL: executableURL,
-            renderedBinaryURL: rendererURL
-        )
-    }
-
-    private static func shellSingleQuoted(_ value: String) -> String {
-        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
-    }
-
-    private func launchRendererWrapper(_ wrapper: RendererWrapperBundle, arguments: [String]) async throws -> pid_t {
-        let rendererDirectory = wrapper.renderedBinaryURL.deletingLastPathComponent()
-        let rendererLibDirectory = rendererDirectory.appendingPathComponent("lib")
-        let bundleResourceDirectory = rendererDirectory.deletingLastPathComponent()
+    private static func rendererLaunchEnvironment(for rendererURL: URL) -> [String: String] {
+        let rendererDirectory = rendererURL.deletingLastPathComponent()
+        let resourceDirectory = rendererDirectory.lastPathComponent == "Resources"
+            ? rendererDirectory
+            : rendererDirectory.appendingPathComponent("Resources")
         var environment = ProcessInfo.processInfo.environment
 
         let searchPaths = [
             rendererDirectory.path,
-            bundleResourceDirectory.path,
+            resourceDirectory.path,
             environment["PATH"] ?? "",
         ].filter { !$0.isEmpty }
         environment["PATH"] = searchPaths.joined(separator: ":")
         environment["DYLD_LIBRARY_PATH"] = [
-            rendererLibDirectory.path,
-            bundleResourceDirectory.appendingPathComponent("lib").path,
+            rendererDirectory.appendingPathComponent("lib").path,
+            resourceDirectory.appendingPathComponent("lib").path,
             environment["DYLD_LIBRARY_PATH"] ?? ""
         ].filter { !$0.isEmpty }.joined(separator: ":")
         environment["LSUIElement"] = "1"
+        return environment
+    }
 
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.arguments = arguments
-        configuration.environment = environment
-        configuration.activates = false
-        configuration.createsNewApplicationInstance = true
+    private struct RendererLaunch {
+        let process: Process
+        let logFile: FileHandle?
+    }
 
-        let app = try await NSWorkspace.shared.openApplication(at: wrapper.bundleURL, configuration: configuration)
-        return app.processIdentifier
+    private static func rendererLogURL(screenID: String) -> URL? {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let directory = caches.appendingPathComponent("com.waifux.wallpaperengine/renderer-logs", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let safeID = screenID.map { ch -> Character in
+                ch.isLetter || ch.isNumber || ch == "-" || ch == "_" ? ch : "_"
+            }
+            return directory.appendingPathComponent("screen-\(String(safeID)).log")
+        } catch {
+            print("[WallpaperEngineXBridge] renderer 日志目录创建失败: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private static func rendererLogFile(screenID: String) -> FileHandle? {
+        guard let url = rendererLogURL(screenID: screenID) else { return nil }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        do {
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: 0)
+            let header = "=== wallpaper-wgpu screen=\(screenID) \(Date()) ===\n"
+            if let data = header.data(using: .utf8) {
+                handle.write(data)
+            }
+            return handle
+        } catch {
+            print("[WallpaperEngineXBridge] renderer 日志文件打开失败: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func launchRendererProcess(executableURL: URL, arguments: [String], generation: UInt64, screenID: String) throws -> RendererLaunch {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.currentDirectoryURL = executableURL.deletingLastPathComponent()
+        process.environment = Self.rendererLaunchEnvironment(for: executableURL)
+        let logFile = Self.rendererLogFile(screenID: screenID)
+        process.standardOutput = logFile ?? FileHandle.nullDevice
+        process.standardError = logFile ?? FileHandle.nullDevice
+        process.terminationHandler = { [weak self] process in
+            let event = TerminationEvent(
+                pid: process.processIdentifier,
+                generation: generation,
+                status: process.terminationStatus,
+                reason: process.terminationReason
+            )
+            self?.enqueueTermination(event)
+        }
+        try process.run()
+        return RendererLaunch(process: process, logFile: logFile)
+    }
+
+    private nonisolated func enqueueTermination(_ event: TerminationEvent) {
+        os_unfair_lock_lock(terminationLockPtr)
+        pendingTerminations[event.pid] = event
+        terminationPendingFlag = true
+        os_unfair_lock_unlock(terminationLockPtr)
     }
 
     // MARK: - 进程生命周期管理
 
     private func terminateRenderer(pid: pid_t) {
-        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == pid }) {
-            app.terminate()
-            return
-        }
         kill(pid, SIGTERM)
     }
 
@@ -924,6 +929,7 @@ final class WallpaperEngineXBridge: ObservableObject {
             }
         }
 
+        closeRendererLogs()
         screenProcesses.removeAll()
         _deinitPIDs.removeAll()
         if activeRenderKind == .scene {
@@ -965,6 +971,7 @@ final class WallpaperEngineXBridge: ObservableObject {
             processPendingTermination()
         }
 
+        closeRendererLogs()
         screenProcesses.removeAll()
         _deinitPIDs.removeAll()
         processPendingTermination()
@@ -978,20 +985,21 @@ final class WallpaperEngineXBridge: ObservableObject {
         screenWatchdogs.removeValue(forKey: info.pid)
         terminateRenderer(pid: info.pid)
 
-        let deadline = Date().addingTimeInterval(2.0)
-        while screenProcesses.keys.contains(screenID) && kill(info.pid, 0) == 0 && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            processPendingTermination()
+        let pid = info.pid
+        let watchdog = DispatchWorkItem {
+            if kill(pid, 0) == 0 {
+                print("[WallpaperEngineXBridge] 目标屏旧 renderer 未及时退出，发送 SIGKILL (pid=\(pid))")
+                kill(pid, SIGKILL)
+            }
         }
+        screenWatchdogs[pid] = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: watchdog)
 
-        if kill(info.pid, 0) == 0 {
-            print("[WallpaperEngineXBridge] 旧 renderer 未及时退出，发送 SIGKILL (pid=\(info.pid))")
-            kill(info.pid, SIGKILL)
-        }
-
-        screenProcesses.removeValue(forKey: screenID)
+        // 切换实时壁纸时不等待旧进程自然退出：当前屏幕的状态立即释放，新 renderer 立即启动。
+        // 旧进程若还在收尾，由上面的 watchdog 兜底清理。
+        removeScreenProcess(screenID)
         screenRenderStates.removeValue(forKey: screenID)
-        _deinitPIDs.remove(info.pid)
+        _deinitPIDs.remove(pid)
         updateControlStateFromScreenStates()
         persistState()
         processPendingTermination()
@@ -1016,6 +1024,7 @@ final class WallpaperEngineXBridge: ObservableObject {
                 continue
             }
             let screenID = screenEntry.key
+            try? screenEntry.value.logFile?.close()
             let expectedGen = screenEntry.value.generation
             guard event.generation == expectedGen else { continue }
 
@@ -1028,7 +1037,7 @@ final class WallpaperEngineXBridge: ObservableObject {
                 print("[WallpaperEngineXBridge] wallpaper-wgpu 已正常退出 屏幕 \(screenID) (pid=\(event.pid))")
             }
 
-            screenProcesses.removeValue(forKey: screenID)
+            removeScreenProcess(screenID)
             screenRenderStates.removeValue(forKey: screenID)
             _deinitPIDs.remove(event.pid)
         }
@@ -1124,6 +1133,18 @@ final class WallpaperEngineXBridge: ObservableObject {
             screenRenderStates.removeValue(forKey: state.screenID)
         } else {
             screenRenderStates.removeValue(forKey: screenID)
+        }
+    }
+
+    private func removeScreenProcess(_ screenID: String) {
+        if let info = screenProcesses.removeValue(forKey: screenID) {
+            try? info.logFile?.close()
+        }
+    }
+
+    private func closeRendererLogs() {
+        for info in screenProcesses.values {
+            try? info.logFile?.close()
         }
     }
 
@@ -1299,27 +1320,7 @@ final class WallpaperEngineXBridge: ObservableObject {
         return nil
     }
 
-    // MARK: - 窗口确认
 
-    /// 等待渲染窗口出现（`--wallpaper`/`--background` 已处理后台壁纸渲染，只需确认窗口存在）
-    private func adoptRenderWindow(pid: pid_t) async {
-        guard checkScreenCapturePermission() else {
-            print("[WallpaperEngineXBridge] ⚠️ 无屏幕录制权限，跳过窗口确认（renderer 仍正常工作）")
-            return
-        }
-        let timeout: TimeInterval = 10
-        let pollInterval: TimeInterval = 0.3
-        let startTime = Date()
-
-        while Date().timeIntervalSince(startTime) < timeout {
-            if findWindowForProcess(pid: pid) != nil {
-                print("[WallpaperEngineXBridge] ✅ 渲染窗口已确认")
-                return
-            }
-            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
-        }
-        print("[WallpaperEngineXBridge] ⚠️ 未找到渲染窗口（超时 \(timeout)s，renderer 仍会工作）")
-    }
 
     /// 使用 CoreGraphics 查找指定进程的窗口，返回 CGWindowID
     /// ⚠️ 调用方需确保已有屏幕录制权限，否则 macOS 26 会 EXC_BREAKPOINT

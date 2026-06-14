@@ -502,6 +502,31 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         wallpaperIDString: String?,
         doReply: @escaping @Sendable (String) -> Void
     ) async {
+        // 优先使用待处理的视频切换（扩展重启期间 switch_video 到达但无上下文时缓存的）
+        if let pendingURL = WallpaperState.shared.takePendingVideo(for: displayID) {
+            extLog("  [Acquire] 📦 应用待处理视频 display=\(displayID) video=\(pendingURL.lastPathComponent)")
+            do {
+                let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: pendingURL)
+                let activeCtx = ActiveWallpaper(
+                    caContext: caContext,
+                    rootLayer: rootLayer,
+                    renderer: renderer,
+                    displayID: displayID,
+                    videoID: instanceID
+                )
+                let existing = WallpaperState.shared.storeContext(activeCtx, id: contextId, wallpaperID: wallpaperIDString)
+                existing?.renderer?.stop()
+                renderer.start()
+                writeSnapshotCacheIfPossible(videoURL: pendingURL, videoID: instanceID, rootLayer: rootLayer)
+                WallpaperPrefs.shared.setActive(true)
+                extLog("  [Acquire] ✅ 待处理视频渲染已启动 display=\(displayID) video=\(pendingURL.lastPathComponent)")
+                doReply("pending video applied")
+                return
+            } catch {
+                extLog("  [Acquire] ❌ 待处理视频渲染失败: \(error.localizedDescription)，回退到 prefs")
+            }
+        }
+
         // 先读取 App 写入的共享 prefs，确定上次设置的壁纸类型。
         // findImageURL(sourceID:) 会通过 Socket 查 localDecodeVideoLock 中残留的旧注册，
         // 导致切换壁纸后扩展冷启动仍然渲染旧内容。直接读 prefs 才能反映 App 的最后意图。

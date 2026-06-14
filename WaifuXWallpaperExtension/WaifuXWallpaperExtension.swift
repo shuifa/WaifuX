@@ -435,6 +435,10 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                                 extLog("[Commands] ❌ 从静态图切回视频失败: \(error.localizedDescription)")
                             }
                         }
+                    } else {
+                        // 无活跃上下文（扩展刚重启），缓存视频等待 acquire 后自动应用
+                        WallpaperState.shared.setPendingVideo(url, for: displayID)
+                        extLog("[Commands] ⏳ 无活跃上下文 display=\(displayID)，已缓存待处理视频: \(videoID)")
                     }
                 }
             }

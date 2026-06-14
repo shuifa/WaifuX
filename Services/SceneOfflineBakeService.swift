@@ -145,6 +145,121 @@ enum SceneOfflineBakeService {
         let height: Int
     }
 
+    private static func displayIDs(for screens: [NSScreen]?) -> [UInt32] {
+        let targetScreens = (screens?.isEmpty == false) ? screens! : NSScreen.screens
+        return targetScreens.compactMap { screen in
+            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        }
+    }
+
+    private static func usableArtifact(from record: MediaDownloadRecord?) -> SceneBakeArtifact? {
+        guard let record,
+              let artifact = record.sceneBakeArtifact,
+              artifact.analysisId == record.sceneBakeEligibility?.analysisId,
+              isUsableBakedVideo(at: URL(fileURLWithPath: artifact.videoPath)) else {
+            return nil
+        }
+        return artifact
+    }
+
+    @MainActor
+    private static func downloadedRecord(forResolvedContentRoot contentRoot: URL) -> MediaDownloadRecord? {
+        let resolvedPath = WorkshopService.resolveWallpaperEngineProjectRoot(startingAt: contentRoot).path
+        if let exact = MediaLibraryService.shared.downloadRecord(forLocalFilePath: resolvedPath) {
+            return exact
+        }
+        return MediaLibraryService.shared.downloadedItems.first { record in
+            WorkshopService.resolveWallpaperEngineProjectRoot(startingAt: URL(fileURLWithPath: record.localFilePath)).path == resolvedPath
+        }
+    }
+
+    /// 实时渲染桌面后配套生成离线 MP4。
+    /// 该 MP4 不会反向替换桌面实时渲染；如果动态锁屏开启，则烘焙完成后推送给对应显示器实例。
+    @MainActor
+    static func scheduleRealtimeCompanionBake(path: String, targetScreens: [NSScreen]? = nil, reason: String) {
+        guard #available(macOS 26.0, *) else { return }
+        let contentRoot = WorkshopService.resolveWallpaperEngineProjectRoot(startingAt: URL(fileURLWithPath: path))
+        guard SceneBakeEligibilityAnalyzer.sceneContentRootIfEligibleForAnalysis(localFileURL: contentRoot) != nil else {
+            print("[SceneOfflineBake] realtime companion bake skipped (\(reason)): not a scene project \(contentRoot.path)")
+            return
+        }
+
+        let displayIDs = displayIDs(for: targetScreens)
+
+        Task(priority: .utility) {
+            do {
+                let record = await MainActor.run {
+                    downloadedRecord(forResolvedContentRoot: contentRoot)
+                }
+
+                if let artifact = usableArtifact(from: record) {
+                    await syncRealtimeBakeToLockScreen(artifact: artifact, itemID: record?.item.id, displayIDs: displayIDs, reason: reason)
+                    print("[SceneOfflineBake] realtime companion bake cache hit (\(reason)): \(artifact.videoPath)")
+                    return
+                }
+
+                let eligibility: SceneBakeEligibilitySnapshot
+                if let existing = record?.sceneBakeEligibility,
+                   existing.contentRootPath == contentRoot.path {
+                    eligibility = existing
+                } else {
+                    guard SystemMemoryPressure.hasRoomForSceneEligibilityAnalysis() else {
+                        print("[SceneOfflineBake] realtime companion bake skipped (\(reason)): insufficient memory for analysis")
+                        return
+                    }
+                    eligibility = try await Task.detached(priority: .utility) {
+                        try SceneBakeEligibilityAnalyzer.analyze(contentRoot: contentRoot, intent: .desktopLoop, strict: false)
+                    }.value
+                    if let itemID = record?.item.id {
+                        await MainActor.run {
+                            MediaLibraryService.shared.attachSceneBakeEligibility(
+                                itemID: itemID,
+                                snapshot: eligibility,
+                                triggerAutoBake: false
+                            )
+                        }
+                    }
+                }
+
+                let itemID = record?.item.id
+                let cacheItemID = itemID ?? stableOrphanCacheItemID(contentRootPath: contentRoot.path)
+                let artifact = try await bake(
+                    eligibility: eligibility,
+                    contentRoot: contentRoot,
+                    cacheItemID: cacheItemID,
+                    renderer: .wallpaperWgpu,
+                    persistArtifactToItemID: itemID
+                )
+                print("[SceneOfflineBake] realtime companion bake finished (\(reason)): \(artifact.videoPath)")
+                await syncRealtimeBakeToLockScreen(artifact: artifact, itemID: itemID, displayIDs: displayIDs, reason: reason)
+            } catch SceneOfflineBakeError.concurrentBakeInProgress {
+                print("[SceneOfflineBake] realtime companion bake skipped (\(reason)): another bake is running")
+            } catch {
+                print("[SceneOfflineBake] realtime companion bake failed (\(reason)): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @available(macOS 26.0, *)
+    @MainActor
+    private static func syncRealtimeBakeToLockScreen(
+        artifact: SceneBakeArtifact,
+        itemID: String?,
+        displayIDs: [UInt32],
+        reason: String
+    ) async {
+        guard VideoWallpaperManager.shared.isLockScreenEnabled, !displayIDs.isEmpty else { return }
+        let videoURL = URL(fileURLWithPath: artifact.videoPath)
+        guard isUsableBakedVideo(at: videoURL) else { return }
+        let videoID = itemID ?? URL(fileURLWithPath: artifact.videoPath).deletingPathExtension().lastPathComponent
+        await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
+            videoURL: videoURL,
+            videoID: videoID,
+            displayIDs: displayIDs
+        )
+        print("[SceneOfflineBake] realtime companion bake synced lock screen (\(reason)): display=\(displayIDs) video=\(videoID)")
+    }
+
     @MainActor
     static func isRendererAvailable(_ renderer: SceneBakeRenderer) -> Bool {
         switch renderer {

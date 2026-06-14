@@ -246,8 +246,8 @@ private final class MediaMetaBadgeView: NSView {
 
     private let label: NSTextField = {
         let label = NSTextField(labelWithString: "")
-        label.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
-        label.textColor = NSColor.white.withAlphaComponent(0.85)
+        label.font = .monospacedSystemFont(ofSize: 10, weight: .bold)
+        label.textColor = NSColor.white.withAlphaComponent(0.82)
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
         return label
@@ -271,8 +271,8 @@ private final class MediaMetaBadgeView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.4).cgColor
-        layer?.cornerRadius = 11
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
+        layer?.cornerRadius = 10
         addSubview(label)
     }
 

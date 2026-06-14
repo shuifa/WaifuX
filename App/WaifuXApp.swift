@@ -316,12 +316,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.restoreAllDataAsync()
         }
 
-        // 启动探索网格内存监控（800MB / 150 entries 阈值，触发 LRU trim）
-        // ⚠️ 必须异步启动，禁止在 init 路径或 applicationDidFinishLaunching 同步调用，
-        // 避免触发 macOS 26 _CFXPreferences 隐式递归
-        DispatchQueue.main.async {
-            // ExploreGridMemoryMonitor 已移除，Kingfisher 管理自己的缓存
-        }
+        // 预先在后台线程解压内嵌 assets（wallpaper-wgpu 渲染依赖），避免首次设置壁纸时阻塞主线程
+        WallpaperEngineEmbeddedAssets.prepareAssetsInBackground()
 
         // 注：更新检查已移到 ContentView 中处理
     }

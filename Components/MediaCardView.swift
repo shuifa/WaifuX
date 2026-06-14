@@ -296,7 +296,6 @@ struct MediaCardView: View, @preconcurrency Equatable {
         .padding(.horizontal, 14)
         .frame(maxHeight: .infinity)
         .background(Color(hex: "1A1D24"))
-        .drawingGroup(opaque: true)
     }
 
     @ViewBuilder
@@ -313,18 +312,18 @@ struct MediaCardView: View, @preconcurrency Equatable {
                 badgeText(media.resolutionLabel.replacingOccurrences(of: "x", with: "×"))
             }
         }
-        .drawingGroup(opaque: true)
+        .frame(width: max(0, cardWidth - 20), alignment: .topLeading)
     }
 
     private func badgeText(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .foregroundColor(.white.opacity(0.85))
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundColor(.white.opacity(0.82))
             .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .frame(height: 20)
             .background(
-                RoundedRectangle(cornerRadius: 11)
-                    .fill(Color(hex: "1A1D24"))
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.black.opacity(0.3))
             )
     }
 

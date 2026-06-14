@@ -283,6 +283,11 @@ struct MediaExploreContentView: View {
                     }
                 }
             })
+            .onScrollGeometryChange(for: CGFloat.self, of: { geometry in
+                geometry.contentOffset.y
+            }, action: { _, newOffset in
+                handleScrollOffset(max(0, newOffset))
+            })
             .scrollDisabled(!isVisible)
             .onChange(of: outerScrollToTopToken) { _, _ in
                 withAnimation(nil) {
