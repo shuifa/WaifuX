@@ -1,5 +1,12 @@
 import Foundation
 
+/// 属性展示方式
+public enum ScenePropertyPresentation: String, Codable, Sendable {
+    case control    // 可编辑控件
+    case group      // 分组标题
+    case decoration // 装饰性（不显示）
+}
+
 /// 单个用户属性的完整信息
 public struct SceneWallpaperProperty: Codable, Equatable, Sendable {
     public let key: String
@@ -11,9 +18,17 @@ public struct SceneWallpaperProperty: Codable, Equatable, Sendable {
     public let min: Double?
     public let max: Double?
     public let step: Double?
+    public let order: Int?
+    public let group: String?
+    public let condition: String?
+    public let presentation: ScenePropertyPresentation
 
     public var isModified: Bool {
         originalValue != currentValue
+    }
+
+    public var isEditable: Bool {
+        presentation == .control
     }
 }
 
@@ -66,6 +81,15 @@ public enum AnyCodableValue: Codable, Equatable, Sendable {
         case .null: return NSNull()
         }
     }
+
+    public var truthy: Bool {
+        switch self {
+        case .bool(let b): return b
+        case .number(let n): return n != 0
+        case .string(let s): return !s.isEmpty && s != "0" && s.lowercased() != "false"
+        case .null: return false
+        }
+    }
 }
 
 /// 场景壁纸属性文档（持久化用户覆盖值）
@@ -88,6 +112,7 @@ public struct SceneWallpaperPropertiesDocument: Codable, Equatable, Sendable {
 /// 2. 持久化用户的属性覆盖值
 /// 3. 备份原始属性用于重置
 /// 4. 生成 wallpaper-wgpu 所需的属性 JSON
+/// 5. 支持条件显示（condition 字段）
 @MainActor
 enum SceneWallpaperPropertiesService {
     private static let folderName = "SceneProperties"
@@ -117,6 +142,16 @@ enum SceneWallpaperPropertiesService {
                 modified.currentValue = override
             }
             return modified
+        }
+    }
+
+    /// 获取当前可见的属性（过滤掉 decoration 和条件不满足的属性）
+    static func loadVisibleProperties(for wallpaperPath: String) -> [SceneWallpaperProperty] {
+        let allProps = loadPropertiesWithOverrides(for: wallpaperPath)
+        let valueMap = Dictionary(uniqueKeysWithValues: allProps.map { ($0.key, $0.currentValue) })
+        return allProps.filter { prop in
+            guard prop.presentation != .decoration else { return false }
+            return evaluateCondition(prop.condition, values: valueMap)
         }
     }
 
@@ -215,7 +250,6 @@ enum SceneWallpaperPropertiesService {
     private static func resolveContentDir(for wallpaperPath: String) -> URL {
         let url = URL(fileURLWithPath: wallpaperPath)
         if url.pathExtension.lowercased() == "pkg" {
-            // 对于 .pkg 文件，需要先解包
             if let extracted = extractPKGIfNeeded(at: url) {
                 return extracted
             }
@@ -252,31 +286,292 @@ enum SceneWallpaperPropertiesService {
 
         var result: [SceneWallpaperProperty] = []
         for (key, prop) in properties {
-            let type = prop["type"] as? String ?? "text"
+            let rawType = prop["type"] as? String ?? "text"
             let text = prop["text"] as? String
-            let options = prop["options"] as? [String: String]
+            let options = parseOptions(prop["options"])
             let min = prop["min"] as? Double
             let max = prop["max"] as? Double
             let step = prop["step"] as? Double
+            let order = prop["order"] as? Int
+            let group = prop["group"] as? String
+            let condition = prop["condition"] as? String
+            let presentation = determinePresentation(rawType: rawType, key: key, text: text)
 
             let value = parseAnyCodableValue(prop["value"])
-            guard value != .null else { continue }
+
+            let normalizedType = normalizePropertyType(rawType)
 
             let sceneProp = SceneWallpaperProperty(
                 key: key,
-                type: type,
+                type: normalizedType,
                 text: text,
                 originalValue: value,
                 currentValue: value,
                 options: options,
                 min: min,
                 max: max,
-                step: step
+                step: step,
+                order: order,
+                group: group,
+                condition: condition,
+                presentation: presentation
             )
             result.append(sceneProp)
         }
 
-        return result.sorted { $0.key < $1.key }
+        return result.sorted { ($0.order ?? Int.max) < ($1.order ?? Int.max) || ($0.order == $1.order && $0.key < $1.key) }
+    }
+
+    private static func parseOptions(_ raw: Any?) -> [String: String]? {
+        guard let raw else { return nil }
+        // 格式1: {"key": "label", ...}
+        if let dict = raw as? [String: String] {
+            return dict
+        }
+        // 格式2: [{"value": "v", "label": "l"}, ...]
+        if let array = raw as? [[String: Any]] {
+            var result: [String: String] = [:]
+            for item in array {
+                if let value = item["value"], let label = item["label"] as? String {
+                    result[String(describing: value)] = label
+                }
+            }
+            return result.isEmpty ? nil : result
+        }
+        return nil
+    }
+
+    private static func determinePresentation(rawType: String, key: String, text: String?) -> ScenePropertyPresentation {
+        let lower = rawType.lowercased()
+        if lower == "group" || lower == "description" {
+            return .group
+        }
+        // 装饰性属性检测
+        let keyLower = key.lowercased()
+        let textLower = (text ?? "").lowercased()
+        if keyLower.hasPrefix("imgsrc") || keyLower.hasPrefix("brimgsrc")
+            || keyLower.contains("imgsrchttp") || keyLower.contains("hrefhttps")
+            || textLower.contains("<img") || textLower.contains("<a ")
+            || textLower.contains("<hr") || textLower.contains("rf=viewer")
+            || (key.count > 96 && !key.contains("_")) {
+            return .decoration
+        }
+        return .control
+    }
+
+    private static func normalizePropertyType(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "bool", "toggle", "checkbox": return "bool"
+        case "slider", "float", "percentage": return "slider"
+        case "color", "schemecolor": return "color"
+        case "combo", "dropdown", "select": return "combo"
+        case "textinput", "string": return "textinput"
+        case "text", "label": return "label"
+        case "integer", "int": return "slider"
+        case "file", "directory", "scenetexture", "replacetexture": return "file"
+        case "group": return "group"
+        case "description": return "description"
+        default: return raw.lowercased()
+        }
+    }
+
+    // MARK: - 条件求值
+
+    /// 求值条件表达式，返回属性是否应该显示
+    static func evaluateCondition(_ expression: String?, values: [String: AnyCodableValue]) -> Bool {
+        guard let expr = expression, !expr.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return true
+        }
+        return evaluateExpression(expr, values: values) != false
+    }
+
+    private static func evaluateExpression(_ expr: String, values: [String: AnyCodableValue]) -> Bool? {
+        let tokens = tokenize(expr)
+        guard !tokens.isEmpty else { return nil }
+        var index = 0
+        let result = parseOr(tokens: tokens, index: &index, values: values)
+        return result.map { truthy($0) }
+    }
+
+    private enum ConditionToken {
+        case identifier(String)
+        case number(Double)
+        case string(String)
+        case bool(Bool)
+        case op(String)
+        case paren(Character)
+    }
+
+    private static func tokenize(_ input: String) -> [ConditionToken] {
+        var tokens: [ConditionToken] = []
+        var i = input.startIndex
+        while i < input.endIndex {
+            let ch = input[i]
+            if ch.isWhitespace {
+                i = input.index(after: i)
+                continue
+            }
+            // 双字符运算符
+            let two = String(input[i..<min(input.index(i, offsetBy: 2), input.endIndex)])
+            if ["&&", "||", "==", "!=", ">=", "<="].contains(two) {
+                tokens.append(.op(two))
+                i = input.index(i, offsetBy: 2)
+                continue
+            }
+            if "><!".contains(ch) {
+                tokens.append(.op(String(ch)))
+                i = input.index(after: i)
+                continue
+            }
+            if ch == "(" || ch == ")" {
+                tokens.append(.paren(ch))
+                i = input.index(after: i)
+                continue
+            }
+            if ch == "'" || ch == "\"" {
+                var j = input.index(after: i)
+                var s = ""
+                while j < input.endIndex && input[j] != ch {
+                    s.append(input[j])
+                    j = input.index(after: j)
+                }
+                if j < input.endIndex { j = input.index(after: j) }
+                tokens.append(.string(s))
+                i = j
+                continue
+            }
+            if ch.isNumber || (ch == "-" && input.index(after: i) < input.endIndex && input[input.index(after: i)].isNumber) {
+                var j = i
+                if ch == "-" { j = input.index(after: j) }
+                while j < input.endIndex && (input[j].isNumber || input[j] == ".") {
+                    j = input.index(after: j)
+                }
+                if let n = Double(input[i..<j]) {
+                    tokens.append(.number(n))
+                }
+                i = j
+                continue
+            }
+            if ch.isLetter || ch == "_" {
+                var j = i
+                while j < input.endIndex && (input[j].isLetter || input[j].isNumber || input[j] == "_" || input[j] == ".") {
+                    j = input.index(after: j)
+                }
+                let word = String(input[i..<j])
+                if word == "true" { tokens.append(.bool(true)) }
+                else if word == "false" { tokens.append(.bool(false)) }
+                else { tokens.append(.identifier(word)) }
+                i = j
+                continue
+            }
+            i = input.index(after: i)
+        }
+        return tokens
+    }
+
+    private static func parsePrimary(tokens: [ConditionToken], index: inout Int, values: [String: AnyCodableValue]) -> AnyCodableValue? {
+        guard index < tokens.count else { return nil }
+        let token = tokens[index]
+        switch token {
+        case .op("!"):
+            index += 1
+            guard let val = parsePrimary(tokens: tokens, index: &index, values: values) else { return nil }
+            return .bool(!val.truthy)
+        case .paren("("):
+            index += 1
+            let val = parseOr(tokens: tokens, index: &index, values: values)
+            if index < tokens.count, case .paren(")") = tokens[index] { index += 1 }
+            return val
+        case .bool(let b):
+            index += 1
+            return .bool(b)
+        case .number(let n):
+            index += 1
+            return .number(n)
+        case .string(let s):
+            index += 1
+            return .string(s)
+        case .identifier(let id):
+            index += 1
+            let key = id.hasSuffix(".value") ? String(id.dropLast(6)) : id
+            return values[key]
+        default:
+            return nil
+        }
+    }
+
+    private static func parseComparison(tokens: [ConditionToken], index: inout Int, values: [String: AnyCodableValue]) -> AnyCodableValue? {
+        guard var left = parsePrimary(tokens: tokens, index: &index, values: values) else { return nil }
+        while index < tokens.count {
+            guard case .op(let op) = tokens[index], ["==", "!=", ">", ">=", "<", "<="].contains(op) else { break }
+            index += 1
+            guard let right = parsePrimary(tokens: tokens, index: &index, values: values) else { break }
+            switch op {
+            case "==": left = .bool(valuesEqual(left, right))
+            case "!=": left = .bool(!valuesEqual(left, right))
+            case ">":  left = .bool(compareNumeric(left, right, op: >))
+            case ">=": left = .bool(compareNumeric(left, right, op: >=))
+            case "<":  left = .bool(compareNumeric(left, right, op: <))
+            case "<=": left = .bool(compareNumeric(left, right, op: <=))
+            default: break
+            }
+        }
+        return left
+    }
+
+    private static func parseAnd(tokens: [ConditionToken], index: inout Int, values: [String: AnyCodableValue]) -> AnyCodableValue? {
+        guard var left = parseComparison(tokens: tokens, index: &index, values: values) else { return nil }
+        while index < tokens.count, case .op("&&") = tokens[index] {
+            index += 1
+            guard let right = parseComparison(tokens: tokens, index: &index, values: values) else { break }
+            left = .bool(left.truthy && right.truthy)
+        }
+        return left
+    }
+
+    private static func parseOr(tokens: [ConditionToken], index: inout Int, values: [String: AnyCodableValue]) -> AnyCodableValue? {
+        guard var left = parseAnd(tokens: tokens, index: &index, values: values) else { return nil }
+        while index < tokens.count, case .op("||") = tokens[index] {
+            index += 1
+            guard let right = parseAnd(tokens: tokens, index: &index, values: values) else { break }
+            left = .bool(left.truthy || right.truthy)
+        }
+        return left
+    }
+
+    private static func valuesEqual(_ lhs: AnyCodableValue, _ rhs: AnyCodableValue) -> Bool {
+        switch (lhs, rhs) {
+        case (.bool(let a), .bool(let b)): return a == b
+        case (.number(let a), .number(let b)): return a == b
+        case (.string(let a), .string(let b)): return a == b
+        case (.bool(let a), .number(let b)): return (a ? 1.0 : 0.0) == b
+        case (.number(let a), .bool(let b)): return a == (b ? 1.0 : 0.0)
+        case (.string(let a), .bool(let b)): return (a == "true") == b
+        case (.bool(let a), .string(let b)): return a == (b == "true")
+        default: return false
+        }
+    }
+
+    private static func compareNumeric(_ lhs: AnyCodableValue, _ rhs: AnyCodableValue, op: (Double, Double) -> Bool) -> Bool {
+        let l: Double
+        let r: Double
+        switch lhs {
+        case .number(let n): l = n
+        case .bool(let b): l = b ? 1 : 0
+        case .string(let s): l = Double(s) ?? 0
+        case .null: l = 0
+        }
+        switch rhs {
+        case .number(let n): r = n
+        case .bool(let b): r = b ? 1 : 0
+        case .string(let s): r = Double(s) ?? 0
+        case .null: r = 0
+        }
+        return op(l, r)
+    }
+
+    private static func truthy(_ value: AnyCodableValue) -> Bool {
+        value.truthy
     }
 
     private static func parseAnyCodableValue(_ any: Any?) -> AnyCodableValue {
@@ -284,7 +579,6 @@ enum SceneWallpaperPropertiesService {
         if let b = any as? Bool {
             return .bool(b)
         } else if let n = any as? NSNumber {
-            // NSNumber 可以是 Bool 或 Number，需要区分
             if type(of: any) == type(of: NSNumber(value: true)) {
                 return .bool(n.boolValue)
             }

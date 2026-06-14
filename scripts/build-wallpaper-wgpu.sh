@@ -30,25 +30,23 @@ echo "🔧 wallpaper-wgpu 部署开始..."
 # ── 1. 复制 wallpaper-wgpu ──────────────────────────────────────
 WGUI_SRC="${WAIFUX_WGPU_SRC:-}"
 if [[ -z "$WGUI_SRC" ]]; then
-  # 尝试多个可能的路径
+  # 手动部署时优先使用 wallpaper-wgpu 项目的最新 release 产物。
   for candidate in \
-    "$ROOT/wallpaper-wgpu" \
-    "$ROOT/Resources/wallpaper-wgpu" \
+    "/Volumes/mac/CodeLibrary/Claude/wallpaper-wgpu/target/release/wallpaper-wgpu" \
     "$HOME/Downloads/wallpaper-wgpu" \
-    "/Volumes/mac/CodeLibrary/Claude/wallpaper-wgpu/target/release/wallpaper-wgpu"; do
+    "$ROOT/wallpaper-wgpu"; do
     if [[ -f "$candidate" ]]; then
       WGUI_SRC="$candidate"
       break
     fi
   done
 fi
-# 如果 Resources/wallpaper-wgpu 已存在且未指定源，跳过复制
-if [[ -f "$DEST_DIR/wallpaper-wgpu" && -z "${WAIFUX_WGPU_SRC:-}" ]]; then
-  echo "  ✅ wallpaper-wgpu 已存在，跳过复制"
-elif [[ -n "$WGUI_SRC" && -f "$WGUI_SRC" ]]; then
+if [[ -n "$WGUI_SRC" && -f "$WGUI_SRC" ]]; then
   cp "$WGUI_SRC" "$DEST_DIR/wallpaper-wgpu"
   chmod +x "$DEST_DIR/wallpaper-wgpu"
   echo "  ✅ wallpaper-wgpu → $DEST_DIR/wallpaper-wgpu"
+elif [[ -f "$DEST_DIR/wallpaper-wgpu" ]]; then
+  echo "  ⚠️  wallpaper-wgpu 源未找到，保留已有 $DEST_DIR/wallpaper-wgpu"
 else
   echo "  ⚠️  wallpaper-wgpu 未找到，跳过复制"
 fi

@@ -600,6 +600,7 @@ enum SceneOfflineBakeService {
 
         let process = Process()
         process.executableURL = wgpuBinary
+        process.currentDirectoryURL = wgpuBinary.deletingLastPathComponent()
         process.arguments = args
         process.environment = SceneOfflineBakeService.rendererLaunchEnvironment(for: wgpuBinary)
 
@@ -608,6 +609,11 @@ enum SceneOfflineBakeService {
         process.standardOutput = FileHandle.nullDevice
 
         try process.run()
+
+        final class MutableDataBox: @unchecked Sendable {
+            var data = Data()
+        }
+        let stderrData = MutableDataBox()
 
         // 监控 stderr 中的进度信息
         // 格式: \r[bake] {message} [{progress * 100:.0}%]
@@ -618,6 +624,7 @@ enum SceneOfflineBakeService {
             while !Task.isCancelled {
                 let data = stderrHandle.availableData
                 if data.isEmpty { break }
+                stderrData.data.append(data)
                 if let chunk = String(data: data, encoding: .utf8) {
                     buffer += chunk
                     let lines = buffer.components(separatedBy: "\r")
@@ -647,11 +654,21 @@ enum SceneOfflineBakeService {
         while process.isRunning {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        progressTask.cancel()
+        await progressTask.value
 
         guard process.terminationStatus == 0 else {
             try? FileManager.default.removeItem(at: tempURL)
-            throw SceneOfflineBakeError.bakeProcessFailed("wallpaper-wgpu bake 执行失败 (exit=\(process.terminationStatus))")
+            let stderrString = String(data: stderrData.data, encoding: .utf8) ?? ""
+            let cleanStderr = stderrString
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .suffix(20)
+                .joined(separator: "\n")
+            let message = cleanStderr.isEmpty
+                ? "wallpaper-wgpu bake 执行失败 (exit=\(process.terminationStatus))"
+                : "wallpaper-wgpu bake 执行失败 (exit=\(process.terminationStatus))\n\(cleanStderr)"
+            throw SceneOfflineBakeError.bakeProcessFailed(message)
         }
 
         guard await inspectBakedVideo(at: tempURL, expectedWidth: width, expectedHeight: height) != nil else {

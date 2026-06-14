@@ -105,7 +105,7 @@ final class SceneWallpaperPropertiesViewModel: ObservableObject {
 
     func load() {
         wallpaperName = SceneWallpaperDesignService.wallpaperTitle(for: wallpaperPath)
-        let properties = SceneWallpaperPropertiesService.loadPropertiesWithOverrides(for: wallpaperPath)
+        let properties = SceneWallpaperPropertiesService.loadVisibleProperties(for: wallpaperPath)
         rows = properties.map { prop in
             PropertyRow(id: prop.key, property: prop, currentValue: prop.currentValue)
         }
@@ -115,6 +115,8 @@ final class SceneWallpaperPropertiesViewModel: ObservableObject {
         guard let index = rows.firstIndex(where: { $0.id == key }) else { return }
         rows[index].currentValue = value
         try? SceneWallpaperPropertiesService.setProperty(key: key, value: value, for: wallpaperPath)
+        // 重新加载可见属性（条件可能变化）
+        reloadVisible()
         scheduleApply()
     }
 
@@ -122,6 +124,7 @@ final class SceneWallpaperPropertiesViewModel: ObservableObject {
         guard let index = rows.firstIndex(where: { $0.id == key }) else { return }
         rows[index].currentValue = rows[index].property.originalValue
         try? SceneWallpaperPropertiesService.resetProperty(key: key, for: wallpaperPath)
+        reloadVisible()
         scheduleApply()
     }
 
@@ -131,26 +134,272 @@ final class SceneWallpaperPropertiesViewModel: ObservableObject {
         scheduleApply()
     }
 
+    private func reloadVisible() {
+        let properties = SceneWallpaperPropertiesService.loadVisibleProperties(for: wallpaperPath)
+        rows = properties.map { prop in
+            PropertyRow(id: prop.key, property: prop, currentValue: prop.currentValue)
+        }
+    }
+
     private func scheduleApply() {
         applyTask?.cancel()
         applyTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled else { return }
-            guard let json = SceneWallpaperPropertiesService.propertiesOverrideJSON(for: wallpaperPath),
-                  let data = json.data(using: .utf8),
-                  var dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            dict["__wallpaperPath"] = wallpaperPath
-            DistributedNotificationCenter.default().post(
-                name: NSNotification.Name("com.wallpaper-wgpu.updateUserProperties"),
-                object: nil,
-                userInfo: dict
-            )
+            let json = SceneWallpaperPropertiesService.propertiesOverrideJSON(for: wallpaperPath)
+            do {
+                try await WallpaperEngineXBridge.shared.refreshWallpaperProperties(userProperties: json)
+            } catch {
+                print("[SceneWallpaperPropertiesPanel] 重启渲染器失败: \(error.localizedDescription)")
+            }
         }
     }
 
     func close() {
         onClose()
     }
+}
+
+// MARK: - 属性 key 中文翻译映射
+
+private let scenePropertyKeyTranslations: [String: String] = [
+    // 布尔开关
+    "bEnable": "启用",
+    "bEnabled": "启用",
+    "enable": "启用",
+    "enabled": "启用",
+    "bVisible": "可见",
+    "visible": "可见",
+    "bLoop": "循环",
+    "loop": "循环",
+    "bAnimated": "动画",
+    "animated": "动画",
+    "bBounce": "反弹",
+    "bounce": "反弹",
+    "bAutoPlay": "自动播放",
+    "autoplay": "自动播放",
+    "bShowFPS": "显示帧率",
+    "bParallax": "视差效果",
+    "parallax": "视差",
+    "bMirror": "镜像",
+    "mirror": "镜像",
+    "bFlip": "翻转",
+    "flip": "翻转",
+    "bInvert": "反转",
+    "invert": "反转",
+    "bBlur": "模糊",
+    "blur": "模糊",
+    "bGlow": "发光",
+    "glow": "发光",
+    "bShadow": "阴影",
+    "shadow": "阴影",
+    "bBloom": "泛光",
+    "bloom": "泛光",
+    "bGrayscale": "灰度",
+    "bSepia": "复古色调",
+    "bNoise": "噪点",
+    "noise": "噪点",
+    "bDistortion": "扭曲",
+    "bWave": "波浪",
+    "wave": "波浪",
+    "bRipple": "涟漪",
+    "bRain": "下雨",
+    "rain": "雨",
+    "bSnow": "下雪",
+    "snow": "雪",
+    "bParticle": "粒子效果",
+    "bFire": "火焰",
+    "fire": "火",
+    "bSmoke": "烟雾",
+    "smoke": "烟雾",
+    "bLightning": "闪电",
+    "bStars": "星星",
+    "stars": "星星",
+    "bClouds": "云",
+    "clouds": "云",
+    "bWind": "风",
+    "wind": "风",
+    "bWater": "水",
+    "water": "水",
+    "bClock": "显示时钟",
+    "clock": "时钟",
+    "bShowClock": "显示时钟",
+    "showclock": "显示时钟",
+    "bShowTime": "显示时间",
+    "bShowDate": "显示日期",
+    "bShowMusic": "显示音乐",
+    "showmusic": "显示音乐",
+    "bMusic": "音乐可视化",
+    "music": "音乐",
+    "bAudioVisualizer": "音频可视化",
+    "audio": "音频",
+    "bShowAudio": "显示音频",
+    "bMouse": "鼠标交互",
+    "mouse": "鼠标",
+    "bInteractive": "交互",
+    "bDepth": "深度效果",
+    "bScanlines": "扫描线",
+    "bVignette": "暗角",
+    "bChromatic": "色差",
+    "bLensFlare": "镜头光晕",
+    "bGodRays": "体积光",
+    "bDOF": "景深",
+    "bAutoRotation": "自动旋转",
+    "bColorShift": "色相偏移",
+
+    // 浮点数
+    "fSpeed": "速度",
+    "speed": "速度",
+    "fScale": "缩放",
+    "scale": "缩放",
+    "fOpacity": "不透明度",
+    "opacity": "不透明度",
+    "fBrightness": "亮度",
+    "brightness": "亮度",
+    "fContrast": "对比度",
+    "contrast": "对比度",
+    "fSaturation": "饱和度",
+    "saturation": "饱和度",
+    "fHue": "色相",
+    "hue": "色相",
+    "fRotation": "旋转",
+    "rotation": "旋转",
+    "fAngle": "角度",
+    "angle": "角度",
+    "fSize": "大小",
+    "size": "大小",
+    "fWidth": "宽度",
+    "width": "宽度",
+    "fHeight": "高度",
+    "height": "高度",
+    "fX": "X 位置",
+    "x": "X 位置",
+    "fY": "Y 位置",
+    "y": "Y 位置",
+    "fPosX": "X 位置",
+    "fPosY": "Y 位置",
+    "fOffsetX": "X 偏移",
+    "fOffsetY": "Y 偏移",
+    "fAlpha": "透明度",
+    "alpha": "透明度",
+    "fVolume": "音量",
+    "volume": "音量",
+    "fFrequency": "频率",
+    "frequency": "频率",
+    "fAmplitude": "振幅",
+    "amplitude": "振幅",
+    "fDensity": "密度",
+    "density": "密度",
+    "fIntensity": "强度",
+    "intensity": "强度",
+    "fDuration": "持续时间",
+    "duration": "持续时间",
+    "fDelay": "延迟",
+    "delay": "延迟",
+    "fThickness": "厚度",
+    "thickness": "厚度",
+    "fRadius": "半径",
+    "radius": "半径",
+    "fBlur": "模糊强度",
+    "fGlow": "发光强度",
+    "fSpread": "扩散",
+    "spread": "扩散",
+    "fDecay": "衰减",
+    "decay": "衰减",
+    "fGravity": "重力",
+    "gravity": "重力",
+    "fTurbulence": "湍流",
+    "turbulence": "湍流",
+    "fDrag": "阻力",
+    "drag": "阻力",
+    "fLife": "生命",
+    "life": "生命",
+    "fRate": "速率",
+    "rate": "速率",
+    "fCount": "数量",
+    "count": "数量",
+    "iCount": "数量",
+    "iMax": "最大值",
+    "iMin": "最小值",
+    "fZoom": "缩放",
+    "zoom": "缩放",
+    "fShake": "抖动",
+    "fParallax": "视差深度",
+
+    // 颜色
+    "sColor": "颜色",
+    "color": "颜色",
+    "color1": "颜色 1",
+    "color2": "颜色 2",
+    "color3": "颜色 3",
+    "schemecolor": "主题色",
+    "backgroundcolor": "背景色",
+
+    // 文本/字符串
+    "sText": "文本",
+    "text": "文本",
+    "sFont": "字体",
+    "font": "字体",
+    "sImage": "图片",
+    "image": "图片",
+    "sTexture": "纹理",
+    "texture": "纹理",
+    "sBackground": "背景",
+    "background": "背景",
+    "sForeground": "前景",
+    "foreground": "前景",
+    "sOverlay": "叠加层",
+    "overlay": "叠加",
+
+    // 整数/枚举
+    "nType": "类型",
+    "type": "类型",
+    "nMode": "模式",
+    "mode": "模式",
+    "nStyle": "样式",
+    "style": "样式",
+    "nQuality": "质量",
+    "quality": "质量",
+    "nResolution": "分辨率",
+    "resolution": "分辨率",
+    "effect": "效果",
+    "direction": "方向",
+    "shape": "形状",
+    "blend": "混合模式",
+    "material": "材质",
+    "particle": "粒子",
+    "particles": "粒子",
+
+    // 时钟相关
+    "hour": "时",
+    "minute": "分",
+    "second": "秒",
+    "ampm": "上午/下午",
+    "24h": "24小时制",
+    "use24h": "24小时制",
+    "showseconds": "显示秒",
+    "delimiter": "分隔符",
+
+    // 音乐相关
+    "musictype": "音乐类型",
+    "musicsize": "音乐大小",
+    "musiccolor": "音乐颜色",
+    "barcount": "频段数量",
+    "barspacing": "频段间距",
+]
+
+private func translatedLabel(for property: SceneWallpaperProperty) -> String {
+    if let text = property.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return text
+    }
+    let keyLower = property.key.lowercased()
+    if let translated = scenePropertyKeyTranslations[keyLower] {
+        return translated
+    }
+    if let translated = scenePropertyKeyTranslations[property.key] {
+        return translated
+    }
+    return property.key
 }
 
 // MARK: - Panel View
@@ -288,28 +537,35 @@ struct SceneWallpaperPropertiesPanel: View {
 
     @ViewBuilder
     private func propertyRow(_ row: SceneWallpaperPropertiesViewModel.PropertyRow) -> some View {
+        let label = translatedLabel(for: row.property)
         switch row.property.type {
+        case "group":
+            sectionHeader(row.property.text ?? row.property.key)
+        case "description", "label":
+            if let text = row.property.text, !text.isEmpty {
+                descriptionRow(text)
+            }
         case "slider":
             glassCard {
                 sliderRow(
-                    row.property.text ?? row.property.key,
+                    label,
                     value: sliderBinding(for: row),
                     text: sliderDisplayText(for: row),
                     range: (row.property.min ?? 0)...(row.property.max ?? 100),
                     step: row.property.step ?? 1
                 )
             }
-        case "bool", "toggle":
+        case "bool":
             glassCard {
-                toggleRow(row.property.text ?? row.property.key, isOn: boolBinding(for: row))
+                toggleRow(label, isOn: boolBinding(for: row))
             }
         case "color":
             glassCard {
-                colorRow(row)
+                colorRow(row, label: label)
             }
-        case "combo", "dropdown":
+        case "combo":
             glassCard {
-                fieldRow(row.property.text ?? row.property.key) {
+                fieldRow(label) {
                     Picker("", selection: comboBinding(for: row)) {
                         ForEach(Array((row.property.options ?? [:]).keys.sorted()), id: \.self) { key in
                             Text(row.property.options?[key] ?? key).tag(key)
@@ -322,9 +578,46 @@ struct SceneWallpaperPropertiesPanel: View {
                     .accentColor(accentTint)
                 }
             }
+        case "textinput":
+            glassCard {
+                fieldRow(label) {
+                    TextField("", text: textBinding(for: row))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(LiquidGlassColors.textPrimary)
+                        .tint(accentTint)
+                        .accentColor(accentTint)
+                }
+            }
+        case "file":
+            glassCard {
+                fieldRow(label) {
+                    HStack(spacing: 6) {
+                        Text(row.currentValue.stringValue.isEmpty ? "未选择" : URL(fileURLWithPath: row.currentValue.stringValue).lastPathComponent)
+                            .font(.system(size: 11))
+                            .foregroundStyle(LiquidGlassColors.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button {
+                            let panel = NSOpenPanel()
+                            panel.allowsMultipleSelection = false
+                            panel.canChooseDirectories = row.property.type == "file" ? false : true
+                            panel.canChooseFiles = true
+                            if panel.runModal() == .OK, let url = panel.url {
+                                viewModel.updateProperty(key: row.id, value: .string(url.path))
+                            }
+                        } label: {
+                            Image(systemName: "folder")
+                                .font(.system(size: 11))
+                                .foregroundStyle(accentTint)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
         default:
             glassCard {
-                fieldRow(row.property.text ?? row.property.key) {
+                fieldRow(label) {
                     TextField("", text: textBinding(for: row))
                         .textFieldStyle(.plain)
                         .font(.system(size: 12))
@@ -472,9 +765,9 @@ struct SceneWallpaperPropertiesPanel: View {
         }
     }
 
-    private func colorRow(_ row: SceneWallpaperPropertiesViewModel.PropertyRow) -> some View {
+    private func colorRow(_ row: SceneWallpaperPropertiesViewModel.PropertyRow, label: String) -> some View {
         HStack(spacing: 10) {
-            Text(row.property.text ?? row.property.key)
+            Text(label)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(LiquidGlassColors.textPrimary)
                 .frame(width: labelWidth, alignment: .leading)
@@ -498,6 +791,29 @@ struct SceneWallpaperPropertiesPanel: View {
                     .opacity(0.02)
             }
         }
+    }
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        HStack(spacing: 8) {
+            Rectangle()
+                .fill(accentTint.opacity(0.5))
+                .frame(width: 3, height: 14)
+                .clipShape(RoundedRectangle(cornerRadius: 1.5))
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(LiquidGlassColors.textPrimary)
+        }
+        .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private func descriptionRow(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(LiquidGlassColors.textTertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 4)
     }
 
     private static func color(from raw: String) -> Color {
