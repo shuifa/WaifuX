@@ -128,6 +128,7 @@ xcodebuild -scheme WaifuX -configuration Release clean archive \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGNING_ALLOWED=NO \
   DEBUG_INFORMATION_FORMAT=dwarf \
+  STRIP_INSTALLED_PRODUCT=NO \
   -archivePath "$BUILD_DIR/$ARCHIVE_NAME" 2>&1 | tee "$BUILD_DIR/archive.log"
 
 ARCHIVE_STATUS=${PIPESTATUS[0]}
