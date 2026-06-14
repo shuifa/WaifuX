@@ -68,7 +68,7 @@ if [[ -f "$FFMPEG_SRC" ]]; then
   chmod +x "$DEST_DIR/ffmpeg"
   echo "  ✅ ffmpeg → $DEST_DIR/ffmpeg"
 else
-  echo "  ⚠️  ffmpeg 未找到（$FFMPEG_SRC），bake 功能将不可用"
+  echo "  ⚠️  ffmpeg 未找到($FFMPEG_SRC), bake 功能将不可用"
 fi
 
 # ── 2. 复制 DXC ─────────────────────────────────────────────────
