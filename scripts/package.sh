@@ -23,27 +23,36 @@ require_packaged_file() {
   fi
 }
 
-# wallpaper-wgpu + DXC 部署（使用仓库里已提交的 Resources/wallpaper-wgpu）。
-# 若该文件不存在，或设置 WAIFUX_FORCE_WGPU_REBUILD=1，则执行 build 脚本。
+# wallpaper-wgpu + DXC 部署。
+# CI / GitHub 打包默认使用仓库里已提交的二进制与内嵌 assets object；
+# 只有本地缺文件或显式设置 WAIFUX_FORCE_WGPU_REBUILD=1 时才重建，避免 CI 在
+# 没有 Resources/assets 的环境里生成空资源占位。
 WGPU_BIN="$PROJECT_DIR/Resources/wallpaper-wgpu"
-if [[ ! -f "$WGPU_BIN" ]] || [[ -n "${WAIFUX_FORCE_WGPU_REBUILD:-}" ]]; then
+WGPU_REBUILD_REASON=""
+
+if [[ -n "${CI:-}" ]] && [[ -f "$WGPU_BIN" ]] && [[ -z "${WAIFUX_FORCE_WGPU_REBUILD:-}" ]]; then
+  WGPU_REBUILD_REASON=""
+elif [[ ! -f "$WGPU_BIN" ]]; then
+  WGPU_REBUILD_REASON="missing binary"
+elif [[ -n "${WAIFUX_FORCE_WGPU_REBUILD:-}" ]]; then
+  WGPU_REBUILD_REASON="WAIFUX_FORCE_WGPU_REBUILD"
+fi
+
+if [[ -n "$WGPU_REBUILD_REASON" ]]; then
   if [[ -f "$PROJECT_DIR/scripts/build-wallpaper-wgpu.sh" ]]; then
-    echo "🔧 部署 wallpaper-wgpu + DXC + 内嵌 assets..."
+    echo "🔧 部署 wallpaper-wgpu + DXC + 内嵌 assets（原因：$WGPU_REBUILD_REASON）..."
     chmod +x "$PROJECT_DIR/scripts/build-wallpaper-wgpu.sh"
     WAIFUX_FORCE_EMBED_ASSETS=1 "$PROJECT_DIR/scripts/build-wallpaper-wgpu.sh"
   fi
 else
-  echo "🔧 使用已提交的 $WGPU_BIN（跳过部署）。若需重部署请设 WAIFUX_FORCE_WGPU_REBUILD=1"
-  # 即使使用已提交的 binary，也要确保内嵌 assets .o 是最新的
-  if [[ -f "$PROJECT_DIR/scripts/build-wallpaper-wgpu.sh" ]]; then
-    chmod +x "$PROJECT_DIR/scripts/build-wallpaper-wgpu.sh"
-    "$PROJECT_DIR/scripts/build-wallpaper-wgpu.sh"
-	  fi
-	fi
+  echo "🔧 使用已提交的 $WGPU_BIN（跳过 wallpaper-wgpu 构建）。若需重编请设 WAIFUX_FORCE_WGPU_REBUILD=1"
+fi
 
 require_packaged_file "$PROJECT_DIR/Resources/wallpaper-wgpu" "wallpaper-wgpu"
 require_packaged_file "$PROJECT_DIR/Resources/dxc" "dxc"
 require_packaged_file "$PROJECT_DIR/Resources/lib/libdxcompiler.dylib" "libdxcompiler.dylib"
+require_packaged_file "$PROJECT_DIR/Resources/zip_data.o" "wallpaper-wgpu embedded assets object"
+require_packaged_file "$PROJECT_DIR/Resources/zip_accessor.o" "wallpaper-wgpu embedded assets accessor object"
 
 # 旧 wallpaperengine-cli 仅作为离线烘焙的可选 renderer 2 保留。
 # 实时设置壁纸仍走 wallpaper-wgpu。

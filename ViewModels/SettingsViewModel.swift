@@ -49,6 +49,12 @@ class SettingsViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(sceneRealtimeRenderingEnabled, forKey: "scene_realtime_rendering_enabled") }
     }
 
+    /// 超分辨率模式开关
+    /// 开启后，动态壁纸将以低分辨率运行，利用 Apple MetalFX 超分辨率技术提升性能
+    @Published var upscalingEnabled = false {
+        didSet { UserDefaults.standard.set(upscalingEnabled, forKey: "upscaling_enabled") }
+    }
+
     /// 动态锁屏壁纸开关（仅 macOS 26+ 可用，关闭后走旧逻辑）
     @Published var dynamicLockScreenEnabled = false {
         didSet {
@@ -159,6 +165,7 @@ class SettingsViewModel: ObservableObject {
         hdrEnabled = defaults.object(forKey: "hdr_enabled") as? Bool ?? true
         showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
         sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
+        upscalingEnabled = defaults.bool(forKey: "upscaling_enabled")
         dynamicLockScreenEnabled = defaults.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? false
         // 非 macOS 26+ 系统强制关闭动态锁屏
         if #available(macOS 26.0, *) { } else {

@@ -822,7 +822,6 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 48D28EC0DB38B904D8A8338A /* Build configuration list for PBXNativeTarget "WaifuX" */;
 			buildPhases = (
-				CB7B9ED784641182A7BD4478 /* Embed Assets */,
 				BF6D7513FD89DF02986D7B89 /* Sources */,
 				B24F8C7D3052659AE1256B1A /* Resources */,
 				6E67BB0461444CCD9FB48619 /* Frameworks */,
@@ -937,25 +936,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "# 修复旧 wallpaperengine-cli 相关 dylib 的 @@HOMEBREW_ 占位符路径\nCLI_LIB_DIR=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/Resources/lib\"\nif [[ -d \"$CLI_LIB_DIR\" ]]; then\n  for f in \"$CLI_LIB_DIR\"/*.dylib; do\n    [[ -L \"$f\" ]] && continue\n    [[ ! -f \"$f\" ]] && continue\n    otool -L \"$f\" 2>/dev/null | tail -n +2 | while IFS= read -r line; do\n      dep_path=$(echo \"$line\" | awk '{print $1}')\n      if [[ \"$dep_path\" == *\"@@HOMEBREW_CELLAR@@\"* ]] || [[ \"$dep_path\" == *\"@@HOMEBREW_PREFIX@@\"* ]]; then\n        dep_base=$(basename \"$dep_path\")\n        echo \"fix-dylib-cli: $(basename \"$f\") — ${dep_path} -> @loader_path/${dep_base}\"\n        install_name_tool -change \"$dep_path\" \"@loader_path/$dep_base\" \"$f\" 2>/dev/null || true\n      fi\n    done\n  done\n  for f in \"$CLI_LIB_DIR\"/*.dylib; do\n    [[ -L \"$f\" ]] && continue\n    [[ ! -f \"$f\" ]] && continue\n    codesign --force -s - \"$f\" 2>/dev/null || true\n  done\nfi\n\n# Resources/assets 已通过 zip_data.o 嵌入主程序，不能再作为普通资源复制进 .app。\n# Xcode 的 folder reference 会保留整棵 Resources 目录，这里清掉仅用于构建的产物，避免包体重复膨胀。\nBUNDLED_RESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/Resources\"\nif [[ -d \"$BUNDLED_RESOURCES_DIR\" ]]; then\n  rm -rf \"$BUNDLED_RESOURCES_DIR/assets\"\n  rm -f \"$BUNDLED_RESOURCES_DIR\"/zip_data.s \\\n        \"$BUNDLED_RESOURCES_DIR\"/zip_data.o \\\n        \"$BUNDLED_RESOURCES_DIR\"/zip_accessor.c \\\n        \"$BUNDLED_RESOURCES_DIR\"/zip_accessor.o\nfi\n\nsign_file_if_present() {\n  local f=\"$1\"\n  if [[ -f \"$f\" ]]; then\n    codesign --force -s - \"$f\" 2>/dev/null || true\n  fi\n}\n\nsign_wgpu_if_present() {\n  local f=\"$1\"\n  local entitlements=\"${SRCROOT}/WallpaperRenderer.entitlements\"\n  if [[ -f \"$f\" ]]; then\n    if [[ -f \"$entitlements\" ]]; then\n      codesign --force --options runtime --entitlements \"$entitlements\" -s - \"$f\" 2>/dev/null || \\\n        codesign --force -s - \"$f\" 2>/dev/null || true\n    else\n      codesign --force -s - \"$f\" 2>/dev/null || true\n    fi\n  fi\n}\n\n# Xcode folder reference 可能复制为 Contents/Resources/Resources/...；\n# 本地 Run 也要覆盖扁平与嵌套两种布局，避免只有打包脚本签名成功。\nfor DXC_BIN in \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/dxc\" \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/Resources/dxc\"; do\n  if [[ -f \"$DXC_BIN\" ]]; then\n    install_name_tool -add_rpath \"@loader_path/lib\" \"$DXC_BIN\" 2>/dev/null || true\n    install_name_tool -add_rpath \"@loader_path/../lib\" \"$DXC_BIN\" 2>/dev/null || true\n    sign_file_if_present \"$DXC_BIN\"\n  fi\ndone\n\nfor WGPU_BIN in \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/wallpaper-wgpu\" \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/Resources/wallpaper-wgpu\"; do\n  sign_wgpu_if_present \"$WGPU_BIN\"\ndone\n\nfor CLI_BIN in \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/wallpaperengine-cli\" \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/Resources/wallpaperengine-cli\" \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/wallpaperengine-cli\"; do\n  sign_file_if_present \"$CLI_BIN\"\ndone\n\nfor DXC_LIB in \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/lib/libdxcompiler.dylib\" \\\n  \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/Resources/lib/libdxcompiler.dylib\"; do\n  sign_file_if_present \"$DXC_LIB\"\ndone\n";
-		};
-		CB7B9ED784641182A7BD4478 /* Embed Assets */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Embed Assets";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "cd \"$SRCROOT\"\nZIP_DATA_O=\"Resources/zip_data.o\"\nZIP_ACCESSOR_O=\"Resources/zip_accessor.o\"\nREQUIRED_EMBED_ARCHS=(arm64 x86_64)\n\nobject_has_arch() {\n  local object_file=\"$1\"\n  local arch=\"$2\"\n  [[ -f \"$object_file\" ]] && lipo -info \"$object_file\" 2>/dev/null | grep -qE \"(are:|architecture:) .*\\\\b${arch}\\\\b\"\n}\n\nembedded_objects_are_current() {\n  local object_file\n  for object_file in \"$ZIP_DATA_O\" \"$ZIP_ACCESSOR_O\"; do\n    [[ -f \"$object_file\" ]] || return 1\n    local arch\n    for arch in \"${REQUIRED_EMBED_ARCHS[@]}\"; do\n      object_has_arch \"$object_file\" \"$arch\" || return 1\n    done\n  done\n}\n\nHAS_ASSETS=false\nif [ -d \"Resources/assets\" ] && [ -n \"$(ls -A Resources/assets 2>/dev/null)\" ]; then\n  HAS_ASSETS=true\nfi\n\nif [ \"$HAS_ASSETS\" != \"true\" ]; then\n  if embedded_objects_are_current; then\n    echo \"Resources/assets 不存在或为空，保留已提交的内嵌 assets 对象\"\n    exit 0\n  fi\n  echo \"❌ Resources/assets 不存在或为空，且缺少可用的内嵌 assets 对象\"\n  exit 1\nfi\n\nTMP_ZIP=\"/tmp/waifux-embedded-assets-$$.zip\"\nrm -f \"$TMP_ZIP\"\nif [ \"$HAS_ASSETS\" = \"true\" ]; then\n  (cd Resources && zip -r -q \"$TMP_ZIP\" assets)\nelse\n  echo -n > \"$TMP_ZIP\"\nfi\ncat > Resources/zip_data.s << EOF\n  .globl _zip_data_start\n  .globl _zip_data_end\n_zip_data_start:\n  .incbin \"$TMP_ZIP\"\n_zip_data_end:\nEOF\ncat > Resources/zip_accessor.c << 'EOF'\n#include <stdint.h>\n#include <stddef.h>\nextern uint8_t zip_data_start[];\nextern uint8_t zip_data_end[];\nuint8_t* get_zip_data_ptr(void) { return zip_data_start; }\nsize_t get_zip_data_size(void) { return (size_t)(zip_data_end - zip_data_start); }\nEOF\nEMBED_ARCHS=(arm64 x86_64)\nDATA_OBJECTS=()\nACCESSOR_OBJECTS=()\nfor ARCH in \"${EMBED_ARCHS[@]}\"; do\n  DATA_OBJECT=\"Resources/zip_data.${ARCH}.o\"\n  ACCESSOR_OBJECT=\"Resources/zip_accessor.${ARCH}.o\"\n  as -arch \"$ARCH\" -mmacosx-version-min=14.0 Resources/zip_data.s -o \"$DATA_OBJECT\"\n  clang -arch \"$ARCH\" -c -mmacosx-version-min=14.0 Resources/zip_accessor.c -o \"$ACCESSOR_OBJECT\"\n  DATA_OBJECTS+=(\"$DATA_OBJECT\")\n  ACCESSOR_OBJECTS+=(\"$ACCESSOR_OBJECT\")\ndone\nlipo -create \"${DATA_OBJECTS[@]}\" -output \"$ZIP_DATA_O\"\nlipo -create \"${ACCESSOR_OBJECTS[@]}\" -output \"$ZIP_ACCESSOR_O\"\nrm -f \"${DATA_OBJECTS[@]}\" \"${ACCESSOR_OBJECTS[@]}\"\nrm -f \"$TMP_ZIP\"\n";
 		};
 		F956DAE409E6A7AAF455BEC5 /* Run Script */ = {
 			isa = PBXShellScriptBuildPhase;

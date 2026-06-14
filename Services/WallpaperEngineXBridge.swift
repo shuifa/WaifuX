@@ -348,6 +348,12 @@ final class WallpaperEngineXBridge: ObservableObject {
         }
         args += ["--wallpaper", "--background"]
 
+        // 超分辨率模式（Apple MetalFX）
+        if UserDefaults.standard.bool(forKey: "upscaling_enabled") {
+            args += ["--upscaling"]
+            print("[WallpaperEngineXBridge] 超分辨率模式已启用")
+        }
+
         // 用户属性覆盖
         if let userProperties, !userProperties.isEmpty {
             args += ["--user-properties", userProperties]

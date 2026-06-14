@@ -1427,6 +1427,16 @@ private struct WorkshopSettingsTab: View {
                     }
                 }
 
+                // 超分辨率模式
+                MacSettingsSection {
+                    MacSettingsRow(title: t("workshop.upscalingMode"), subtitle: t("workshop.upscalingModeDesc"), showDivider: false) {
+                        MacToggle(isOn: Binding(
+                            get: { viewModel.upscalingEnabled },
+                            set: { viewModel.upscalingEnabled = $0 }
+                        ))
+                    }
+                }
+
                 // 显示全部内容（仅登录 Steam 后显示）
                 if sourceManager.isSteamAuthenticated {
                     MacSettingsSection {

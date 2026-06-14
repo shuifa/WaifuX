@@ -84,7 +84,7 @@ targets:
         INFOPLIST_FILE: App/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         LD_RUNPATH_SEARCH_PATHS: $(inherited) @executable_path/../Frameworks
-        # 内嵌 assets zip 的 .o 文件（由 preBuildScript 生成）
+        # 内嵌 assets zip 的 .o 文件由 scripts/build-wallpaper-wgpu.sh 手动生成并提交。
         OTHER_LDFLAGS: $(inherited) $(SRCROOT)/Resources/zip_data.o $(SRCROOT)/Resources/zip_accessor.o
     dependencies:
       - package: SwiftSoup
@@ -93,83 +93,6 @@ targets:
       - package: Cache
       - target: WaifuXWallpaperExtension
         embed: true
-    preBuildScripts:
-      - name: Embed Assets
-        basedOnDependencyAnalysis: false
-        script: |
-          cd "$SRCROOT"
-          ZIP_DATA_O="Resources/zip_data.o"
-          ZIP_ACCESSOR_O="Resources/zip_accessor.o"
-          REQUIRED_EMBED_ARCHS=(arm64 x86_64)
-
-          object_has_arch() {
-            local object_file="$1"
-            local arch="$2"
-            [[ -f "$object_file" ]] && lipo -info "$object_file" 2>/dev/null | grep -qE "(are:|architecture:) .*\\b${arch}\\b"
-          }
-
-          embedded_objects_are_current() {
-            local object_file
-            for object_file in "$ZIP_DATA_O" "$ZIP_ACCESSOR_O"; do
-              [[ -f "$object_file" ]] || return 1
-              local arch
-              for arch in "${REQUIRED_EMBED_ARCHS[@]}"; do
-                object_has_arch "$object_file" "$arch" || return 1
-              done
-            done
-          }
-
-          HAS_ASSETS=false
-          if [ -d "Resources/assets" ] && [ -n "$(ls -A Resources/assets 2>/dev/null)" ]; then
-            HAS_ASSETS=true
-          fi
-
-          if [ "$HAS_ASSETS" != "true" ]; then
-            if embedded_objects_are_current; then
-              echo "Resources/assets 不存在或为空，保留已提交的内嵌 assets 对象"
-              exit 0
-            fi
-            echo "❌ Resources/assets 不存在或为空，且缺少可用的内嵌 assets 对象"
-            exit 1
-          fi
-
-          TMP_ZIP="/tmp/waifux-embedded-assets-$$.zip"
-          rm -f "$TMP_ZIP"
-          if [ "$HAS_ASSETS" = "true" ]; then
-            (cd Resources && zip -r -q "$TMP_ZIP" assets)
-          else
-            echo -n > "$TMP_ZIP"
-          fi
-          cat > Resources/zip_data.s << EOF
-            .globl _zip_data_start
-            .globl _zip_data_end
-          _zip_data_start:
-            .incbin "$TMP_ZIP"
-          _zip_data_end:
-          EOF
-          cat > Resources/zip_accessor.c << 'EOF'
-          #include <stdint.h>
-          #include <stddef.h>
-          extern uint8_t zip_data_start[];
-          extern uint8_t zip_data_end[];
-          uint8_t* get_zip_data_ptr(void) { return zip_data_start; }
-          size_t get_zip_data_size(void) { return (size_t)(zip_data_end - zip_data_start); }
-          EOF
-          EMBED_ARCHS=(arm64 x86_64)
-          DATA_OBJECTS=()
-          ACCESSOR_OBJECTS=()
-          for ARCH in "${EMBED_ARCHS[@]}"; do
-            DATA_OBJECT="Resources/zip_data.${ARCH}.o"
-            ACCESSOR_OBJECT="Resources/zip_accessor.${ARCH}.o"
-            as -arch "$ARCH" -mmacosx-version-min=14.0 Resources/zip_data.s -o "$DATA_OBJECT"
-            clang -arch "$ARCH" -c -mmacosx-version-min=14.0 Resources/zip_accessor.c -o "$ACCESSOR_OBJECT"
-            DATA_OBJECTS+=("$DATA_OBJECT")
-            ACCESSOR_OBJECTS+=("$ACCESSOR_OBJECT")
-          done
-          lipo -create "${DATA_OBJECTS[@]}" -output "$ZIP_DATA_O"
-          lipo -create "${ACCESSOR_OBJECTS[@]}" -output "$ZIP_ACCESSOR_O"
-          rm -f "${DATA_OBJECTS[@]}" "${ACCESSOR_OBJECTS[@]}"
-          rm -f "$TMP_ZIP"
     postBuildScripts:
       - basedOnDependencyAnalysis: false
         script: |
