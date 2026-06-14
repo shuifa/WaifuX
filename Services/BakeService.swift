@@ -132,7 +132,7 @@ final class BakeService: ObservableObject {
         if let ap = assetsPath, !ap.isEmpty {
             resolvedAssets = ap
             print("[BakeService] 使用外部 assets: \(resolvedAssets)")
-        } else if let embedded = WallpaperEngineEmbeddedAssets.materializedAssetsRootIfPresent() {
+        } else if let embedded = await WallpaperEngineEmbeddedAssets.awaitAssetsReady() {
             resolvedAssets = embedded
             print("[BakeService] 使用内嵌 assets: \(resolvedAssets)")
         } else {
@@ -1396,7 +1396,7 @@ final class BakeService: ObservableObject {
         let resolvedAssets: String
         if let ap = assetsPath, !ap.isEmpty {
             resolvedAssets = ap
-        } else if let embedded = WallpaperEngineEmbeddedAssets.materializedAssetsRootIfPresent() {
+        } else if let embedded = await WallpaperEngineEmbeddedAssets.awaitAssetsReady() {
             resolvedAssets = embedded
         } else {
             resolvedAssets = ""

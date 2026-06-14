@@ -586,8 +586,8 @@ enum SceneOfflineBakeService {
             "--out", tempURL.path,
         ]
 
-        // assets 路径
-        if let assets = WallpaperEngineEmbeddedAssets.materializedAssetsRootIfPresent(), !assets.isEmpty {
+        // assets 路径（异步等待解压完成）
+        if let assets = await WallpaperEngineEmbeddedAssets.awaitAssetsReady(), !assets.isEmpty {
             args += ["--assets", assets]
         }
 
