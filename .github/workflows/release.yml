@@ -35,8 +35,9 @@ jobs:
       - name: Copy ffmpeg to Resources
         run: |
           # macOS CI runners have ffmpeg via Homebrew
-          FFMPEG_BIN="$(readlink -f "$(which ffmpeg)" 2>/dev/null || which ffmpeg)"
-          if [[ -f "$FFMPEG_BIN" ]]; then
+          FFMPEG_BIN="$(which ffmpeg 2>/dev/null || true)"
+          if [[ -n "$FFMPEG_BIN" && -f "$FFMPEG_BIN" ]]; then
+            # macOS readlink 不支持 -f，用 realpath 或直接复制
             cp "$FFMPEG_BIN" "Resources/ffmpeg"
             chmod +x "Resources/ffmpeg"
             echo "✅ ffmpeg copied to Resources/ffmpeg"
