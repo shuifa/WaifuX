@@ -226,12 +226,20 @@ class WorkshopService: ObservableObject {
 
     // MARK: - 获取已订阅的 Workshop 物品
 
+    private var steamCommunityUserAgent: String {
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    }
+
     /// 从 Steam 订阅页面抓取用户已订阅的壁纸列表
     /// - Parameters:
     ///   - steamID: Steam 64位数字 ID
     ///   - page: 页码（从 1 开始）
     /// - Returns: 壁纸列表
     func fetchSubscriptions(steamID: String, page: Int = 1) async throws -> [WorkshopWallpaper] {
+        await WebViewCookieSync.syncWKWebsiteDataStoreToSharedHTTPCookieStorage(
+            matchingDomains: ["steamcommunity.com", "steampowered.com", "steamcdn.com"]
+        )
+
         let profilePath = steamProfilePath(for: steamID)
         var components = URLComponents(string: "https://steamcommunity.com\(profilePath)/myworkshopfiles/")
         components?.queryItems = [
@@ -248,7 +256,10 @@ class WorkshopService: ObservableObject {
 
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue(steamCommunityUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+        applySteamCookies(to: &request)
 
         let data = try await NetworkService.shared.fetchData(request: request)
         guard let html = String(data: data, encoding: .utf8) else {
@@ -270,6 +281,7 @@ class WorkshopService: ObservableObject {
         // 降级：从 HTML DOM 解析
         AppLogger.info(.media, "fetchSubscriptions falling back to HTML DOM parsing")
         let doc = try SwiftSoup.parse(html)
+        try validateSteamSubscriptionHTML(doc, html: html, steamID: steamID, page: page)
         let items = try doc.select(".workshopItem, .workshopItemWrapper, [id*='sharedfiles_']")
         var parsed = try items.compactMap { try parseWorkshopItem($0) }
         if parsed.isEmpty {
@@ -288,6 +300,44 @@ class WorkshopService: ObservableObject {
             AppLogger.error(.media, "fetchSubscriptions HTML API enrichment failed", metadata: ["steamID": steamID, "error": "\(error)"])
         }
         return parsed
+    }
+
+    private func applySteamCookies(to request: inout URLRequest) {
+        guard let url = request.url,
+              let cookies = HTTPCookieStorage.shared.cookies(for: url),
+              !cookies.isEmpty else { return }
+        let cookieHeader = HTTPCookie.requestHeaderFields(with: cookies)["Cookie"]
+        if let cookieHeader, !cookieHeader.isEmpty {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            AppLogger.info(.media, "Applied Steam cookies to subscription request", metadata: ["count": "\(cookies.count)"])
+        }
+    }
+
+    private func validateSteamSubscriptionHTML(_ document: Document, html: String, steamID: String, page: Int) throws {
+        let lowercaseHTML = html.lowercased()
+        let loginForm = try document.select("form[action*='login'], form[action*='steampowered.com/login'], input[name='openid.identity']").first()
+        let globalLoginAction = try document.select("#global_action_menu a[href*='login'], a.global_action_link[href*='login']").first()
+        if loginForm != nil
+            || globalLoginAction != nil
+            || lowercaseHTML.contains("g_steamid = false")
+            || lowercaseHTML.contains("sign in through steam") {
+            throw WorkshopError.sessionExpired
+        }
+
+        if lowercaseHTML.contains("there was a problem accessing the item")
+            || lowercaseHTML.contains("specified profile could not be found")
+            || lowercaseHTML.contains("无法找到指定的个人资料")
+            || lowercaseHTML.contains("该个人资料是私密的") {
+            throw WorkshopError.apiError("无法访问 Steam 订阅页，请确认 SteamID 正确且订阅列表可见")
+        }
+
+        if page == 1,
+           lowercaseHTML.contains("mysubscriptions"),
+           !lowercaseHTML.contains("workshopitem")
+            && !lowercaseHTML.contains("publishedfileid")
+            && !lowercaseHTML.contains("sharedfiles/filedetails") {
+            AppLogger.info(.media, "Steam subscription page has no parseable item markers", metadata: ["steamID": steamID])
+        }
     }
 
     // MARK: - Web 登录相关

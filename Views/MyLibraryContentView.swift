@@ -1773,6 +1773,18 @@ struct MyLibraryContentView: View {
                 ) {
                     showNewFolderSheet = true
                 }
+
+                // 统一导入按钮（仅下载标签下显示）
+                if selectedSubTab == .downloads {
+                    toolbarCapsuleButton(
+                        title: t("import"),
+                        systemImage: "square.and.arrow.down",
+                        tint: tint,
+                        prominence: .primary
+                    ) {
+                        startImport()
+                    }
+                }
             }
 
             libraryUtilityMenu(tint: tint)
@@ -1848,28 +1860,14 @@ struct MyLibraryContentView: View {
                 if selectedSubTab == .downloads {
                     switch selectedContentType {
                     case .wallpaper:
-                        Button(action: importWallpapers) {
-                            Label(t("import"), systemImage: "square.and.arrow.down")
-                        }
-
                         Button {
                             openFolderInFinder(DownloadPathManager.shared.wallpapersFolderURL)
                         } label: {
                             Label(t("open.in.finder"), systemImage: "folder")
                         }
                     case .video:
-                        Button {
-                            Task { await importMedia() }
-                        } label: {
-                            Label(t("import"), systemImage: "square.and.arrow.down")
-                        }
-
-                        Button(action: importWorkshop) {
-                            Label(t("import.workshop"), systemImage: "sparkles.rectangle.stack")
-                        }
-
                         Button(action: { syncSubscriptions() }) {
-                            Label(isSyncingSubscriptions ? "同步中..." : "同步订阅", systemImage: "arrow.triangle.2.circlepath")
+                            Label(isSyncingSubscriptions ? t("syncing") : t("sync.subscriptions"), systemImage: "arrow.triangle.2.circlepath")
                         }
                         .disabled(isSyncingSubscriptions)
 
@@ -2405,91 +2403,10 @@ struct MyLibraryContentView: View {
         NSWorkspace.shared.open(url)
     }
 
-    private func importWallpapers() {
+    /// 统一导入入口：打开文件选择面板，支持图片/视频/文件夹/workshop 混合选择
+    private func startImport() {
         guard DownloadPathManager.shared.createDirectoryStructure() else {
             print("[MyLibrary] Failed to create download directory structure, import aborted")
-            return
-        }
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowedContentTypes = [.image]
-        panel.prompt = t("import")
-
-        guard panel.runModal() == .OK else { return }
-
-        let destinationFolder = DownloadPathManager.shared.wallpapersFolderURL
-        print("[MyLibrary] Importing wallpapers to: \(destinationFolder.path)")
-        let fileManager = FileManager.default
-        var importedCount = 0
-
-        for url in panel.urls {
-            let destURL = destinationFolder.appendingPathComponent(url.lastPathComponent)
-            do {
-                if url.standardizedFileURL != destURL.standardizedFileURL {
-                    if fileManager.fileExists(atPath: destURL.path) {
-                        try fileManager.removeItem(at: destURL)
-                    }
-                    try fileManager.copyItem(at: url, to: destURL)
-                }
-                let wallpaper = makeImportedWallpaper(from: destURL)
-                WallpaperLibraryService.shared.recordDownload(wallpaper, fileURL: destURL)
-                importedCount += 1
-            } catch {
-                print("[MyLibrary] Failed to import wallpaper \(url.lastPathComponent): \(error)")
-            }
-        }
-
-        if importedCount > 0 {
-            viewModel.objectWillChange.send()
-        }
-    }
-
-    private func importMedia() async {
-        guard DownloadPathManager.shared.createDirectoryStructure() else {
-            print("[MyLibrary] Failed to create download directory structure, import aborted")
-            return
-        }
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowedContentTypes = [.movie]
-        panel.prompt = t("import")
-
-        guard panel.runModal() == .OK else { return }
-
-        let destinationFolder = DownloadPathManager.shared.mediaFolderURL
-        print("[MyLibrary] Importing media to: \(destinationFolder.path)")
-        let fileManager = FileManager.default
-        var importedCount = 0
-
-        for url in panel.urls {
-            let destURL = destinationFolder.appendingPathComponent(url.lastPathComponent)
-            do {
-                if url.standardizedFileURL != destURL.standardizedFileURL {
-                    if fileManager.fileExists(atPath: destURL.path) {
-                        try fileManager.removeItem(at: destURL)
-                    }
-                    try fileManager.copyItem(at: url, to: destURL)
-                }
-                let item = await makeImportedMediaItem(from: destURL)
-                MediaLibraryService.shared.recordDownload(item: item, localFileURL: destURL)
-                importedCount += 1
-            } catch {
-                print("[MyLibrary] Failed to import media \(url.lastPathComponent): \(error)")
-            }
-        }
-
-        if importedCount > 0 {
-            mediaViewModel.objectWillChange.send()
-        }
-    }
-
-    private func importWorkshop() {
-        guard DownloadPathManager.shared.createDirectoryStructure() else {
-            print("[MyLibrary] Failed to create download directory structure, workshop import aborted")
             return
         }
         let panel = NSOpenPanel()
@@ -2497,144 +2414,46 @@ struct MyLibraryContentView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.prompt = t("import")
+        panel.message = t("import.panel.message")
 
         guard panel.runModal() == .OK else { return }
 
-        let destinationRoot = DownloadPathManager.shared.mediaFolderURL
-        let fileManager = FileManager.default
-        var importedCount = 0
-        var skippedCount = 0
-
-        // 递归查找目录树中的第一个 project.json（含 preview 同目录）
-        func findProjectJSON(in dir: URL) -> (projectURL: URL, parentDir: URL)? {
-            guard let enumerator = fileManager.enumerator(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return nil }
-            for case let fileURL as URL in enumerator {
-                if fileURL.lastPathComponent == "project.json" {
-                    return (fileURL, fileURL.deletingLastPathComponent())
-                }
-            }
-            return nil
+        // 确定当前文件夹上下文：如果在某个文件夹内，导入的文件自动归入该文件夹
+        let currentFolderID: String?
+        switch selectedContentType {
+        case .wallpaper:
+            currentFolderID = currentWallpaperFolderID
+        case .video:
+            currentFolderID = currentMediaFolderID
+        default:
+            currentFolderID = nil
         }
 
-        // 在指定目录下递归查找预览图
-        func findPreview(in dir: URL) -> URL? {
-            guard let enumerator = fileManager.enumerator(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return nil }
-            for case let fileURL as URL in enumerator {
-                let name = fileURL.lastPathComponent.lowercased()
-                if name == "preview.jpg" || name == "preview.jpeg" || name == "preview.png" || name == "preview.webp" || name == "preview.gif" {
-                    return fileURL
-                }
-            }
-            return nil
-        }
+        let urls = panel.urls
+        Task {
+            await ImportService.shared.importURLs(urls, folderID: currentFolderID)
 
-        // 收集所有待导入的源目录（用户选文件夹→递归扫描子目录；选 .pkg→取上级目录）
-        var sourceDirPaths: [String] = []
-        for url in panel.urls {
-            let path = url.path
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: path, isDirectory: &isDir) else { continue }
-            if isDir.boolValue {
-                // 批量模式：列出其下所有子目录，每个都尝试递归查找 project.json
-                let subItems = (try? fileManager.contentsOfDirectory(atPath: path)) ?? []
-                for name in subItems {
-                    guard !name.hasPrefix(".") else { continue }
-                    let subPath = (path as NSString).appendingPathComponent(name)
-                    var subIsDir: ObjCBool = false
-                    guard fileManager.fileExists(atPath: subPath, isDirectory: &subIsDir), subIsDir.boolValue else { continue }
-                    sourceDirPaths.append(subPath)
-                }
-            } else if url.pathExtension.lowercased() == "pkg" {
-                // 单文件模式：取 .pkg 所在目录
-                sourceDirPaths.append(url.deletingLastPathComponent().path)
-            }
-        }
-
-        // 去重
-        sourceDirPaths = Array(Set(sourceDirPaths))
-
-        for sourcePath in sourceDirPaths {
-            let sourceURL = URL(fileURLWithPath: sourcePath)
-            let sourceName = (sourcePath as NSString).lastPathComponent
-
-            // 递归查找 project.json
-            guard let found = findProjectJSON(in: sourceURL) else {
-                print("[MyLibrary] No project.json found under \(sourceName)")
-                skippedCount += 1
-                continue
+            // 完成后用原生 NSAlert 展示结果
+            let progress = ImportService.shared.progress
+            let message: String
+            if progress.failedImports > 0 {
+                message = String(format: t("import.result.partial"), progress.successfulImports, progress.failedImports)
+            } else if progress.successfulImports > 0 {
+                message = String(format: t("import.result.success"), progress.successfulImports)
+            } else {
+                message = t("import.result.none")
             }
 
-            let projectJSONURL = found.projectURL
-
-            guard let data = try? Data(contentsOf: projectJSONURL),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                print("[MyLibrary] Failed to parse project.json in \(sourceName)")
-                skippedCount += 1
-                continue
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = t("import.completed")
+                alert.informativeText = message
+                alert.alertStyle = progress.failedImports > 0 ? .warning : .informational
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             }
-
-            let title = (json["title"] as? String) ?? sourceName
-            var workshopID = (json["publishedfileid"] as? String) ?? (json["id"] as? String)
-
-            if workshopID == nil {
-                let numeric = sourceName.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
-                if !numeric.isEmpty { workshopID = numeric }
-            }
-
-            guard let id = workshopID, !id.isEmpty else {
-                print("[MyLibrary] Could not infer workshop ID for \(sourceName)")
-                skippedCount += 1
-                continue
-            }
-
-            let destDir = destinationRoot.appendingPathComponent("workshop_\(id)")
-            do {
-                if fileManager.fileExists(atPath: destDir.path) {
-                    try fileManager.removeItem(at: destDir)
-                }
-                // 复制整个 workshop 目录（保留 steamapps/... 深层结构）
-                try fileManager.copyItem(at: sourceURL, to: destDir)
-
-                // 在复制的目录中递归查找预览图
-                let previewURL = findPreview(in: destDir)
-
-                let item = makeImportedWorkshopItem(
-                    workshopID: id,
-                    title: title,
-                    projectJSON: json,
-                    destDir: destDir,
-                    previewURL: previewURL
-                )
-                MediaLibraryService.shared.recordDownload(item: item, localFileURL: destDir)
-                importedCount += 1
-            } catch {
-                print("[MyLibrary] Failed to import \(sourceName): \(error)")
-                skippedCount += 1
-            }
-        }
-
-        if importedCount > 0 {
-            mediaViewModel.objectWillChange.send()
-        }
-
-        // 反馈
-        let message: String
-        if importedCount > 0 {
-            message = String(format: t("import.workshop.result"), importedCount, skippedCount)
-        } else {
-            message = t("import.workshop.none")
-        }
-        DispatchQueue.main.async {
-            let alert = NSAlert()
-            alert.messageText = t("import")
-            alert.informativeText = message
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
         }
     }
-
-    // MARK: - 同步 Steam 订阅
 
     // MARK: - 同步 Steam 订阅
 
@@ -2728,152 +2547,6 @@ struct MyLibraryContentView: View {
         showSteamLoginSheet = true
     }
 
-    private func makeImportedWallpaper(from fileURL: URL) -> Wallpaper {
-        let fileName = fileURL.lastPathComponent
-        let id: String
-        if fileName.hasPrefix("wallhaven-"), let dotIndex = fileName.firstIndex(of: ".") {
-            let start = fileName.index(fileName.startIndex, offsetBy: 10)
-            let extracted = String(fileName[start..<dotIndex])
-            id = extracted.isEmpty ? "local_import_\(UUID().uuidString.prefix(8))" : extracted
-        } else {
-            id = "local_import_\(fileURL.deletingPathExtension().lastPathComponent)"
-        }
-
-        let localPath = fileURL.absoluteString
-        var dimensionX = 1920
-        var dimensionY = 1080
-        if let imageSource = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
-           let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any],
-           let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
-           let height = properties[kCGImagePropertyPixelHeight as String] as? Int {
-            // 检查方向，可能需要交换宽高
-            if let orientation = properties[kCGImagePropertyOrientation as String] as? UInt32,
-               (5...8).contains(orientation) {
-                dimensionX = height
-                dimensionY = width
-            } else {
-                dimensionX = width
-                dimensionY = height
-            }
-        }
-        let resolution = "\(dimensionX)x\(dimensionY)"
-        let ratio = dimensionY > 0 ? Double(dimensionX) / Double(dimensionY) : 1.77
-
-        return Wallpaper(
-            id: id,
-            url: localPath,
-            shortUrl: nil,
-            views: 0,
-            favorites: 0,
-            downloads: nil,
-            source: nil,
-            purity: "sfw",
-            category: "general",
-            dimensionX: dimensionX,
-            dimensionY: dimensionY,
-            resolution: resolution,
-            ratio: String(format: "%.2f", ratio),
-            fileSize: nil,
-            fileType: nil,
-            createdAt: nil,
-            colors: [],
-            path: localPath,
-            thumbs: Wallpaper.Thumbs(large: localPath, original: localPath, small: localPath),
-            tags: nil,
-            uploader: nil
-        )
-    }
-
-    private func makeImportedMediaItem(from fileURL: URL) async -> MediaItem {
-        let fileName = fileURL.lastPathComponent
-        let slug: String
-        if fileName.hasPrefix("motionbgs-") {
-            let parts = fileName.split(separator: "-")
-            if parts.count >= 2 {
-                slug = String(parts[1])
-            } else {
-                slug = "local_import_\(fileURL.deletingPathExtension().lastPathComponent)"
-            }
-        } else {
-            slug = "local_import_\(fileURL.deletingPathExtension().lastPathComponent)"
-        }
-
-        let title = fileURL.deletingPathExtension().lastPathComponent
-        var resolutionLabel = "Unknown"
-        var durationSeconds: Double?
-        let asset = AVAsset(url: fileURL)
-        do {
-            let tracks = try await asset.loadTracks(withMediaType: .video)
-            if let track = tracks.first {
-                let naturalSize = try await track.load(.naturalSize)
-                let preferredTransform = try await track.load(.preferredTransform)
-                let size = naturalSize.applying(preferredTransform)
-                let w = Int(abs(size.width))
-                let h = Int(abs(size.height))
-                resolutionLabel = "\(w)x\(h)"
-            }
-            let duration = try await asset.load(.duration)
-            if duration.isValid && duration != CMTime.indefinite {
-                durationSeconds = CMTimeGetSeconds(duration)
-            }
-        } catch {
-            print("[MyLibrary] Failed to load video metadata: \(error)")
-        }
-
-        // 为导入的视频生成并缓存第一帧缩略图到缓存目录
-        _ = await VideoThumbnailCache.shared.thumbnailImage(for: fileURL)
-        let thumbnailURL = VideoThumbnailCache.shared.thumbnailURL(for: fileURL)
-
-        return MediaItem(
-            slug: slug,
-            title: title,
-            pageURL: fileURL,
-            thumbnailURL: thumbnailURL,
-            resolutionLabel: resolutionLabel,
-            collectionTitle: "Imported",
-            summary: nil,
-            previewVideoURL: fileURL,
-            posterURL: thumbnailURL,
-            tags: [],
-            exactResolution: resolutionLabel,
-            durationSeconds: durationSeconds,
-            downloadOptions: [],
-            sourceName: "Import",
-            isAnimatedImage: nil
-        )
-    }
-
-
-
-    private func makeImportedWorkshopItem(
-        workshopID: String,
-        title: String,
-        projectJSON: [String: Any],
-        destDir: URL,
-        previewURL: URL?
-    ) -> MediaItem {
-        let typeString = (projectJSON["type"] as? String) ?? "pkg"
-        let resolutionLabel = typeString.capitalized
-        let thumbnailURL = previewURL ?? URL(string: "https://steamcommunity.com/favicon.ico")!
-
-        return MediaItem(
-            slug: "workshop_\(workshopID)",
-            title: title,
-            pageURL: URL(string: "https://steamcommunity.com/sharedfiles/filedetails/?id=\(workshopID)")!,
-            thumbnailURL: thumbnailURL,
-            resolutionLabel: resolutionLabel,
-            collectionTitle: "Workshop",
-            summary: (projectJSON["description"] as? String),
-            previewVideoURL: nil,
-            posterURL: previewURL,
-            tags: [],
-            exactResolution: nil,
-            durationSeconds: nil,
-            downloadOptions: [],
-            sourceName: t("wallpaperEngine"),
-            isAnimatedImage: nil
-        )
-    }
 }
 
 // MARK: - Content Type Picker

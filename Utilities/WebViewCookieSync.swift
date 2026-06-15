@@ -6,11 +6,15 @@ import WebKit
 enum WebViewCookieSync {
 
     @MainActor
-    static func syncWKWebsiteDataStoreToSharedHTTPCookieStorage() async {
+    static func syncWKWebsiteDataStoreToSharedHTTPCookieStorage(matchingDomains domains: [String]? = nil) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
                 let storage = HTTPCookieStorage.shared
                 for cookie in cookies {
+                    if let domains,
+                       !domains.contains(where: { cookie.domain.contains($0) }) {
+                        continue
+                    }
                     storage.setCookie(cookie)
                 }
                 continuation.resume()

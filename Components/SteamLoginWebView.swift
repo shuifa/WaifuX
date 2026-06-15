@@ -385,24 +385,9 @@ struct SteamLoginWebView: NSViewRepresentable {
 /// 将 WKWebView 默认数据存储中的 Steam 登录 Cookie 同步到共享 HTTPCookieStorage，
 /// 确保后续 URLSession 请求（NetworkService）携带有效的登录会话
 private func transferSteamCookiesToSharedStorage() async {
-    await withCheckedContinuation { continuation in
-        MainActor.assumeIsolated {
-            let cookieStore = WKWebsiteDataStore.default().httpCookieStore
-            cookieStore.getAllCookies { cookies in
-                let sharedStorage = HTTPCookieStorage.shared
-                var transferredCount = 0
-                for cookie in cookies {
-                    guard cookie.domain.contains("steamcommunity.com") ||
-                          cookie.domain.contains("steampowered.com") ||
-                          cookie.domain.contains("steamcdn.com") else { continue }
-                    sharedStorage.setCookie(cookie)
-                    transferredCount += 1
-                }
-                AppLogger.info(.media, "Transferred \(transferredCount) Steam cookies to shared storage")
-                continuation.resume()
-            }
-        }
-    }
+    await WebViewCookieSync.syncWKWebsiteDataStoreToSharedHTTPCookieStorage(
+        matchingDomains: ["steamcommunity.com", "steampowered.com", "steamcdn.com"]
+    )
 }
 
 // MARK: - Steam Login Sheet

@@ -380,6 +380,13 @@ final class WallpaperEngineXBridge: ObservableObject {
             var perScreenArgs = args
             perScreenArgs += ["--screen", "\(screenX),\(screenY),\(screenW),\(screenH),\(scale)"]
 
+            // 渲染帧率：取用户设置与显示器刷新率的最小值
+            let userFPS = UserDefaults.standard.double(forKey: "wallpaper_engine_fps")
+            let userFPSClamped = max(30, min(240, userFPS))
+            let screenMaxFPS = screen.maxRefreshRate
+            let effectiveFPS = min(Int(userFPSClamped), screenMaxFPS)
+            perScreenArgs += ["--fps", String(effectiveFPS)]
+
             let screenID = screen.wallpaperScreenIdentifier
             let audioControlURL = createAudioControlURL(screenID: screenID)
             let audioVolume = VideoWallpaperManager.shared.volume(for: screen)
@@ -1105,7 +1112,9 @@ final class WallpaperEngineXBridge: ObservableObject {
 
         if !events.isEmpty {
             updateControlStateFromScreenStates()
-            persistState()
+            // ⚠️ 此处不调用 persistState()：终止事件的消费不应擦除 preserveRestoreState
+            // 刚刚保存的恢复状态（否则关闭后重新开启时，clearPersistedState 会清空 UserDefaults
+            // 中的 restore 数据，导致实时壁纸无法恢复）。所有调用方都已自行处理持久化。
         }
     }
 
@@ -1389,6 +1398,18 @@ final class WallpaperEngineXBridge: ObservableObject {
             lastWallpaperPath = newPath
             print("[WallpaperEngineXBridge] Updated persisted path from \(oldPrefix) to \(newPrefix)")
         }
+    }
+
+
+    /// 检查是否有可恢复的持久化实时渲染壁纸状态
+    func hasPersistedRestoreState() -> Bool {
+        if let data = UserDefaults.standard.data(forKey: screenRenderStatesKey),
+           let states = try? JSONDecoder().decode([ScreenRenderState].self, from: data),
+           !states.isEmpty {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: controllingExternalKey)
+            && UserDefaults.standard.string(forKey: lastWallpaperPathKey) != nil
     }
 
     // MARK: - 二进制查找

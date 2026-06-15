@@ -62,6 +62,16 @@ class SettingsViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(upscalingEnabled, forKey: "upscaling_enabled") }
     }
 
+    /// 壁纸引擎实时渲染帧率上限 (30 ~ 显示器最大刷新率)
+    @Published var wallpaperEngineFPS: Double = 60 {
+        didSet { UserDefaults.standard.set(wallpaperEngineFPS, forKey: "wallpaper_engine_fps") }
+    }
+
+    /// 壁纸引擎离线烘焙帧率 (15 ~ 60)
+    @Published var sceneBakeFPS: Double = 30 {
+        didSet { UserDefaults.standard.set(sceneBakeFPS, forKey: "scene_bake_fps") }
+    }
+
     /// 动态锁屏壁纸开关（仅 macOS 26+ 可用，关闭后走旧逻辑）
     @Published var dynamicLockScreenEnabled = false {
         didSet {
@@ -173,6 +183,8 @@ class SettingsViewModel: ObservableObject {
         showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
         sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
         upscalingEnabled = defaults.object(forKey: "upscaling_enabled") as? Bool ?? true
+        wallpaperEngineFPS = defaults.object(forKey: "wallpaper_engine_fps") as? Double ?? 60.0
+        sceneBakeFPS = defaults.object(forKey: "scene_bake_fps") as? Double ?? 30.0
         dynamicLockScreenEnabled = defaults.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? false
         // 非 macOS 26+ 系统强制关闭动态锁屏
         if #available(macOS 26.0, *) { } else {

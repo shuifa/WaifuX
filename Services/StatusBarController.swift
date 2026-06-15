@@ -538,14 +538,24 @@ final class StatusBarController: NSObject {
             // 关闭动态壁纸
             videoWallpaperManager.stopWallpaper()
         } else {
-            // 先尝试恢复上次保存的壁纸，没有则打开主窗口让用户选择
-            videoWallpaperManager.restoreIfNeeded()
-            if !videoWallpaperManager.isVideoWallpaperActive {
+            // 优先恢复实时渲染壁纸（WE 状态存在时跳过视频恢复，避免视频壁纸遗留状态抢占 WE 恢复机会）
+            if weBridge.hasPersistedRestoreState() {
                 Task { [weak self] in
                     guard let self else { return }
                     await self.weBridge.restoreIfNeeded()
                     if !self.weBridge.isControllingExternalEngine {
                         self.showWindowHandler?()
+                    }
+                }
+            } else {
+                videoWallpaperManager.restoreIfNeeded()
+                if !videoWallpaperManager.isVideoWallpaperActive {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        await self.weBridge.restoreIfNeeded()
+                        if !self.weBridge.isControllingExternalEngine {
+                            self.showWindowHandler?()
+                        }
                     }
                 }
             }

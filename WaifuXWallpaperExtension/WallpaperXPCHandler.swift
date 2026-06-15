@@ -381,7 +381,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         // Create remote CAContext
         var contextOptions: [String: Any] = [:]
         if let did = displayID {
-            contextOptions["displayId"] = did
+            contextOptions["displayId"] = NSNumber(value: did)
         }
         let caContext: CAContext
         if contextOptions.isEmpty {
@@ -772,9 +772,10 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
 
         if presentationMode == "locked" {
             WallpaperState.shared.isScreenLocked = true
-        } else if presentationMode != "?" {
-            WallpaperState.shared.isScreenLocked = false
         }
+        // 注意：不在 update() 中设置 isScreenLocked = false。
+        // screenIsLocked/screenIsUnlocked 的 DistributedNotification 才是锁屏状态的正确信源。
+        // WallpaperAgent 在锁屏过渡期间会发 update("active")，此时不应该覆盖 isScreenLocked。
 
         let prefs = WallpaperPrefs.shared
         let power = PowerMonitor.shared.currentState
@@ -1023,19 +1024,41 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
     private func createRemoteContextXPC(contextId: UInt32) -> AnyObject? {
         guard let realClass = objc_getClass("WallpaperRemoteContextXPC") as? AnyClass,
               let raw = class_createInstance(realClass, 0) else {
-            extLog("  ERROR: Could not create WallpaperRemoteContextXPC")
+            extLog("  ERROR: Could not create WallpaperRemoteContextXPC (class not found)")
             return nil
         }
 
         let obj = raw as AnyObject
-        let ptr = Unmanaged.passUnretained(obj).toOpaque()
-        let ivarOffset: Int = if let ivar = class_getInstanceVariable(realClass, "box") {
-            ivar_getOffset(ivar)
-        } else {
-            8
+
+        // 优先尝试 KVC 写入 contextId（安全，不会越界写内存）
+        let nsContextId = NSNumber(value: contextId)
+        if obj.responds(to: NSSelectorFromString("setBox:")) ||
+           obj.responds(to: NSSelectorFromString("setContextId:")) {
+            obj.setValue(nsContextId, forKey: "box")
+            extLog("  Created WallpaperRemoteContextXPC via KVC (contextId: \(contextId))")
+            return obj
         }
+
+        // KVC 失败时尝试 ivar 直接写入，但必须有完整的安全检查
+        guard let ivar = class_getInstanceVariable(realClass, "box") else {
+            // 没有 "box" ivar → 无法安全设置 contextId
+            // 直接返回对象，WallpaperAgent 可能会显示默认状态，但不会崩溃
+            extLog("  ⚠️ WallpaperRemoteContextXPC 无 'box' ivar，返回未设置 contextId 的对象")
+            return obj
+        }
+
+        let ivarOffset = ivar_getOffset(ivar)
+        let instanceSize = class_getInstanceSize(realClass)
+        let writeEnd = ivarOffset + MemoryLayout<UInt32>.size
+
+        guard writeEnd <= instanceSize else {
+            extLog("  ❌ WallpaperRemoteContextXPC ivar 偏移越界 (offset=\(ivarOffset), size=\(instanceSize))")
+            return obj
+        }
+
+        let ptr = Unmanaged.passUnretained(obj).toOpaque()
         ptr.advanced(by: ivarOffset).storeBytes(of: contextId, as: UInt32.self)
-        extLog("  Created WallpaperRemoteContextXPC (contextId: \(contextId), offset: \(ivarOffset))")
+        extLog("  Created WallpaperRemoteContextXPC via ivar (contextId: \(contextId), offset: \(ivarOffset))")
         return obj
     }
 }

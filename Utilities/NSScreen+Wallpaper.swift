@@ -36,4 +36,24 @@ extension NSScreen {
         }
         return "cg:\(vendor):\(model):noserial:\(localizedName):\(pixelWidth)x\(pixelHeight):\(builtin)"
     }
+
+    /// 当前显示器的主刷新率（Hz），取整。
+    ///
+    /// 通过 `CGDisplayCopyDisplayMode` 获取当前分辨率模式的刷新率。
+    /// ProMotion / 可变刷新率显示器可能返回 0，此时回退到 60。
+    var maxRefreshRate: Int {
+        guard let screenNumber = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return 60
+        }
+        let displayID = CGDirectDisplayID(screenNumber.uint32Value)
+        guard let mode = CGDisplayCopyDisplayMode(displayID) else {
+            return 60
+        }
+        let rate = mode.refreshRate
+        // ProMotion / 可变刷新率可能返回 0
+        if rate <= 0 {
+            return 60
+        }
+        return Int(rate.rounded())
+    }
 }

@@ -504,7 +504,12 @@ final class VideoWallpaperManager: ObservableObject {
         let generation = WallpaperExtensionSocketServer.nextVideoSyncGeneration()
         WallpaperExtensionSocketServer.shared.clearCommands()
 
-        LockScreenWallpaperService.shared.syncInstanceCatalogToSocketServer()
+        // ⚠️ 关键时序修复：先不同步实例到 Socket（不同步也就不会发 prefsChanged 通知），
+        // 等视频缓存+注册完成后，在 switchActiveInstancesToLocalDecode 末尾统一发通知。
+        // 这样扩展收到通知时 localDecodeVideoLock 中已有视频路径，不会出现时序窗口。
+        // 同步实例目录到 Socket（纯同步，不发送通知 — 避免在视频注册前就触发扩展的 prefsChanged）
+        // 确保扩展调用 list_videos 时能立即拿到最新的显示器实例列表（即使视频还未部署到共享容器）
+        LockScreenWallpaperService.shared.syncInstanceCatalogToSocketServer(notify: false)
         WallpaperExtensionSocketServer.shared.clearDisplayVideos()
 
         let grouped = Dictionary(grouping: displayVideoPairs, by: { $0.videoURL })

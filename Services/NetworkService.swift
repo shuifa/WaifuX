@@ -20,6 +20,9 @@ actor NetworkService {
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60  // 资源超时时间
         config.urlCache = URLCache.shared
+        config.httpCookieStorage = HTTPCookieStorage.shared
+        config.httpCookieAcceptPolicy = .always
+        config.httpShouldSetCookies = true
         // 允许蜂窝网络访问
         config.allowsCellularAccess = true
         // 等待网络连接
@@ -38,6 +41,9 @@ actor NetworkService {
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
         config.urlCache = cache
+        config.httpCookieStorage = HTTPCookieStorage.shared
+        config.httpCookieAcceptPolicy = .always
+        config.httpShouldSetCookies = true
         config.allowsCellularAccess = true
         config.waitsForConnectivity = true
         config.isDiscretionary = false

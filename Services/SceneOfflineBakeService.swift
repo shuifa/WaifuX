@@ -229,7 +229,14 @@ enum SceneOfflineBakeService {
                     cacheItemID: cacheItemID,
                     renderer: .wallpaperWgpu,
                     persistArtifactToItemID: itemID
-                )
+                ) { @MainActor progress in
+                    guard let itemID else { return }
+                    NotificationCenter.default.post(
+                        name: .sceneOfflineBakeProgressDidUpdate,
+                        object: itemID,
+                        userInfo: ["progress": progress]
+                    )
+                }
                 print("[SceneOfflineBake] realtime companion bake finished (\(reason)): \(artifact.videoPath)")
                 await syncRealtimeBakeToLockScreen(artifact: artifact, itemID: itemID, displayIDs: displayIDs, reason: reason)
             } catch SceneOfflineBakeError.concurrentBakeInProgress {
@@ -408,11 +415,18 @@ enum SceneOfflineBakeService {
         contentRoot: URL,
         cacheItemID: String,
         durationSeconds: Double = 15,
-        fps: Int32 = 30,
+        fps: Int32? = nil,
         renderer: SceneBakeRenderer = .wallpaperWgpu,
         persistArtifactToItemID: String? = nil,
         progress: (@MainActor (Double) -> Void)? = nil
     ) async throws -> SceneBakeArtifact {
+        let effectiveFPS: Int32
+        if let fps {
+            effectiveFPS = fps
+        } else {
+            let saved = UserDefaults.standard.double(forKey: "scene_bake_fps")
+            effectiveFPS = saved >= 15 ? Int32(min(max(saved, 15), 60)) : 30
+        }
         // 并发门控：防止多个烘焙同时运行
         let entered = await SceneOfflineBakeConcurrencyGate.shared.tryEnter()
         guard entered else {
@@ -424,7 +438,7 @@ enum SceneOfflineBakeService {
                 contentRoot: contentRoot,
                 cacheItemID: cacheItemID,
                 durationSeconds: durationSeconds,
-                fps: fps,
+                fps: effectiveFPS,
                 renderer: renderer,
                 persistArtifactToItemID: persistArtifactToItemID,
                 progress: progress
@@ -1061,14 +1075,22 @@ enum SceneOfflineBakeService {
         return true
     }
 
-    /// 与 `MediaDownloadRecord.sceneBakeEligibility` 配套；默认主屏逻辑分辨率 × scale、8s、30fps。
+    /// 与 `MediaDownloadRecord.sceneBakeEligibility` 配套；默认主屏逻辑分辨率 × scale。
+    /// FPS 默认值取自用户设置 `scene_bake_fps`（回退 30）。
     static func bake(
         record: MediaDownloadRecord,
         durationSeconds: Double = 15,
-        fps: Int32 = 30,
+        fps: Int32? = nil,
         renderer: SceneBakeRenderer = .wallpaperWgpu,
         progress: (@MainActor (Double) -> Void)? = nil
     ) async throws -> SceneBakeArtifact {
+        let effectiveFPS: Int32
+        if let fps {
+            effectiveFPS = fps
+        } else {
+            let saved = UserDefaults.standard.double(forKey: "scene_bake_fps")
+            effectiveFPS = saved >= 15 ? Int32(min(max(saved, 15), 60)) : 30
+        }
         guard let eligibility = record.sceneBakeEligibility else {
             throw SceneOfflineBakeError.ineligible
         }
@@ -1078,7 +1100,7 @@ enum SceneOfflineBakeService {
             contentRoot: contentRoot,
             cacheItemID: record.id,
             durationSeconds: durationSeconds,
-            fps: fps,
+            fps: effectiveFPS,
             renderer: renderer,
             persistArtifactToItemID: record.id,
             progress: progress
@@ -1129,21 +1151,11 @@ enum SceneOfflineBakeService {
 
     private static func mainDisplayPixelSize() -> (width: Int, height: Int) {
         let screen = NSScreen.main ?? NSScreen.screens.first
-        if let displayID = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
-            let cgDisplayID = CGDirectDisplayID(displayID.uint32Value)
-            let width = CGDisplayPixelsWide(cgDisplayID)
-            let height = CGDisplayPixelsHigh(cgDisplayID)
-            if width > 0, height > 0 {
-                print("[SceneOfflineBake] main display pixels: \(width)x\(height)")
-                return (width, height)
-            }
-        }
-
         let frame = screen?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
         let scale = screen?.backingScaleFactor ?? 1
         let width = max(64, Int((frame.width * scale).rounded()))
         let height = max(64, Int((frame.height * scale).rounded()))
-        print("[SceneOfflineBake] fallback main display size: \(width)x\(height)")
+        print("[SceneOfflineBake] main display pixels: \(width)x\(height) (frame=\(Int(frame.width))x\(Int(frame.height)), scale=\(scale))")
         return (width, height)
     }
 

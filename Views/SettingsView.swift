@@ -1387,6 +1387,11 @@ private struct WorkshopSettingsTab: View {
     @State private var isCleaningUp = false
     @State private var steamCMDStatus: SteamCMDStatus = .downloading
 
+    /// 所有已连接显示器的最高刷新率，作为 FPS 滑块的上限
+    private var maxSliderFPS: Double {
+        Double(NSScreen.screens.map(\.maxRefreshRate).max() ?? 60)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -1446,6 +1451,42 @@ private struct WorkshopSettingsTab: View {
                             get: { viewModel.upscalingEnabled },
                             set: { viewModel.upscalingEnabled = $0 }
                         ))
+                    }
+                }
+
+                // 渲染帧率上限
+                VStack(alignment: .leading, spacing: 6) {
+                    MacSettingsSection {
+                        MacSettingsRow(title: t("workshop.fps"), subtitle: t("workshop.fpsDesc"), showDivider: false) {
+                            HStack(spacing: 8) {
+                                Text("\(Int(viewModel.wallpaperEngineFPS)) FPS")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .frame(minWidth: 52, alignment: .trailing)
+                                Slider(value: $viewModel.wallpaperEngineFPS, in: 30...maxSliderFPS, step: 1)
+                                    .frame(width: 120)
+                                    .tint(Color(hex: "30D158"))
+                            }
+                        }
+                    }
+                    Text(t("workshop.fpsHint"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary.opacity(0.75))
+                        .padding(.leading, 2)
+                }
+
+                // 烘焙帧率
+                MacSettingsSection {
+                    MacSettingsRow(title: t("workshop.bakeFps"), subtitle: t("workshop.bakeFpsDesc"), showDivider: false) {
+                        HStack(spacing: 8) {
+                            Text("\(Int(viewModel.sceneBakeFPS)) FPS")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 52, alignment: .trailing)
+                            Slider(value: $viewModel.sceneBakeFPS, in: 15...60, step: 5)
+                                .frame(width: 120)
+                                .tint(Color(hex: "30D158"))
+                        }
                     }
                 }
 

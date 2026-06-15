@@ -302,11 +302,16 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
 
     /// 定期轮询 App 的挂起命令（如 switch_video），实现 App 主动推送切换壁纸。
     /// 用户只需在系统设置初始化选择一次，之后 App 通过 socket 控制。
+    ///
+    /// ⚠️ 必须 dispatch 到后台队列执行，因为 drainPendingSocketCommands 内部使用同步 socket I/O，
+    /// 在主线程执行会阻塞 run loop，影响 XPC 回调响应和 CACommit 等关键事件的处理。
     private func observeSocketCommands() {
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            Self.drainPendingSocketCommands(reason: "timer")
+            DispatchQueue.global(qos: .utility).async {
+                Self.drainPendingSocketCommands(reason: "timer")
+            }
         }
-        extLog("[Extension] Socket command polling started")
+        extLog("[Extension] Socket command polling started (background dispatch)")
     }
 
     private func observeSocketCommandNotifications() {
@@ -432,6 +437,19 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                                 extLog("[Commands] ✅ 已从静态图切回视频: display=\(displayID) video=\(videoID)")
                             } catch {
                                 extLog("[Commands] ❌ 从静态图切回视频失败: \(error.localizedDescription)")
+                                // 恢复：尝试加载缓存快照作为兜底内容，避免永久黑屏
+                                if rootLayer.sublayers?.isEmpty ?? true {
+                                    if let cachedImage = loadCachedSnapshotImage() {
+                                        CATransaction.begin()
+                                        CATransaction.setDisableActions(true)
+                                        rootLayer.contents = cachedImage
+                                        rootLayer.contentsGravity = .resizeAspectFill
+                                        CATransaction.commit()
+                                        extLog("[Commands] ✅ 已恢复缓存快照作为 fallback display=\(displayID)")
+                                    } else {
+                                        extLog("[Commands] ⚠️ 无缓存快照可用，rootLayer 将保持空载 display=\(displayID)")
+                                    }
+                                }
                             }
                         }
                     } else {
