@@ -251,6 +251,9 @@ final class StatusBarController: NSObject {
             guard let self = self else { return }
             // 只设该屏幕的音量，不触及其他屏幕，也不动全局静音
             self.videoWallpaperManager.setVolume(volume, for: screen)
+            if self.weBridge.isControllingExternalEngine {
+                self.weBridge.setVolume(volume, for: screen)
+            }
         }
         let item = NSMenuItem()
         item.view = controlView
@@ -309,6 +312,11 @@ final class StatusBarController: NSObject {
         let screensToShow: [NSScreen]
         if isExtensionMode {
             screensToShow = NSScreen.screens
+        } else if hasExternalWallpaper {
+            let nativeScreenIDs = Set(activeScreens.map(\.wallpaperScreenIdentifier))
+            screensToShow = NSScreen.screens.filter { screen in
+                nativeScreenIDs.contains(screen.wallpaperScreenIdentifier) || weBridge.isManaging(screen: screen)
+            }
         } else {
             screensToShow = activeScreens
         }
@@ -324,6 +332,8 @@ final class StatusBarController: NSObject {
                 if isExtensionMode, #available(macOS 26.0, *),
                    let displayID = Self.cgDisplayID(for: screen) {
                     isScreenPaused = LockScreenWallpaperService.shared.isDisplayPaused(displayID)
+                } else if weBridge.isManaging(screen: screen) {
+                    isScreenPaused = weBridge.isExternalPaused
                 } else {
                     isScreenPaused = videoWallpaperManager.isPaused(on: screen)
                 }
@@ -364,7 +374,9 @@ final class StatusBarController: NSObject {
             playPauseItem.target = self
             wallpaperControlItems.append(playPauseItem)
 
-            if !isExtensionMode, hasNativeWallpaper, let screen = activeScreens.first ?? NSScreen.screens.first {
+            if !isExtensionMode,
+               (hasNativeWallpaper || hasExternalWallpaper),
+               let screen = activeScreens.first ?? screensToShow.first ?? NSScreen.screens.first {
                 wallpaperControlItems.append(buildVolumeMenuItem(for: screen))
             }
         }
@@ -387,7 +399,7 @@ final class StatusBarController: NSObject {
             : t("statusbar.hideDesktopIcons")
 
         // 全局静音开关
-        muteItem.isEnabled = hasNativeWallpaper
+        muteItem.isEnabled = hasNativeWallpaper || hasExternalWallpaper
         muteItem.title = videoWallpaperManager.isMuted ? t("statusbar.unmuteWallpaper") : t("statusbar.muteWallpaper")
     }
 
@@ -446,8 +458,8 @@ final class StatusBarController: NSObject {
         }
 
         if weBridge.isControllingExternalEngine {
-            // 关闭外部引擎壁纸（全局）
-            weBridge.stopWallpaper()
+            // 关闭外部引擎壁纸（单屏）
+            weBridge.ensureStoppedForNonCLIWallpaper(for: screen)
             return
         }
 
@@ -511,8 +523,8 @@ final class StatusBarController: NSObject {
 
     @objc private func toggleDynamicWallpaper() {
         if weBridge.isControllingExternalEngine {
-            // 关闭外部引擎壁纸
-            weBridge.stopWallpaper()
+            // 关闭外部引擎壁纸，但保留恢复记录，便于再次点击开启
+            weBridge.disableWallpaperKeepingRestoreState()
             return
         }
 
@@ -529,9 +541,12 @@ final class StatusBarController: NSObject {
             // 先尝试恢复上次保存的壁纸，没有则打开主窗口让用户选择
             videoWallpaperManager.restoreIfNeeded()
             if !videoWallpaperManager.isVideoWallpaperActive {
-                Task { await weBridge.restoreIfNeeded() }
-                if !weBridge.isControllingExternalEngine {
-                    showWindowHandler?()
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.weBridge.restoreIfNeeded()
+                    if !self.weBridge.isControllingExternalEngine {
+                        self.showWindowHandler?()
+                    }
                 }
             }
         }
@@ -551,7 +566,11 @@ final class StatusBarController: NSObject {
             return
         }
 
-        videoWallpaperManager.setMuted(!videoWallpaperManager.isMuted)
+        let newMuted = !videoWallpaperManager.isMuted
+        videoWallpaperManager.setMuted(newMuted)
+        if weBridge.isControllingExternalEngine {
+            weBridge.setMuted(newMuted)
+        }
     }
 
     @objc private func toggleDesktopIcons() {

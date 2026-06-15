@@ -1013,8 +1013,26 @@ struct MediaDetailSheet: View {
                     if shouldAutoApplyAfterBake {
                         // 实时渲染模式下，烘焙产物不自动设置到桌面（已由 wallpaper-wgpu 实时渲染）
                         if UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled") {
-                            sceneBakeStatusFlash = t("sceneBake.cached")
-                            print("[MediaDetailSheet] 实时渲染模式：烘焙完成，产物已缓存用于锁屏推送")
+                            if #available(macOS 26.0, *), !VideoWallpaperManager.shared.isLockScreenEnabled {
+                                // 动态锁屏关闭：用烘焙产物的静态帧设置桌面 poster（不启动视频播放器）
+                                Task {
+                                    if let posterURL = await VideoThumbnailCache.shared.lockScreenPosterURL(forLocalVideo: videoURL, fallbackPosterURL: nil) {
+                                        let fillOptions: [NSWorkspace.DesktopImageOptionKey: Any] = [
+                                            .imageScaling: NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue),
+                                            .allowClipping: true
+                                        ]
+                                        for screen in NSScreen.screens {
+                                            try? NSWorkspace.shared.setDesktopImageURLForAllSpaces(posterURL, for: screen, options: fillOptions)
+                                            DesktopWallpaperSyncManager.shared.registerWallpaperSet(posterURL, for: screen, options: fillOptions)
+                                        }
+                                        print("[MediaDetailSheet] 实时渲染模式：烘焙完成，已设置桌面 poster")
+                                    }
+                                }
+                                scheduleSceneBakeSuccessFlash()
+                            } else {
+                                sceneBakeStatusFlash = t("sceneBake.cached")
+                                print("[MediaDetailSheet] 实时渲染模式：烘焙完成，产物已缓存用于锁屏推送")
+                            }
                         } else {
                             scheduleSceneBakeSuccessFlash()
                             applyWorkshopVideoWallpaper(videoURL: videoURL, preferPosterFrameFromVideo: true)

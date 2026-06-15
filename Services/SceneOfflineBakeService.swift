@@ -248,16 +248,33 @@ enum SceneOfflineBakeService {
         displayIDs: [UInt32],
         reason: String
     ) async {
-        guard VideoWallpaperManager.shared.isLockScreenEnabled, !displayIDs.isEmpty else { return }
         let videoURL = URL(fileURLWithPath: artifact.videoPath)
         guard isUsableBakedVideo(at: videoURL) else { return }
-        let videoID = itemID ?? URL(fileURLWithPath: artifact.videoPath).deletingPathExtension().lastPathComponent
-        await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
-            videoURL: videoURL,
-            videoID: videoID,
-            displayIDs: displayIDs
-        )
-        print("[SceneOfflineBake] realtime companion bake synced lock screen (\(reason)): display=\(displayIDs) video=\(videoID)")
+
+        if VideoWallpaperManager.shared.isLockScreenEnabled {
+            // 动态锁屏开启：推送烘焙视频到锁屏实例
+            guard !displayIDs.isEmpty else { return }
+            let videoID = itemID ?? URL(fileURLWithPath: artifact.videoPath).deletingPathExtension().lastPathComponent
+            await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
+                videoURL: videoURL,
+                videoID: videoID,
+                displayIDs: displayIDs
+            )
+            print("[SceneOfflineBake] realtime companion bake synced lock screen (\(reason)): display=\(displayIDs) video=\(videoID)")
+        } else {
+            // 动态锁屏关闭：用烘焙产物的静态帧设置桌面 poster（不启动视频播放器）
+            if let posterURL = await VideoThumbnailCache.shared.lockScreenPosterURL(forLocalVideo: videoURL, fallbackPosterURL: nil) {
+                let fillOptions: [NSWorkspace.DesktopImageOptionKey: Any] = [
+                    .imageScaling: NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue),
+                    .allowClipping: true
+                ]
+                for screen in NSScreen.screens {
+                    try? NSWorkspace.shared.setDesktopImageURLForAllSpaces(posterURL, for: screen, options: fillOptions)
+                    DesktopWallpaperSyncManager.shared.registerWallpaperSet(posterURL, for: screen, options: fillOptions)
+                }
+                print("[SceneOfflineBake] realtime companion bake set desktop poster (\(reason)): \(posterURL.path)")
+            }
+        }
     }
 
     @MainActor

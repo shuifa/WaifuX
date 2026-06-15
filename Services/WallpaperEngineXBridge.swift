@@ -61,6 +61,13 @@ private struct ScreenProcessInfo {
     let generation: UInt64
     let screenID: String
     let logFile: FileHandle?
+    let audioControlURL: URL?
+}
+
+private struct RendererAudioControlState: Codable {
+    let muted: Bool
+    let paused: Bool
+    let volume: Double
 }
 
 /// 负责与 wallpaper-wgpu 渲染器通信的桥接层
@@ -374,6 +381,21 @@ final class WallpaperEngineXBridge: ObservableObject {
             perScreenArgs += ["--screen", "\(screenX),\(screenY),\(screenW),\(screenH),\(scale)"]
 
             let screenID = screen.wallpaperScreenIdentifier
+            let audioControlURL = createAudioControlURL(screenID: screenID)
+            let audioVolume = VideoWallpaperManager.shared.volume(for: screen)
+            writeAudioControl(
+                url: audioControlURL,
+                muted: VideoWallpaperManager.shared.isMuted,
+                paused: isExternalPaused,
+                volume: audioVolume
+            )
+            perScreenArgs += ["--audio-control", audioControlURL.path, "--volume", String(format: "%.4f", audioVolume)]
+            if VideoWallpaperManager.shared.isMuted {
+                perScreenArgs += ["--muted"]
+            }
+            if isExternalPaused {
+                perScreenArgs += ["--paused"]
+            }
             print("[WallpaperEngineXBridge] 启动屏幕 \(screenID) 进程: \(cliURL.lastPathComponent) \(perScreenArgs.joined(separator: " "))")
 
             do {
@@ -389,7 +411,8 @@ final class WallpaperEngineXBridge: ObservableObject {
                     process: process.process,
                     generation: launchGeneration,
                     screenID: screenID,
-                    logFile: process.logFile
+                    logFile: process.logFile,
+                    audioControlURL: audioControlURL
                 )
                 screenRenderStates[screenID] = ScreenRenderState(
                     screenID: screenID,
@@ -468,11 +491,16 @@ final class WallpaperEngineXBridge: ObservableObject {
             webRenderer.pause()
         }
         guard isControllingExternalEngine else { return }
-        for (screenID, info) in screenProcesses {
-            kill(info.pid, SIGSTOP)
-            print("[WallpaperEngineXBridge] 暂停渲染 屏幕 \(screenID) (pid=\(info.pid))")
-        }
         isExternalPaused = true
+        updateRendererAudioControls(paused: true)
+        let generation = launchGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, self.isExternalPaused, self.launchGeneration == generation else { return }
+            for (screenID, info) in self.screenProcesses {
+                kill(info.pid, SIGSTOP)
+                print("[WallpaperEngineXBridge] 暂停渲染 屏幕 \(screenID) (pid=\(info.pid))")
+            }
+        }
     }
 
     /// 恢复渲染（发送 SIGCONT）
@@ -487,6 +515,15 @@ final class WallpaperEngineXBridge: ObservableObject {
             print("[WallpaperEngineXBridge] 恢复渲染 屏幕 \(screenID) (pid=\(info.pid))")
         }
         isExternalPaused = false
+        updateRendererAudioControls(paused: false)
+    }
+
+    func setMuted(_ muted: Bool) {
+        updateRendererAudioControls(muted: muted)
+    }
+
+    func setVolume(_ volume: Double, for targetScreen: NSScreen? = nil) {
+        updateRendererAudioControls(volume: volume, targetScreen: targetScreen)
     }
 
     /// 切换暂停/恢复
@@ -502,6 +539,24 @@ final class WallpaperEngineXBridge: ObservableObject {
     /// 停止渲染（终止进程）
     func stopWallpaper() {
         ensureStoppedForNonCLIWallpaper()
+    }
+
+    /// 用户从状态栏关闭动态壁纸时调用：停止当前 renderer，但保留持久化状态，方便再次点击开启恢复。
+    func disableWallpaperKeepingRestoreState() {
+        let statesToRestore = Array(screenRenderStates.values)
+        stopRenderProcess()
+        webRenderer.stop()
+        Task { try? await Self.runLegacyCLIClientCommand(["stop"]) }
+        isControllingExternalEngine = false
+        isExternalPaused = false
+        closeRendererLogs()
+        screenProcesses.removeAll()
+        _deinitPIDs.removeAll()
+        targetScreenIDs.removeAll()
+        targetScreenFingerprints.removeAll()
+        screenRenderStates.removeAll()
+        lastAppliedScreenConfigurations.removeAll()
+        preserveRestoreState(statesToRestore)
     }
 
     /// 切换为**非** wallpaper-wgpu 壁纸时必须调用
@@ -1130,6 +1185,76 @@ final class WallpaperEngineXBridge: ObservableObject {
             ?? screenRenderStates.values.first { $0.screenFingerprint == screen.wallpaperScreenFingerprint }
     }
 
+    private func preserveRestoreState(_ states: [ScreenRenderState]) {
+        guard !states.isEmpty else { return }
+        if let data = try? JSONEncoder().encode(states) {
+            UserDefaults.standard.set(data, forKey: screenRenderStatesKey)
+        }
+        if let path = states.first?.path {
+            UserDefaults.standard.set(path, forKey: lastWallpaperPathKey)
+        }
+        UserDefaults.standard.set(true, forKey: controllingExternalKey)
+        UserDefaults.standard.set(Array(states.map(\.screenID)), forKey: targetScreenIDsKey)
+        UserDefaults.standard.set(Array(states.map(\.screenFingerprint)), forKey: targetScreenFingerprintsKey)
+    }
+
+    private func createAudioControlURL(screenID: String) -> URL {
+        let safeID = screenID.map { ch -> Character in
+            ch.isLetter || ch.isNumber || ch == "-" || ch == "_" ? ch : "_"
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("waifux-wallpaper-wgpu-audio-\(String(safeID))-\(UUID().uuidString).json")
+    }
+
+    private func writeAudioControl(url: URL, muted: Bool, paused: Bool, volume: Double) {
+        let state = RendererAudioControlState(
+            muted: muted,
+            paused: paused,
+            volume: max(0, min(1, volume))
+        )
+        do {
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("[WallpaperEngineXBridge] ⚠️ 写入音频控制文件失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func updateRendererAudioControls(
+        muted: Bool? = nil,
+        paused: Bool? = nil,
+        volume: Double? = nil,
+        targetScreen: NSScreen? = nil
+    ) {
+        let mutedValue = muted ?? VideoWallpaperManager.shared.isMuted
+        let pausedValue = paused ?? isExternalPaused
+
+        if let targetScreen {
+            let screenID = targetScreen.wallpaperScreenIdentifier
+            guard let info = screenProcesses[screenID] ?? screenProcesses.values.first(where: { $0.screenID == screenID }) else { return }
+            guard let audioControlURL = info.audioControlURL else { return }
+            writeAudioControl(
+                url: audioControlURL,
+                muted: mutedValue,
+                paused: pausedValue,
+                volume: volume ?? VideoWallpaperManager.shared.volume(for: targetScreen)
+            )
+            return
+        }
+
+        for info in screenProcesses.values {
+            guard let audioControlURL = info.audioControlURL else { continue }
+            let screen = NSScreen.screens.first { $0.wallpaperScreenIdentifier == info.screenID }
+            let screenVolume = volume ?? screen.map { VideoWallpaperManager.shared.volume(for: $0) } ?? 1.0
+            writeAudioControl(
+                url: audioControlURL,
+                muted: mutedValue,
+                paused: pausedValue,
+                volume: screenVolume
+            )
+        }
+    }
+
     private func removeRenderState(for screen: NSScreen) {
         let screenID = screen.wallpaperScreenIdentifier
         let state = renderState(for: screen)
@@ -1145,12 +1270,18 @@ final class WallpaperEngineXBridge: ObservableObject {
     private func removeScreenProcess(_ screenID: String) {
         if let info = screenProcesses.removeValue(forKey: screenID) {
             try? info.logFile?.close()
+            if let audioControlURL = info.audioControlURL {
+                try? FileManager.default.removeItem(at: audioControlURL)
+            }
         }
     }
 
     private func closeRendererLogs() {
         for info in screenProcesses.values {
             try? info.logFile?.close()
+            if let audioControlURL = info.audioControlURL {
+                try? FileManager.default.removeItem(at: audioControlURL)
+            }
         }
     }
 
