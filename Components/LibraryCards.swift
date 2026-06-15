@@ -331,7 +331,7 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
 
             Spacer(minLength: 0)
 
-            if !badgeText.isEmpty {
+            if !badgeText.isEmpty && badgeText != item.subtitle {
                 mediaBadgeText(badgeText)
             }
         }

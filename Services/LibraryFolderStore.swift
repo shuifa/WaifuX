@@ -31,9 +31,15 @@ final class LibraryFolderStore: ObservableObject {
 
     // MARK: - 查询
 
-    func folders(for contentType: LibraryFolder.FolderContentType, parentID: String? = nil) -> [LibraryFolder] {
+    func folders(for contentType: LibraryFolder.FolderContentType, parentID: String? = nil, collection: LibraryFolder.FolderCollection? = nil) -> [LibraryFolder] {
         let all = contentType == .wallpaper ? wallpaperFolders : mediaFolders
-        return all.filter { $0.parentFolderID == parentID }
+        return all.filter { folder in
+            guard folder.parentFolderID == parentID else { return false }
+            if let collection {
+                return folder.collection == collection
+            }
+            return true
+        }
     }
 
     func folder(withID id: String, contentType: LibraryFolder.FolderContentType) -> LibraryFolder? {
@@ -49,8 +55,8 @@ final class LibraryFolderStore: ObservableObject {
     // MARK: - CRUD
 
     @discardableResult
-    func createFolder(name: String, contentType: LibraryFolder.FolderContentType, parentID: String? = nil) -> LibraryFolder {
-        let folder = LibraryFolder(name: name, contentType: contentType, parentFolderID: parentID)
+    func createFolder(name: String, contentType: LibraryFolder.FolderContentType, parentID: String? = nil, collection: LibraryFolder.FolderCollection = .downloads) -> LibraryFolder {
+        let folder = LibraryFolder(name: name, contentType: contentType, parentFolderID: parentID, collection: collection)
         if contentType == .wallpaper {
             wallpaperFolders.append(folder)
             persistWallpaperFolders()

@@ -104,7 +104,7 @@ struct MacSettingsRow<Trailing: View>: View {
                     Text(subtitle)
                         .font(.system(size: 11.5, weight: .regular))
                         .foregroundStyle(Color.white.opacity(0.4))
-                        .lineLimit(2)
+                        .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

@@ -594,7 +594,9 @@ struct MediaDetailSheet: View {
     }
 
     private var detailCategoryBadge: some View {
-        Text("\(resolvedItem.subtitle) · \(resolvedItem.resolutionLabel)")
+        Text(resolvedItem.subtitle == resolvedItem.resolutionLabel
+             ? resolvedItem.subtitle
+             : "\(resolvedItem.subtitle) · \(resolvedItem.resolutionLabel)")
             .font(.system(size: 13, weight: .bold))
             .foregroundStyle(.white.opacity(0.85))
             .tracking(2)
@@ -1329,7 +1331,10 @@ struct MediaDetailSheet: View {
                     .foregroundStyle(.white.opacity(0.96))
                     .lineLimit(2)
 
-                Text("\(resolvedItem.subtitle) · \(resolvedItem.resolutionLabel)")
+                Text({
+                    let s = resolvedItem.subtitle, r = resolvedItem.resolutionLabel
+                    return s == r ? s : "\(s) · \(r)"
+                }())
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.62))
                     .tracking(0.6)

@@ -100,8 +100,9 @@ final class MediaGridCell: ExploreGridItem {
         leadingTagBadge.isHidden = firstTag == nil
 
         let resolutionText = media.resolutionLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        trailingBadge.configure(text: resolutionText.isEmpty ? nil : resolutionText)
-        trailingBadge.isHidden = resolutionText.isEmpty
+        let showResolution = !resolutionText.isEmpty && resolutionText != firstTag
+        trailingBadge.configure(text: showResolution ? resolutionText : nil)
+        trailingBadge.isHidden = !showResolution
 
         loadImage(urls: preferredImageURLs(for: media), targetSize: preferredImageTargetSize(for: media))
 

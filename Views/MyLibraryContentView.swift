@@ -434,7 +434,8 @@ struct MyLibraryContentView: View {
                     guard !name.isEmpty else { return }
                     let contentType: LibraryFolder.FolderContentType = selectedContentType == .wallpaper ? .wallpaper : .media
                     let parentID = selectedContentType == .wallpaper ? currentWallpaperFolderID : currentMediaFolderID
-                    folderStore.createFolder(name: name, contentType: contentType, parentID: parentID)
+                    let collection: LibraryFolder.FolderCollection = selectedSubTab == .favorites ? .favorites : .downloads
+                    folderStore.createFolder(name: name, contentType: contentType, parentID: parentID, collection: collection)
                     newFolderName = ""
                     showNewFolderSheet = false
                     updateWallpaperItems()
@@ -846,14 +847,16 @@ struct MyLibraryContentView: View {
     }
 
     private var currentWallpaperFolders: [LibraryFolder] {
-        let folders = folderStore.folders(for: .wallpaper, parentID: currentWallpaperFolderID)
+        let collection: LibraryFolder.FolderCollection = selectedSubTab == .favorites ? .favorites : .downloads
+        let folders = folderStore.folders(for: .wallpaper, parentID: currentWallpaperFolderID, collection: collection)
         guard hasActiveLibrarySearch else { return folders }
         let query = trimmedLibrarySearchQuery
         return folders.filter { matchesLibrarySearch(for: $0, query: query) }
     }
 
     private var currentMediaFolders: [LibraryFolder] {
-        let folders = folderStore.folders(for: .media, parentID: currentMediaFolderID)
+        let collection: LibraryFolder.FolderCollection = selectedSubTab == .favorites ? .favorites : .downloads
+        let folders = folderStore.folders(for: .media, parentID: currentMediaFolderID, collection: collection)
         guard hasActiveLibrarySearch else { return folders }
         let query = trimmedLibrarySearchQuery
         return folders.filter { matchesLibrarySearch(for: $0, query: query) }

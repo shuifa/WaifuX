@@ -58,7 +58,7 @@ class SettingsViewModel: ObservableObject {
 
     /// 超分辨率模式开关
     /// 开启后，动态壁纸将以低分辨率运行，利用 Apple MetalFX 超分辨率技术提升性能
-    @Published var upscalingEnabled = false {
+    @Published var upscalingEnabled = true {
         didSet { UserDefaults.standard.set(upscalingEnabled, forKey: "upscaling_enabled") }
     }
 
@@ -172,7 +172,7 @@ class SettingsViewModel: ObservableObject {
         hdrEnabled = defaults.object(forKey: "hdr_enabled") as? Bool ?? true
         showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
         sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
-        upscalingEnabled = defaults.bool(forKey: "upscaling_enabled")
+        upscalingEnabled = defaults.object(forKey: "upscaling_enabled") as? Bool ?? true
         dynamicLockScreenEnabled = defaults.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? false
         // 非 macOS 26+ 系统强制关闭动态锁屏
         if #available(macOS 26.0, *) { } else {

@@ -308,8 +308,9 @@ struct MediaCardView: View, @preconcurrency Equatable {
 
             Spacer()
 
-            if !media.resolutionLabel.isEmpty {
-                badgeText(media.resolutionLabel.replacingOccurrences(of: "x", with: "×"))
+            let resLabel = media.resolutionLabel.replacingOccurrences(of: "x", with: "×")
+            if !resLabel.isEmpty && resLabel != firstTag {
+                badgeText(resLabel)
             }
         }
         .frame(width: max(0, cardWidth - 20), alignment: .topLeading)
