@@ -188,6 +188,23 @@ final class WallpaperState: Sendable {
         }
     }
 
+    func updateContextDisplayID(rootLayer: CALayer, displayID: UInt32) {
+        lock.withLock { state in
+            guard let pair = state.activeContexts.first(where: { $0.value.rootLayer === rootLayer }),
+                  pair.value.displayID != displayID else {
+                return
+            }
+            let old = pair.value
+            state.activeContexts[pair.key] = ActiveWallpaper(
+                caContext: old.caContext,
+                rootLayer: old.rootLayer,
+                renderer: old.renderer,
+                displayID: displayID,
+                videoID: old.videoID
+            )
+        }
+    }
+
     func activeContextsSnapshot() -> [ActiveWallpaper] {
         lock.withLock { Array($0.activeContexts.values) }
     }

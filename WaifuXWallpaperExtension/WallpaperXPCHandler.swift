@@ -67,15 +67,22 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
     }
 
     private static func displayMetrics(for displayID: UInt32) -> (size: CGSize, scale: CGFloat)? {
-        let cgDisplayID = CGDirectDisplayID(displayID)
-        let pixelWidth = CGDisplayPixelsWide(cgDisplayID)
-        let pixelHeight = CGDisplayPixelsHigh(cgDisplayID)
-        if pixelWidth > 0, pixelHeight > 0 {
-            return (CGSize(width: pixelWidth, height: pixelHeight), 1.0)
+        for screen in NSScreen.screens {
+            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                  screenNumber.uint32Value == displayID else {
+                continue
+            }
+            return (screen.frame.size, screen.backingScaleFactor)
         }
 
+        let cgDisplayID = CGDirectDisplayID(displayID)
         let bounds = CGDisplayBounds(cgDisplayID)
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        guard bounds.width > 0, bounds.height > 0 else {
+            let pixelWidth = CGDisplayPixelsWide(cgDisplayID)
+            let pixelHeight = CGDisplayPixelsHigh(cgDisplayID)
+            guard pixelWidth > 0, pixelHeight > 0 else { return nil }
+            return (CGSize(width: pixelWidth, height: pixelHeight), 1.0)
+        }
         return (bounds.size, 1.0)
     }
 
@@ -133,7 +140,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
            let active = WallpaperState.shared.activeContext(wallpaperID: wallpaperID) {
             contexts = [active]
         } else if let displayID,
-                  let active = WallpaperState.shared.activeContext(for: displayID) {
+                  let active = WallpaperState.shared.activeContextForCommand(displayID: displayID) {
             contexts = [active]
         } else if displayID != nil {
             contexts = []
@@ -193,6 +200,8 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
 
                 if let wallpaperID, active.displayID != targetDisplayID {
                     WallpaperState.shared.updateContextDisplayID(wallpaperID: wallpaperID, displayID: targetDisplayID)
+                } else if active.displayID != targetDisplayID {
+                    WallpaperState.shared.updateContextDisplayID(rootLayer: active.rootLayer, displayID: targetDisplayID)
                 }
 
                 extLog(

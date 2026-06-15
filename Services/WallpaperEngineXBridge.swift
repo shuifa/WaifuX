@@ -366,12 +366,12 @@ final class WallpaperEngineXBridge: ObservableObject {
         for screen in effectiveScreens {
             let f = screen.frame
             let scale = screen.backingScaleFactor
-            let physicalX = Int(f.origin.x * scale)
-            let physicalY = Int(f.origin.y * scale)
-            let physicalW = Int(f.width * scale)
-            let physicalH = Int(f.height * scale)
+            let screenX = Int(f.origin.x.rounded())
+            let screenY = Int(f.origin.y.rounded())
+            let screenW = Int(f.width.rounded())
+            let screenH = Int(f.height.rounded())
             var perScreenArgs = args
-            perScreenArgs += ["--screen", "\(physicalX),\(physicalY),\(physicalW),\(physicalH),\(Int(scale))"]
+            perScreenArgs += ["--screen", "\(screenX),\(screenY),\(screenW),\(screenH),\(scale)"]
 
             let screenID = screen.wallpaperScreenIdentifier
             print("[WallpaperEngineXBridge] 启动屏幕 \(screenID) 进程: \(cliURL.lastPathComponent) \(perScreenArgs.joined(separator: " "))")

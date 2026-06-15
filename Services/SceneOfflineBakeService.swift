@@ -639,11 +639,142 @@ enum SceneOfflineBakeService {
         }
         let stderrCapture = StderrCapture()
 
-        // 监控 stderr 中的进度信息
-        // 格式: \r[bake] {message} [{progress * 100:.0}%]
+        final class WallpaperWgpuBakeProgressParser: @unchecked Sendable {
+            private let phaseFramePattern = try? NSRegularExpression(
+                pattern: #"^\s*\[bake\]\s*(预热|录制|编码|完成)\s+(\d+)/(\d+)\s+\[(\d+(?:\.\d+)?)%\]"#
+            )
+            private let phaseTotalPattern = try? NSRegularExpression(
+                pattern: #"^\s*\[bake\]\s*(预热|录制)\s+(\d+)\s+帧"#
+            )
+            private let percentPattern = try? NSRegularExpression(pattern: #"\[(\d+(?:\.\d+)?)%\]"#)
+
+            private var warmupFrames: Double?
+            private var recordingFrames: Double?
+            private var lastProgress: Double = 0
+
+            func progress(from line: String) -> Double? {
+                updatePhaseTotals(from: line)
+
+                if let progress = progressFromPhaseFrameLine(line) {
+                    return publish(progress)
+                }
+
+                guard let pct = progressPercent(in: line) else {
+                    return nil
+                }
+                let phaseProgress = pct / 100.0
+                if line.contains("预热") {
+                    return publish(mapPhaseProgress(phase: "预热", current: phaseProgress, total: 1))
+                }
+                if line.contains("录制") {
+                    return publish(mapPhaseProgress(phase: "录制", current: phaseProgress, total: 1))
+                }
+                if line.contains("编码") {
+                    return publish(0.98)
+                }
+                return publish(phaseProgress)
+            }
+
+            private func updatePhaseTotals(from line: String) {
+                guard let match = phaseTotalPattern?.firstMatch(
+                    in: line,
+                    range: NSRange(location: 0, length: line.utf16.count)
+                ), let phaseRange = Range(match.range(at: 1), in: line),
+                   let totalRange = Range(match.range(at: 2), in: line),
+                   let total = Double(line[totalRange]) else {
+                    return
+                }
+
+                switch String(line[phaseRange]) {
+                case "预热":
+                    warmupFrames = total
+                case "录制":
+                    recordingFrames = total
+                default:
+                    break
+                }
+            }
+
+            private func progressFromPhaseFrameLine(_ line: String) -> Double? {
+                guard let match = phaseFramePattern?.firstMatch(
+                    in: line,
+                    range: NSRange(location: 0, length: line.utf16.count)
+                ), let phaseRange = Range(match.range(at: 1), in: line),
+                   let currentRange = Range(match.range(at: 2), in: line),
+                   let totalRange = Range(match.range(at: 3), in: line),
+                   let pctRange = Range(match.range(at: 4), in: line),
+                   let current = Double(line[currentRange]),
+                   let total = Double(line[totalRange]),
+                   let pct = Double(line[pctRange]) else {
+                    return nil
+                }
+
+                let phase = String(line[phaseRange])
+                if isGlobalProgress(phase: phase, total: total) {
+                    return pct / 100.0
+                }
+                return mapPhaseProgress(phase: phase, current: current, total: total)
+            }
+
+            private func isGlobalProgress(phase: String, total: Double) -> Bool {
+                switch phase {
+                case "预热":
+                    if let warmupFrames {
+                        return abs(total - warmupFrames) > 0.5
+                    }
+                case "录制":
+                    if let recordingFrames {
+                        return abs(total - recordingFrames) > 0.5
+                    }
+                default:
+                    break
+                }
+                return false
+            }
+
+            private func mapPhaseProgress(phase: String, current: Double, total: Double) -> Double {
+                let warmupWeight = 0.20
+                let recordingCeiling = 0.98
+                let phaseProgress = total > 0 ? min(max(current / total, 0), 1) : 0
+
+                switch phase {
+                case "预热":
+                    return phaseProgress * warmupWeight
+                case "录制":
+                    return warmupWeight + phaseProgress * (recordingCeiling - warmupWeight)
+                case "编码":
+                    return recordingCeiling
+                case "完成":
+                    return 1.0
+                default:
+                    return phaseProgress
+                }
+            }
+
+            private func progressPercent(in line: String) -> Double? {
+                guard let match = percentPattern?.firstMatch(
+                    in: line,
+                    range: NSRange(location: 0, length: line.utf16.count)
+                ), let range = Range(match.range(at: 1), in: line) else {
+                    return nil
+                }
+                return Double(line[range])
+            }
+
+            private func publish(_ progress: Double) -> Double? {
+                let clamped = min(max(progress, 0.0), 0.99)
+                guard clamped >= lastProgress || clamped >= 0.99 else {
+                    return nil
+                }
+                lastProgress = max(lastProgress, clamped)
+                return lastProgress
+            }
+        }
+
+        // 监控 stderr 中的进度信息。兼容旧版阶段内百分比和新版全局百分比。
         let stderrHandle = stderrPipe.fileHandleForReading
         let progressTask = Task.detached(priority: .utility) {
-            let pattern = try? NSRegularExpression(pattern: #"\[(\d+\.?\d*)%\]"#)
+            let progressParser = WallpaperWgpuBakeProgressParser()
             var buffer = ""
             while !Task.isCancelled {
                 let data = stderrHandle.availableData
@@ -651,26 +782,18 @@ enum SceneOfflineBakeService {
                 stderrCapture.append(data)
                 if let chunk = String(data: data, encoding: .utf8) {
                     buffer += chunk
-                    let lines = buffer.components(separatedBy: "\r")
+                    let lines = buffer.components(separatedBy: CharacterSet(charactersIn: "\r\n"))
                     buffer = lines.last ?? ""
-                    for line in lines.dropLast() {
-                        if let match = pattern?.firstMatch(
-                            in: line,
-                            range: NSRange(location: 0, length: line.utf16.count)
-                        ), let range = Range(match.range(at: 1), in: line),
-                           let pct = Double(line[range]) {
-                            await progress?(pct / 100.0)
+                    for line in lines.dropLast() where !line.isEmpty {
+                        if let parsedProgress = progressParser.progress(from: line) {
+                            await progress?(parsedProgress)
                         }
                     }
                 }
             }
             // 处理缓冲区中剩余内容
-            if !buffer.isEmpty, let match = pattern?.firstMatch(
-                in: buffer,
-                range: NSRange(location: 0, length: buffer.utf16.count)
-            ), let range = Range(match.range(at: 1), in: buffer),
-               let pct = Double(buffer[range]) {
-                await progress?(pct / 100.0)
+            if !buffer.isEmpty, let parsedProgress = progressParser.progress(from: buffer) {
+                await progress?(parsedProgress)
             }
         }
 

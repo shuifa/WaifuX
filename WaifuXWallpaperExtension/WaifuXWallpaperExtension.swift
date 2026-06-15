@@ -405,13 +405,12 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                     WallpaperState.shared.cachedImageURL = nil
                     WallpaperState.shared.removeIOSurfaceRenderer(for: displayID)
                     FrameChannel.shared.unregisterCallback(displayID: displayID)
-                    if let renderer = WallpaperState.shared.renderer(for: displayID) {
+                    if let active = WallpaperState.shared.activeContextForCommand(displayID: displayID),
+                       let renderer = active.renderer {
                         renderer.replaceVideo(with: url)
-                        _ = WallpaperState.shared.replaceContextRenderer(displayID: displayID, renderer: renderer, videoID: videoID)
+                        _ = WallpaperState.shared.replaceContextRendererForCommand(displayID: displayID, renderer: renderer, videoID: videoID)
                         WallpaperPrefs.shared.updateCurrentVideo()
-                        if let active = WallpaperState.shared.activeContext(for: displayID) {
-                            WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: active.rootLayer)
-                        }
+                        WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: active.rootLayer)
                         extLog("[Commands] ✅ 已热切换显示器 \(displayID) 到视频: \(videoID)")
                     } else if let active = WallpaperState.shared.activeContextForCommand(displayID: displayID) {
                         // handleSocketCommand 始终在主线程调用，rootLayer 在此之后
