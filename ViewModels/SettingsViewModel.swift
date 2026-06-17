@@ -62,6 +62,11 @@ class SettingsViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(upscalingEnabled, forKey: "upscaling_enabled") }
     }
 
+    /// 超分辨率缩放比例 (30% ~ 100%)
+    @Published var upscalingPercent: Double = 70 {
+        didSet { UserDefaults.standard.set(upscalingPercent, forKey: "upscaling_percent") }
+    }
+
     /// 壁纸引擎实时渲染帧率上限 (30 ~ 显示器最大刷新率)
     @Published var wallpaperEngineFPS: Double = 60 {
         didSet { UserDefaults.standard.set(wallpaperEngineFPS, forKey: "wallpaper_engine_fps") }
@@ -70,6 +75,11 @@ class SettingsViewModel: ObservableObject {
     /// 壁纸引擎离线烘焙帧率 (15 ~ 60)
     @Published var sceneBakeFPS: Double = 30 {
         didSet { UserDefaults.standard.set(sceneBakeFPS, forKey: "scene_bake_fps") }
+    }
+
+    /// 壁纸引擎离线烘焙时长（秒）
+    @Published var sceneBakeDuration: Double = 15 {
+        didSet { UserDefaults.standard.set(sceneBakeDuration, forKey: "scene_bake_duration") }
     }
 
     /// 动态锁屏壁纸开关（仅 macOS 26+ 可用，关闭后走旧逻辑）
@@ -96,18 +106,12 @@ class SettingsViewModel: ObservableObject {
     @Published var activeDataSourceProfileID: String = DataSourceProfileStore.builtinProfile.id
     @Published var dataSourceStatusMessage: String?
 
-    // MARK: - 规则仓库相关
-    @Published var ruleRepositoryURL: String = ""
-    @Published var isRuleRepositoryConfigured: Bool = false
-    @Published var currentRuleRepository: String = ""
-
     // MARK: - 更新检测相关
     @Published var updateChecker = UpdateChecker.shared
     @Published var updateCheckResult: UpdateCheckResult?
     @Published var isCheckingUpdate = false
     @Published var updateCheckError: String?
 
-    private let ruleRepository = RuleRepository.shared
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - 调度器相关（延迟初始化，避免启动时阻塞）
@@ -183,8 +187,10 @@ class SettingsViewModel: ObservableObject {
         showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
         sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
         upscalingEnabled = defaults.object(forKey: "upscaling_enabled") as? Bool ?? true
+        upscalingPercent = defaults.object(forKey: "upscaling_percent") as? Double ?? 70
         wallpaperEngineFPS = defaults.object(forKey: "wallpaper_engine_fps") as? Double ?? 60.0
         sceneBakeFPS = defaults.object(forKey: "scene_bake_fps") as? Double ?? 30.0
+        sceneBakeDuration = defaults.object(forKey: "scene_bake_duration") as? Double ?? 15
         dynamicLockScreenEnabled = defaults.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? false
         // 非 macOS 26+ 系统强制关闭动态锁屏
         if #available(macOS 26.0, *) { } else {
@@ -205,10 +211,9 @@ class SettingsViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 50_000_000) // 0.05秒
             refreshDataSourceProfiles()
 
-            // 缓存计算和规则仓库加载可以并行
+            // 缓存计算
             async let cacheTask: () = updateCacheSize()
-            async let repoTask: () = loadRuleRepository()
-            _ = await (cacheTask, repoTask)
+            _ = await (cacheTask)
         }
     }
 
@@ -282,33 +287,6 @@ class SettingsViewModel: ObservableObject {
             return release.version
         }
         return updateChecker.currentRelease?.version
-    }
-
-    // MARK: - 规则仓库
-
-    private func loadRuleRepository() async {
-        if let savedURL = UserDefaults.standard.string(forKey: "rule_repository_url") {
-            currentRuleRepository = savedURL
-            ruleRepositoryURL = savedURL
-            isRuleRepositoryConfigured = true
-        }
-
-    }
-
-    func saveRuleRepository() async {
-        guard !ruleRepositoryURL.isEmpty else { return }
-
-        do {
-            try await ruleRepository.configure(repoURL: ruleRepositoryURL)
-            currentRuleRepository = ruleRepositoryURL
-            isRuleRepositoryConfigured = true
-
-            // 同步所有规则
-            try await ruleRepository.syncAllRules()
-            dataSourceStatusMessage = "规则仓库配置成功并已同步"
-        } catch {
-            dataSourceStatusMessage = "配置失败: \(error.localizedDescription)"
-        }
     }
 
     func updateCacheSize() async {

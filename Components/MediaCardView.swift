@@ -1,28 +1,11 @@
 import SwiftUI
 import Kingfisher
 
-// MARK: - 滚动状态追踪（媒体探索页）
-
-enum MediaExploreScrollActivity {
-    private static let idleDelay: CFTimeInterval = 0.22
-    @MainActor private static var lastScrollEventTime: CFTimeInterval = 0
-
-    @MainActor
-    static func markActive() {
-        lastScrollEventTime = CACurrentMediaTime()
-    }
-
-    @MainActor
-    static var isActive: Bool {
-        CACurrentMediaTime() - lastScrollEventTime < idleDelay
-    }
-}
-
 // MARK: - NativeGIFView（CALayer 直通，绕过 SwiftUI 重绘）
 
 /// 用 NSViewRepresentable 封装 GIF 宿主，帧更新直接写 `layer.contents`，
 /// 完全绕过 SwiftUI 的 Body 评估和 Diff 算法。
-/// 滚动时 `isPlaying = false` → 纯静态图层，零 CPU 消耗。
+/// 默认显示第一帧非黑帧；`isPlaying = true` 时播放动画，`isPlaying = false` 时回到静态帧。
 struct NativeGIFView: NSViewRepresentable {
     let url: URL
     let isPlaying: Bool
@@ -57,6 +40,7 @@ struct NativeGIFView: NSViewRepresentable {
         private var frames: [(image: CGImage, duration: TimeInterval)] = []
         private var timer: Timer?
         private var currentFrameIndex = 0
+        private var staticFrameIndex = 0
         private var loadTask: Task<Void, Never>?
         private var isLoaded = false
 
@@ -67,6 +51,7 @@ struct NativeGIFView: NSViewRepresentable {
             isLoaded = false
             timer?.invalidate()
             timer = nil
+            staticFrameIndex = 0
 
             loadTask = Task.detached(priority: .userInitiated) { [weak self] in
                 guard let self else { return }
@@ -104,24 +89,32 @@ struct NativeGIFView: NSViewRepresentable {
 
                 guard !decoded.isEmpty, !Task.isCancelled else { return }
                 let frames = decoded
+                // 找第一帧非黑帧作为默认静态展示帧
+                let staticIdx = Self.findFirstNonBlackFrameIndex(in: frames)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.frames = frames
                     self.imageSource = source
                     self.isLoaded = true
-                    self.layer?.contents = frames[0].0
+                    self.staticFrameIndex = staticIdx
+                    self.layer?.contents = frames[staticIdx].0
                 }
             }
         }
 
         func startAnimation() {
             guard timer == nil, !frames.isEmpty else { return }
+            currentFrameIndex = staticFrameIndex
+            layer?.contents = frames[currentFrameIndex].0
             scheduleNextFrame()
         }
 
         func stopAnimation() {
             timer?.invalidate()
             timer = nil
+            guard !frames.isEmpty else { return }
+            currentFrameIndex = staticFrameIndex
+            layer?.contents = frames[staticFrameIndex].0
         }
 
         private func scheduleNextFrame() {
@@ -133,6 +126,52 @@ struct NativeGIFView: NSViewRepresentable {
                 self.layer?.contents = self.frames[self.currentFrameIndex].0
                 self.scheduleNextFrame()
             }
+        }
+
+        // MARK: - 非黑帧检测
+
+        /// 从已解码帧中找出第一帧非纯黑/纯暗帧的索引，用于默认静态展示。
+        private static func findFirstNonBlackFrameIndex(in frames: [(CGImage, TimeInterval)]) -> Int {
+            for i in 0..<frames.count {
+                if !Self.isMostlyBlackFrame(frames[i].0) {
+                    return i
+                }
+            }
+            return 0 // fallback
+        }
+
+        /// 将 CGImage 缩到 16×16 检测是否有足够多的非黑像素。
+        private static func isMostlyBlackFrame(_ image: CGImage, threshold: UInt8 = 20) -> Bool {
+            let w = 16, h = 16
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
+            guard let ctx = CGContext(
+                data: nil,
+                width: w, height: h,
+                bitsPerComponent: 8,
+                bytesPerRow: w * 4,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo
+            ) else { return false }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            guard let data = ctx.data else { return false }
+
+            let pixels = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
+            var brightCount = 0
+            let total = w * h
+            for i in 0..<total {
+                let offset = i * 4
+                // byteOrder32Big + noneSkipFirst → [skip, R, G, B]
+                let r = pixels[offset + 1]
+                let g = pixels[offset + 2]
+                let b = pixels[offset + 3]
+                let maxChannel = max(r, g, b)
+                if maxChannel > threshold {
+                    brightCount += 1
+                }
+            }
+
+            return Double(brightCount) / Double(total) < 0.03
         }
 
         private static func frameDuration(at index: Int, source: CGImageSource) -> TimeInterval {
@@ -199,7 +238,7 @@ struct MediaCardView: View, @preconcurrency Equatable {
     }
 
     private var shouldAnimateGIF: Bool {
-        coverGIFPlaybackHostActive && !MediaExploreScrollActivity.isActive
+        isHovered && coverGIFPlaybackHostActive
     }
 
     var body: some View {

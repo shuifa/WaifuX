@@ -412,7 +412,8 @@ enum SceneWallpaperPropertiesService {
                 continue
             }
             // 双字符运算符
-            let two = String(input[i..<min(input.index(i, offsetBy: 2), input.endIndex)])
+            let end = input.index(i, offsetBy: 2, limitedBy: input.endIndex) ?? input.endIndex
+            let two = String(input[i..<end])
             if ["&&", "||", "==", "!=", ">=", "<="].contains(two) {
                 tokens.append(.op(two))
                 i = input.index(i, offsetBy: 2)

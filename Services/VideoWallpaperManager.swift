@@ -460,7 +460,26 @@ final class VideoWallpaperManager: ObservableObject {
         } else if !isActive && wasActive {
             print("[VideoWallpaperManager] Lock screen extension became inactive")
         }
+
+        // 检测 videoID 变化（表示扩展已完成视频切换）
+        // 延迟 3 秒再发一次 prefsChanged 通知，让扩展再次调用 updateSettingsViewModels()
+        // 通知系统刷新壁纸设置，更新系统 UI 的壁纸颜色缓存
+        let currentVideoID = json["currentVideoID"] as? String
+        let previousVideoID = Self.lastCheckedExtensionVideoID
+        Self.lastCheckedExtensionVideoID = currentVideoID
+
+        if isActive, let newID = currentVideoID, newID != previousVideoID {
+            print("[VideoWallpaperManager] 🎨 检测到扩展视频切换: \(previousVideoID ?? "nil") → \(newID)，延迟 3 秒通知系统刷新 UI")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, self.isLockScreenExtensionActive else { return }
+                print("[VideoWallpaperManager] 🎨 发送延迟 prefsChanged 通知，触发系统刷新壁纸颜色")
+                LockScreenWallpaperService.shared.notifyExtensionPrefsChanged()
+            }
+        }
     }
+
+    /// 上次检查到的扩展 videoID，用于检测视频切换
+    private static var lastCheckedExtensionVideoID: String?
 
     /// 将所有显示器的当前视频源同步到锁屏扩展。
     /// 用户在系统设置中手动为每个显示器选择一次 WaifuX 实例后，
@@ -513,18 +532,23 @@ final class VideoWallpaperManager: ObservableObject {
         WallpaperExtensionSocketServer.shared.clearDisplayVideos()
 
         let grouped = Dictionary(grouping: displayVideoPairs, by: { $0.videoURL })
-        for (videoURL, pairs) in grouped {
-            let videoID = videoURL.deletingPathExtension().lastPathComponent
-            let displayIDs = pairs.map(\.displayID)
-            Task {
+        // ⚠️ 必须串行 await 每个视频组，不能并行启动多个 Task：
+        // switchActiveInstancesToLocalDecode 会写入共享 prefs 文件（cacheMirroringSource），
+        // 并发写入会导致：1) prefs 文件互相覆盖，只剩最后一路；2) deployedVideoIDs 集合
+        // 有 ABA 问题，可能误删另一路正在使用的视频文件。
+        // 串行执行代价很小（每个调用主要耗时在 hard link + 通知，非视频解码），但能彻底消除竞态。
+        Task {
+            for (videoURL, pairs) in grouped {
+                let videoID = videoURL.deletingPathExtension().lastPathComponent
+                let displayIDs = pairs.map(\.displayID)
                 await LockScreenWallpaperService.shared.switchActiveInstancesToLocalDecode(
                     videoURL: videoURL,
                     videoID: videoID,
                     displayIDs: displayIDs,
                     generation: generation
                 )
+                print("[VideoWallpaperManager] 📺 请求锁屏自解码 display=\(displayIDs) video=\(videoID)")
             }
-            print("[VideoWallpaperManager] 📺 请求锁屏自解码 display=\(displayIDs) video=\(videoID)")
         }
     }
 
@@ -627,6 +651,7 @@ final class VideoWallpaperManager: ObservableObject {
                     player.play()
                 }
             }
+            DynamicWallpaperAutoPauseManager.shared.clearForegroundPauseForWallpaperSwitch()
             DynamicWallpaperAutoPauseManager.shared.reevaluateCurrentState()
 
             // 即使复用已有播放器，也要同步锁屏镜像的 per-display 帧源。
@@ -686,6 +711,7 @@ final class VideoWallpaperManager: ObservableObject {
         syncCurrentVideoURL()
         persistState()
         wallpaperChangeCount &+= 1
+        DynamicWallpaperAutoPauseManager.shared.clearForegroundPauseForWallpaperSwitch()
         DynamicWallpaperAutoPauseManager.shared.reevaluateCurrentState()
 
         // 同步到锁屏镜像实例（macOS 26+）
@@ -1424,6 +1450,15 @@ final class VideoWallpaperManager: ObservableObject {
                     pauseWallpaper()
                 }
                 persistState()
+
+                // 恢复完成后,如果扩展已激活,需要同步视频源到扩展
+                // 开机时扩展可能先于 App 视频源恢复而启动,此时 checkExtensionState() 因 hasActiveVideoWallpaper=false 未触发同步
+                if #available(macOS 26.0, *) {
+                    if isLockScreenExtensionActive {
+                        print("[VideoWallpaperManager] 📺 视频源恢复完成,扩展已激活,同步视频源到锁屏扩展")
+                        syncAllDisplayVideosToExtension()
+                    }
+                }
             } else {
                 try applyVideoWallpaper(from: url, posterURL: globalPosterURL, muted: savedState.isMuted)
                 volume = savedState.volume ?? (savedState.isMuted ? 0 : 1)

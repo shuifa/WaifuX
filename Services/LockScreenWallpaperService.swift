@@ -63,7 +63,10 @@ final class LockScreenWallpaperService {
     /// - Parameters:
     ///   - videoURL: 本地视频文件路径（MP4/MOV）
     ///   - videoID: 壁纸唯一标识（用于区分不同壁纸）
-    func cacheMirroringSource(videoURL: URL, videoID: String, notify: Bool = true) async throws {
+    ///   - displayIDs: 使用该视频的显示器集合。若提供，则写入 per-display 路径映射，
+    ///     使扩展在冷启动 acquire 时为每块屏选到各自的视频。若为空，则仅写 legacy 全局路径。
+    ///   - notify: 是否触发 Extension 重新加载
+    func cacheMirroringSource(videoURL: URL, videoID: String, displayIDs: [UInt32] = [], notify: Bool = true) async throws {
         guard isAvailable else {
             print("[LockScreenWallpaper] 功能不可用（需 macOS 26+）")
             return
@@ -103,15 +106,28 @@ final class LockScreenWallpaperService {
 
         deployedVideoIDs.insert(videoID)
 
-        // 写入偏好设置
-        let prefs = PrefsFile(
-            userPaused: false,
-            alwaysPauseDesktop: false,
-            currentVideoPath: destURL.path,
-            currentImagePath: nil,
-            currentRealtimeSourceKind: nil
-        )
+        // 合并写入 prefs（不覆盖其它 displayID 的路径）：
+        // 读取现有 prefs → 更新 legacy 全局路径 + 本批 displayIDs 的 per-display 路径 → 原子写回
         let prefsURL = container.appendingPathComponent(prefsFileName)
+        var prefs = (try? JSONDecoder().decode(PrefsFile.self, from: Data(contentsOf: prefsURL))) ?? PrefsFile()
+        prefs.userPaused = false
+        prefs.alwaysPauseDesktop = false
+        // Legacy global: 取最近写入的一路（向后兼容旧扩展）。
+        prefs.currentVideoPath = destURL.path
+        prefs.currentImagePath = nil
+        prefs.currentRealtimeSourceKind = nil
+        // Per-display: 本批 displayIDs 全部指向该视频
+        if !displayIDs.isEmpty {
+            var map = prefs.currentVideoPaths ?? [:]
+            for did in displayIDs {
+                map["display-\(did)"] = destURL.path
+            }
+            prefs.currentVideoPaths = map
+            // 该视频覆盖这些屏的图片路径
+            prefs.currentImagePaths = prefs.currentImagePaths?.filter { key, _ in
+                !displayIDs.contains { "display-\($0)" == key }
+            }
+        }
         let data = try JSONEncoder().encode(prefs)
         try data.write(to: prefsURL, options: .atomic)
 
@@ -128,7 +144,7 @@ final class LockScreenWallpaperService {
             notifyExtensionPrefsChanged()
         }
 
-        print("[LockScreenWallpaper] ✅ 已更新锁屏镜像帧源缓存: \(destURL.lastPathComponent)")
+        print("[LockScreenWallpaper] ✅ 已更新锁屏镜像帧源缓存: \(destURL.lastPathComponent) display=\(displayIDs)")
     }
 
     /// 将静态图片写入共享容器，并绑定到每个显示器实例。
@@ -179,14 +195,25 @@ final class LockScreenWallpaperService {
         }
 
         if let lastPath {
-            let prefs = PrefsFile(
-                userPaused: false,
-                alwaysPauseDesktop: false,
-                currentVideoPath: nil,
-                currentImagePath: lastPath,
-                currentRealtimeSourceKind: nil
-            )
+            // 合并写入 prefs：保留现有 video paths，更新本批 displayIDs 的 image paths
             let prefsURL = container.appendingPathComponent(prefsFileName)
+            var prefs = (try? JSONDecoder().decode(PrefsFile.self, from: Data(contentsOf: prefsURL))) ?? PrefsFile()
+            prefs.userPaused = false
+            prefs.alwaysPauseDesktop = false
+            // Legacy global: 取最后写入的一路（向后兼容旧扩展）
+            prefs.currentVideoPath = nil
+            prefs.currentImagePath = lastPath
+            prefs.currentRealtimeSourceKind = nil
+            // Per-display: 本批 displayIDs 全部指向该图片
+            var imageMap = prefs.currentImagePaths ?? [:]
+            for displayID in displayIDs {
+                imageMap["display-\(displayID)"] = lastPath
+            }
+            prefs.currentImagePaths = imageMap
+            // 该图片覆盖这些屏的视频路径
+            prefs.currentVideoPaths = prefs.currentVideoPaths?.filter { key, _ in
+                !displayIDs.contains { "display-\($0)" == key }
+            }
             let data = try JSONEncoder().encode(prefs)
             try data.write(to: prefsURL, options: .atomic)
             currentMirroringSourcePath = lastPath
@@ -207,7 +234,9 @@ final class LockScreenWallpaperService {
         }
 
         do {
-            try await cacheMirroringSource(videoURL: videoURL, videoID: videoID, notify: false)
+            // 把 displayIDs 传给 cacheMirroringSource，写入 per-display 路径映射，
+            // 使扩展在冷启动 acquire 时能按屏各自选到正确的视频。
+            try await cacheMirroringSource(videoURL: videoURL, videoID: videoID, displayIDs: displayIDs, notify: false)
         } catch {
             print("[LockScreenWallpaper] ❌ 本地解码视频缓存失败: \(error.localizedDescription)")
             return
@@ -668,13 +697,22 @@ final class LockScreenWallpaperService {
     private struct PrefsFile: Codable {
         var userPaused: Bool = false
         var alwaysPauseDesktop: Bool = false
+        /// Legacy global video path — kept for backward compat with older extensions.
+        /// Extension reads per-display paths first, falls back to this.
         var currentVideoPath: String?
+        /// Legacy global image path — same as above.
         var currentImagePath: String?
         var currentRealtimeSourceKind: String?
         /// Per-display pause: displayID 集合
         var pausedDisplayIDs: Set<UInt32>?
         /// Per-display mute: displayID 集合
         var mutedDisplayIDs: Set<UInt32>?
+        /// Per-display video paths: key = "display-<displayID>", value = file path.
+        /// Extension picks the path for its own displayID during acquire, supporting
+        /// each screen rendering a different video on cold start.
+        var currentVideoPaths: [String: String]?
+        /// Per-display image paths: same scheme as currentVideoPaths.
+        var currentImagePaths: [String: String]?
     }
 }
 

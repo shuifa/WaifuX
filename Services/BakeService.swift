@@ -902,7 +902,7 @@ final class BakeService: ObservableObject {
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let config = SCStreamConfiguration()
         config.width = width
-        config.height = height 
+        config.height = height
         config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.scalesToFit = true

@@ -21,6 +21,13 @@ private struct ScreenWallpaperConfig: Codable {
     let isMainScreen: Bool
 }
 
+/// 与 wallpaperengine-cli daemon IPC 的音频控制消息
+private struct WebDaemonAudioMessage: Codable {
+    let command: String
+    let muted: Bool?
+    let volume: Double?
+}
+
 /// 进程终止事件（线程安全，通过 os_unfair_lock 传递到 @MainActor）
 private struct TerminationEvent: @unchecked Sendable {
     let pid: pid_t
@@ -323,6 +330,7 @@ final class WallpaperEngineXBridge: ObservableObject {
         if renderKind == .web {
             try await setWebWallpaper(path: resolvedPath, targetScreens: targetScreens)
             recordRenderState(path: resolvedPath, renderKind: renderKind, screens: effectiveScreens, userProperties: userProperties)
+            DynamicWallpaperAutoPauseManager.shared.clearForegroundPauseForWallpaperSwitch()
             DynamicWallpaperAutoPauseManager.shared.reevaluateCurrentState()
             return
         }
@@ -355,15 +363,20 @@ final class WallpaperEngineXBridge: ObservableObject {
         }
         args += ["--wallpaper", "--background"]
 
-        // 超分辨率模式（Apple MetalFX）
+        // 超分辨率模式（MetalFX Spatial Upscaler）
+        // 渲染器以低分辨率渲染场景，再通过 Apple MetalFX MTLFXSpatialScaler
+        // 智能超分辨率提升画质，替代简单的线性拉伸。
         if UserDefaults.standard.bool(forKey: "upscaling_enabled") {
-            args += ["--upscaling"]
-            print("[WallpaperEngineXBridge] 超分辨率模式已启用")
+            let percent = UserDefaults.standard.double(forKey: "upscaling_percent")
+            let clamped = percent > 0 ? max(30, min(100, Int(percent))) : 70
+            args += ["--upscaling", "\(clamped)"]
+            print("[WallpaperEngineXBridge] 超分辨率模式已启用，缩放比例: \(clamped)%")
         }
 
-        // 用户属性覆盖
-        if let userProperties, !userProperties.isEmpty {
-            args += ["--user-properties", userProperties]
+        // 用户属性覆盖（自动合并场景配置覆盖）
+        let effectiveUserProperties = Self.mergeSceneConfigOverrides(userProperties, wallpaperPath: resolvedPath)
+        if let effectiveUserProperties, !effectiveUserProperties.isEmpty {
+            args += ["--user-properties", effectiveUserProperties]
             print("[WallpaperEngineXBridge] 用户属性已传入")
         }
 
@@ -447,6 +460,9 @@ final class WallpaperEngineXBridge: ObservableObject {
 
         updateControlStateFromScreenStates(preferredPath: resolvedPath, preferredKind: renderKind)
         persistState()
+        // 清除旧的前台暂停状态，避免 reevaluateCurrentState() 对新启动的渲染器误发 SIGSTOP。
+        // 用户之后切走应用时，NSWorkspace app activation 通知会重新施加前台暂停。
+        DynamicWallpaperAutoPauseManager.shared.clearForegroundPauseForWallpaperSwitch()
         DynamicWallpaperAutoPauseManager.shared.reevaluateCurrentState()
 
         // 强制恢复 App 焦点（wallpaper-wgpu 启动会抢占焦点，导致渲染器不渲染）
@@ -470,11 +486,14 @@ final class WallpaperEngineXBridge: ObservableObject {
     /// - Parameter userProperties: 用户属性覆盖 JSON
     func refreshWallpaperProperties(userProperties: String?) async throws {
         guard let path = lastWallpaperPath else {
+            print("[WallpaperEngineXBridge] ❌ refreshWallpaperProperties: lastWallpaperPath 为空，没有正在运行的壁纸")
             throw WallpaperEngineError.executionFailed("没有正在运行的壁纸")
         }
         guard isControllingExternalEngine, activeRenderKind == .scene else {
+            print("[WallpaperEngineXBridge] ❌ refreshWallpaperProperties: 当前壁纸不是场景类型 (isControllingExternalEngine=\(isControllingExternalEngine), activeRenderKind=\(String(describing: activeRenderKind)))")
             throw WallpaperEngineError.executionFailed("当前壁纸不是场景类型")
         }
+        print("[WallpaperEngineXBridge] refreshWallpaperProperties: 刷新壁纸属性 path=\(path)")
         let screens = activeTargetScreens().filter { screen in
             let screenID = screen.wallpaperScreenIdentifier
             let fingerprint = screen.wallpaperScreenFingerprint
@@ -521,21 +540,97 @@ final class WallpaperEngineXBridge: ObservableObject {
             kill(info.pid, SIGCONT)
             print("[WallpaperEngineXBridge] 恢复渲染 屏幕 \(screenID) (pid=\(info.pid))")
         }
+        perScreenPausedScreenIDs.removeAll()
         isExternalPaused = false
         updateRendererAudioControls(paused: false)
     }
 
+    /// 按屏幕暂停追踪：通过 per-screen API 暂停的屏幕 ID
+    /// 与全局 `isExternalPaused` 独立，用于支持 AutoPauseManager 按屏幕暂停/恢复外部引擎
+    private var perScreenPausedScreenIDs: Set<String> = []
+
+    /// 暂停指定屏幕的渲染（发送 SIGSTOP，按屏幕粒度）
+    func pauseWallpaper(for screenID: String) {
+        guard isControllingExternalEngine, let info = screenProcesses[screenID] else { return }
+        kill(info.pid, SIGSTOP)
+        perScreenPausedScreenIDs.insert(screenID)
+        print("[WallpaperEngineXBridge] 暂停渲染 屏幕 \(screenID) (pid=\(info.pid))")
+
+        // 如果所有进程都已被按屏幕暂停，同步全局暂停标志
+        if perScreenPausedScreenIDs.count == screenProcesses.count {
+            isExternalPaused = true
+            updateRendererAudioControls(paused: true)
+        }
+    }
+
+    /// 恢复指定屏幕的渲染（发送 SIGCONT，按屏幕粒度）
+    func resumeWallpaper(for screenID: String) {
+        guard isControllingExternalEngine, let info = screenProcesses[screenID] else { return }
+        kill(info.pid, SIGCONT)
+        perScreenPausedScreenIDs.remove(screenID)
+        print("[WallpaperEngineXBridge] 恢复渲染 屏幕 \(screenID) (pid=\(info.pid))")
+        // 只要有任意屏幕恢复，清除全局暂停标志
+        if isExternalPaused {
+            isExternalPaused = false
+            updateRendererAudioControls(paused: false)
+        }
+    }
+
+    /// 检查指定 screenID 是否被外部引擎管理且有活跃渲染进程
+    func isManaging(screenID: String) -> Bool {
+        screenProcesses[screenID] != nil
+    }
+
     func setMuted(_ muted: Bool) {
         updateRendererAudioControls(muted: muted)
+        if isCurrentWallpaperWeb {
+            let vol = muted ? nil : VideoWallpaperManager.shared.volume
+            sendAudioControlToWebDaemon(muted: muted, volume: vol)
+        }
     }
 
     func setVolume(_ volume: Double, for targetScreen: NSScreen? = nil) {
         updateRendererAudioControls(volume: volume, targetScreen: targetScreen)
+        if isCurrentWallpaperWeb {
+            sendAudioControlToWebDaemon(muted: nil, volume: volume)
+        }
+    }
+
+    /// 通过 Unix Socket 直接向 wallpaperengine-cli daemon 发送音频控制 IPC
+    private func sendAudioControlToWebDaemon(muted: Bool?, volume: Double?) {
+        let socketPath = "/tmp/wallpaperengine-cli.sock"
+        let msg = WebDaemonAudioMessage(command: "audioControl", muted: muted, volume: volume)
+        guard let data = try? JSONEncoder().encode(msg) else { return }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        strncpy(&addr.sun_path, socketPath, MemoryLayout.size(ofValue: addr.sun_path) - 1)
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+
+        let size = MemoryLayout<sockaddr_un>.size
+        let connected = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(size))
+            }
+        }
+        guard connected == 0 else { return }
+
+        var length = UInt32(data.count)
+        let payload = Data(bytes: &length, count: MemoryLayout<UInt32>.size) + data
+        _ = payload.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, payload.count, 0) }
     }
 
     /// 切换暂停/恢复
     func toggleWallpaper() {
-        guard isControllingExternalEngine else { return }
+        guard isControllingExternalEngine else {
+            print("[WallpaperEngineXBridge] toggleWallpaper: 跳过，当前未控制外部引擎")
+            return
+        }
+        let currentState = isExternalPaused ? "已暂停" : "运行中"
+        print("[WallpaperEngineXBridge] toggleWallpaper: 切换渲染状态 (当前=\(currentState))")
         if isExternalPaused {
             resumeWallpaper()
         } else {
@@ -545,11 +640,13 @@ final class WallpaperEngineXBridge: ObservableObject {
 
     /// 停止渲染（终止进程）
     func stopWallpaper() {
+        print("[WallpaperEngineXBridge] stopWallpaper: 停止所有实时渲染 (进程数=\(screenProcesses.count))")
         ensureStoppedForNonCLIWallpaper()
     }
 
     /// 用户从状态栏关闭动态壁纸时调用：停止当前 renderer，但保留持久化状态，方便再次点击开启恢复。
     func disableWallpaperKeepingRestoreState() {
+        print("[WallpaperEngineXBridge] disableWallpaperKeepingRestoreState: 关闭渲染并保留恢复状态 (进程数=\(screenProcesses.count))")
         let statesToRestore = Array(screenRenderStates.values)
         stopRenderProcess()
         webRenderer.stop()
@@ -568,6 +665,8 @@ final class WallpaperEngineXBridge: ObservableObject {
 
     /// 切换为**非** wallpaper-wgpu 壁纸时必须调用
     func ensureStoppedForNonCLIWallpaper() {
+        let processCount = screenProcesses.count
+        print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper: 开始清理 \(processCount) 个渲染进程")
         if #available(macOS 26.0, *) {
             LockScreenWallpaperService.shared.clearRealtimeSourceIfNeeded()
         }
@@ -590,17 +689,23 @@ final class WallpaperEngineXBridge: ObservableObject {
         UserDefaults.standard.removeObject(forKey: targetScreenFingerprintsKey)
         UserDefaults.standard.removeObject(forKey: screenRenderStatesKey)
         screenRenderStates.removeAll()
+        print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper: 清理完成")
     }
 
     /// 切换指定屏幕为非 wallpaper-wgpu 壁纸时调用，避免误杀其他屏幕的实时渲染。
     func ensureStoppedForNonCLIWallpaper(for targetScreen: NSScreen?) {
         guard let targetScreen else {
+            print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper(for:): targetScreen 为 nil，转为全量清理")
             ensureStoppedForNonCLIWallpaper()
             return
         }
 
         let screenID = targetScreen.wallpaperScreenIdentifier
-        guard isManaging(screen: targetScreen) else { return }
+        guard isManaging(screen: targetScreen) else {
+            print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper(for:): 屏幕 \(screenID) 不受外部引擎管理，跳过")
+            return
+        }
+        print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper(for:): 清理屏幕 \(screenID) 的渲染进程")
 
         if #available(macOS 26.0, *) {
             LockScreenWallpaperService.shared.clearRealtimeSourceIfNeeded()
@@ -614,6 +719,8 @@ final class WallpaperEngineXBridge: ObservableObject {
         if let info = screenProcesses[screenID] {
             screenWatchdogs[info.pid]?.cancel()
             screenWatchdogs.removeValue(forKey: info.pid)
+            // 先终止 afplay 音频子进程（SIGTERM handler 可能来不及执行）
+            killAllAudioChildren(pid: info.pid)
             terminateRenderer(pid: info.pid)
             let pid = info.pid
             let watchdog = DispatchWorkItem {
@@ -635,6 +742,9 @@ final class WallpaperEngineXBridge: ObservableObject {
 
     /// 应用退出前调用：立即杀死所有渲染进程，不等待退出，避免阻塞主线程导致 App 卡死。
     func prepareForAppTermination() {
+        let processCount = screenProcesses.count
+        let pids = screenProcesses.values.map { "\($0.pid)" }.joined(separator: ", ")
+        print("[WallpaperEngineXBridge] prepareForAppTermination: 应用退出，立即终止 \(processCount) 个渲染进程 pids=[\(pids)]")
         // 直接 SIGKILL 所有屏幕渲染进程，不做 graceful terminate + 等待
         for (_, info) in screenProcesses {
             kill(info.pid, SIGKILL)
@@ -733,6 +843,11 @@ final class WallpaperEngineXBridge: ObservableObject {
 
         let captureURL = await captureWebFallbackFrameForLockScreenIfNeeded()
         await syncWebStaticFrameToLockScreenIfNeeded(imageURL: captureURL, targetScreens: targetScreens)
+
+        // 初始化 Web 壁纸的音频状态（同步当前 mute/volume）
+        let isMuted = VideoWallpaperManager.shared.isMuted
+        let volume = VideoWallpaperManager.shared.volume
+        sendAudioControlToWebDaemon(muted: isMuted, volume: isMuted ? nil : volume)
     }
 
     private func syncWebStaticFrameToLockScreenIfNeeded(imageURL: URL?, targetScreens: [NSScreen]?) async {
@@ -911,6 +1026,13 @@ final class WallpaperEngineXBridge: ObservableObject {
     }
 
     private func launchRendererProcess(executableURL: URL, arguments: [String], generation: UInt64, screenID: String) throws -> RendererLaunch {
+        print("[WallpaperEngineXBridge] launchRendererProcess: 启动渲染进程 screen=\(screenID) executable=\(executableURL.lastPathComponent)")
+        // 脱敏参数日志：排除 --user-properties 后的长 JSON，避免日志过大
+        let safeArgs = arguments.map { arg in
+            arg.count > 200 ? String(arg.prefix(100)) + "...(truncated \(arg.count - 200) chars)" : arg
+        }
+        print("[WallpaperEngineXBridge] launchRendererProcess: 参数 \(safeArgs.joined(separator: " "))")
+
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
@@ -928,8 +1050,15 @@ final class WallpaperEngineXBridge: ObservableObject {
             )
             self?.enqueueTermination(event)
         }
-        try process.run()
-        return RendererLaunch(process: process, logFile: logFile)
+        do {
+            try process.run()
+            print("[WallpaperEngineXBridge] ✅ launchRendererProcess: 渲染进程已启动 screen=\(screenID) pid=\(process.processIdentifier)")
+            return RendererLaunch(process: process, logFile: logFile)
+        } catch {
+            print("[WallpaperEngineXBridge] ❌ launchRendererProcess: 渲染进程启动失败 screen=\(screenID) error=\(error.localizedDescription)")
+            print("[WallpaperEngineXBridge] ❌ launchRendererProcess: executableURL=\(executableURL.path) cwd=\(executableURL.deletingLastPathComponent().path)")
+            throw error
+        }
     }
 
     private nonisolated func enqueueTermination(_ event: TerminationEvent) {
@@ -945,6 +1074,20 @@ final class WallpaperEngineXBridge: ObservableObject {
         kill(pid, SIGTERM)
     }
 
+    /// 终止 wallpaper-wgpu 渲染器启动的 afplay 子进程（音频播放）。
+    ///
+    /// 切换壁纸时，wallpaper-wgpu 收到 SIGTERM 后会通过 ctrlc handler 调用 `stop_all_owned()` 清理 afplay，
+    /// 但 SIGTERM → handler → exit 需要时间；若 watchdog 在 handler 完成前发送 SIGKILL，
+    /// afplay 会成为孤儿进程继续播放音频。
+    /// 此方法在 SIGTERM 之前主动终止 afplay 子进程，确保音频立即停止。
+    private func killAllAudioChildren(pid: pid_t) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        task.arguments = ["-f", "afplay.*wallpaper-wgpu-audio-\(pid)"]
+        try? task.run()
+        task.waitUntilExit()
+    }
+
     /// 终止所有渲染进程
     private func stopRenderProcess(waitForExit: Bool = false) {
         // 先处理已堆积的终止事件，避免与新进程状态混淆
@@ -956,10 +1099,19 @@ final class WallpaperEngineXBridge: ObservableObject {
         screenWatchdogs.removeAll()
         activeRenderKind = activeRenderKind == .scene ? nil : activeRenderKind
 
-        guard !screenProcesses.isEmpty else { return }
+        let processCount = screenProcesses.count
+        guard !screenProcesses.isEmpty else {
+            print("[WallpaperEngineXBridge] stopRenderProcess: 无活跃进程，跳过 (waitForExit=\(waitForExit))")
+            return
+        }
+        print("[WallpaperEngineXBridge] stopRenderProcess: 终止 \(processCount) 个渲染进程 (waitForExit=\(waitForExit))")
+        // 列出所有要终止的 PID
+        let pidList = screenProcesses.values.map { "\($0.pid)(screen=\($0.screenID))" }.joined(separator: ", ")
+        print("[WallpaperEngineXBridge] stopRenderProcess: 终止目标 pids=[\(pidList)]")
 
-        // 终止所有屏幕进程
+        // 终止所有屏幕进程（先清理 afplay 子进程，确保音频立即停止）
         for (_, info) in screenProcesses {
+            killAllAudioChildren(pid: info.pid)
             terminateRenderer(pid: info.pid)
         }
 
@@ -998,11 +1150,13 @@ final class WallpaperEngineXBridge: ObservableObject {
         }
 
         closeRendererLogs()
+        let removedCount = screenProcesses.count
         screenProcesses.removeAll()
         _deinitPIDs.removeAll()
         if activeRenderKind == .scene {
             activeRenderKind = nil
         }
+        print("[WallpaperEngineXBridge] stopRenderProcess: 完成清理 (共移除 \(removedCount) 个进程记录)")
     }
 
     /// 启动新 renderer 前必须确认旧 renderer 已退出，避免“旧进程还在收尾，新进程又被启动”的闪烁和竞态。
@@ -1014,10 +1168,16 @@ final class WallpaperEngineXBridge: ObservableObject {
         for (_, item) in screenWatchdogs { item.cancel() }
         screenWatchdogs.removeAll()
 
-        guard !screenProcesses.isEmpty else { return }
+        let processCount = screenProcesses.count
+        guard !screenProcesses.isEmpty else {
+            print("[WallpaperEngineXBridge] stopRenderProcessBeforeLaunch: 无旧渲染进程，跳过")
+            return
+        }
+        print("[WallpaperEngineXBridge] stopRenderProcessBeforeLaunch: 启动前清理 \(processCount) 个旧渲染进程")
 
-        // 终止所有屏幕进程
+        // 终止所有屏幕进程（先清理 afplay 子进程，确保音频立即停止）
         for (_, info) in screenProcesses {
+            killAllAudioChildren(pid: info.pid)
             terminateRenderer(pid: info.pid)
         }
 
@@ -1047,10 +1207,16 @@ final class WallpaperEngineXBridge: ObservableObject {
 
     /// 停止指定屏幕的渲染进程（用于 per-screen 更新，不影响其他屏幕）
     private func stopScreenProcess(_ screenID: String) async {
-        guard let info = screenProcesses[screenID] else { return }
+        guard let info = screenProcesses[screenID] else {
+            print("[WallpaperEngineXBridge] stopScreenProcess: 屏幕 \(screenID) 无活跃进程，跳过")
+            return
+        }
+        print("[WallpaperEngineXBridge] stopScreenProcess: 停止屏幕 \(screenID) 渲染进程 (pid=\(info.pid))")
 
         screenWatchdogs[info.pid]?.cancel()
         screenWatchdogs.removeValue(forKey: info.pid)
+        // 先终止 afplay 音频子进程（SIGTERM handler 可能来不及执行）
+        killAllAudioChildren(pid: info.pid)
         terminateRenderer(pid: info.pid)
 
         let pid = info.pid
@@ -1071,6 +1237,22 @@ final class WallpaperEngineXBridge: ObservableObject {
         updateControlStateFromScreenStates()
         persistState()
         processPendingTermination()
+    }
+
+    /// 读取渲染器日志的最后 N 行，调试异常退出时输出
+    private func tailRendererLog(screenID: String, maxLines: Int = 50, maxBytes: Int = 4096) -> String {
+        guard let url = Self.rendererLogURL(screenID: screenID),
+              FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url) else {
+            return ""
+        }
+        let totalSize = data.count
+        let readOffset = max(0, totalSize - maxBytes)
+        let tailData = data.dropFirst(readOffset)
+        guard let content = String(data: tailData, encoding: .utf8) else { return "" }
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+        let tailLines = lines.suffix(maxLines)
+        return tailLines.joined(separator: "\n")
     }
 
     /// 消费线程安全的进程终止事件（@MainActor 方法，仅供其他 @MainActor 方法调用）
@@ -1096,13 +1278,47 @@ final class WallpaperEngineXBridge: ObservableObject {
             let expectedGen = screenEntry.value.generation
             guard event.generation == expectedGen else { continue }
 
-            // SIGTERM (exit code 15) 是由 terminate() 主动发出的正常终止信号
-            if event.reason == .uncaughtSignal && event.status == 15 {
-                print("[WallpaperEngineXBridge] wallpaper-wgpu 已正常终止 屏幕 \(screenID) (pid=\(event.pid))")
-            } else if event.status != 0 {
-                print("[WallpaperEngineXBridge] ❌ wallpaper-wgpu 异常退出 屏幕 \(screenID) (pid=\(event.pid), 退出码=\(event.status))")
-            } else {
-                print("[WallpaperEngineXBridge] wallpaper-wgpu 已正常退出 屏幕 \(screenID) (pid=\(event.pid))")
+            // 捕获并输出完整的退出原因
+            let reasonDesc: String
+            let isError: Bool
+            switch event.reason {
+            case .exit:
+                if event.status == 0 {
+                    reasonDesc = "正常退出 (exit code=0)"
+                    isError = false
+                } else {
+                    reasonDesc = "异常退出 (exit code=\(event.status))"
+                    isError = true
+                }
+            case .uncaughtSignal:
+                let sigName = String(cString: Darwin.strsignal(Int32(event.status)))
+                if event.status == SIGTERM {
+                    reasonDesc = "被正常终止 (signal=SIGTERM/\(event.status): \(sigName))"
+                    isError = false
+                } else {
+                    reasonDesc = "被异常信号终止 (signal=\(event.status): \(sigName))"
+                    isError = true
+                }
+            @unknown default:
+                reasonDesc = "未知终止原因 (reason=\(event.reason), status=\(event.status))"
+                isError = true
+            }
+
+            let icon = isError ? "❌" : "✅"
+            print("[WallpaperEngineXBridge] \(icon) wallpaper-wgpu 进程已退出 屏幕 \(screenID) (pid=\(event.pid), 退出原因: \(reasonDesc))")
+
+            // 异常退出时回读渲染器日志尾部内容，输出到主日志方便排障
+            if isError {
+                let tail = tailRendererLog(screenID: screenID)
+                if !tail.isEmpty {
+                    print("[WallpaperEngineXBridge] ════ wallpaper-wgpu 渲染器日志 (尾部) ════")
+                    for line in tail.split(separator: "\n") {
+                        print("[WallpaperEngineXBridge]   | \(line)")
+                    }
+                    print("[WallpaperEngineXBridge] ════ 日志结束 ════")
+                } else {
+                    print("[WallpaperEngineXBridge] ⚠️ wallpaper-wgpu 渲染器日志为空或无法读取")
+                }
             }
 
             removeScreenProcess(screenID)
@@ -1478,7 +1694,14 @@ final class WallpaperEngineXBridge: ObservableObject {
         return nil
     }
 
-
+    /// 合并用户属性 JSON 与场景配置覆盖（__-prefixed system keys）
+    /// 场景配置覆盖由 SceneConfigOverrideService 管理，两者合并为单一 JSON 传给 --user-properties
+    private static func mergeSceneConfigOverrides(_ userProperties: String?, wallpaperPath: String) -> String? {
+        SceneConfigOverrideService.mergedPropertiesJSON(
+            userPropertiesJSON: userProperties,
+            for: wallpaperPath
+        )
+    }
 
     /// 使用 CoreGraphics 查找指定进程的窗口，返回 CGWindowID
     /// ⚠️ 调用方需确保已有屏幕录制权限，否则 macOS 26 会 EXC_BREAKPOINT

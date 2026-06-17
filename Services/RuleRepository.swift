@@ -7,8 +7,6 @@ import Foundation
 actor RuleRepository {
     static let shared = RuleRepository()
 
-    private let ruleLoader = RuleLoader.shared
-
     // 当前配置的仓库
     private var currentRepoURL: String?
     private var currentOwner: String?
@@ -55,7 +53,6 @@ actor RuleRepository {
 
         do {
             try await configure(repoURL: savedURL)
-            try await syncAllRules()
         } catch {
             print("[RuleRepository] 加载仓库失败: \(error.localizedDescription)")
         }
@@ -123,120 +120,6 @@ actor RuleRepository {
         self.cachedIndex = index
 
         return index
-    }
-
-    // MARK: - 同步规则
-
-    /// 同步所有规则（壁纸 + 媒体，不包括动漫）
-    /// 动漫规则完全由 AnimeRuleStore/KazumiRuleLoader 独立管理
-    func syncAllRules() async throws {
-        print("[RuleRepository] Syncing all rules...")
-
-        // 同步媒体配置（壁纸+媒体源）
-        try await syncMediaRules()
-
-        // 同步壁纸规则
-        try await syncWallpaperRules()
-
-        // 注意：动漫规则不由 RuleRepository 管理
-        // 动漫规则由 AnimeRuleStore 独立从 Kazumi 仓库加载
-
-        print("[RuleRepository] Sync completed")
-    }
-
-    /// 同步媒体配置（壁纸+媒体源）
-    func syncMediaRules() async throws {
-        guard let owner = currentOwner, let repo = currentRepo else {
-            throw RuleRepositoryError.notConfigured
-        }
-
-        print("[RuleRepository] Syncing media rules...")
-
-        do {
-            let index = try await fetchIndex()
-
-            if let media = index.categories?.media?.items {
-                for item in media {
-                    let url = item.url ?? "https://raw.githubusercontent.com/\(owner)/\(repo)/main/\(item.name).json"
-                    do {
-                        let data = try await fetchData(from: url)
-                        // 保存到 UserDefaults（必须在 MainActor 上执行）
-                        await MainActor.run {
-                            UserDefaults.standard.set(data, forKey: "data_source_profiles_v1")
-                        }
-                        print("[RuleRepository] Installed media profile: \(item.name)")
-                    } catch {
-                        print("[RuleRepository] Failed to install media profile \(item.name): \(error)")
-                    }
-                }
-            }
-        } catch {
-            // 尝试下载 DataSourceProfile.json
-            let url = "https://raw.githubusercontent.com/\(owner)/\(repo)/main/DataSourceProfile.json"
-            do {
-                let data = try await fetchData(from: url)
-                await MainActor.run {
-                    UserDefaults.standard.set(data, forKey: "data_source_profiles_v1")
-                }
-                print("[RuleRepository] Installed DataSourceProfile.json")
-            } catch {
-                print("[RuleRepository] Failed to install DataSourceProfile.json: \(error)")
-            }
-        }
-    }
-
-    /// 同步壁纸规则
-    func syncWallpaperRules() async throws {
-        guard let owner = currentOwner, let repo = currentRepo else {
-            throw RuleRepositoryError.notConfigured
-        }
-
-        print("[RuleRepository] Syncing wallpaper rules...")
-
-        // 尝试从 index.json 获取壁纸规则
-        do {
-            let index = try await fetchIndex()
-
-            if let wallpaper = index.categories?.wallpaper?.items {
-                for item in wallpaper {
-                    do {
-                        _ = try await ruleLoader.installRuleFromGitHub(
-                            owner: owner,
-                            repo: repo,
-                            path: "wallpaper/\(item.name).json"
-                        )
-                        print("[RuleRepository] Installed wallpaper rule: \(item.name)")
-                    } catch {
-                        // 尝试根目录
-                        do {
-                            _ = try await ruleLoader.installRuleFromGitHub(
-                                owner: owner,
-                                repo: repo,
-                                path: "\(item.name).json"
-                            )
-                        } catch {
-                            print("[RuleRepository] Failed to install \(item.name): \(error)")
-                        }
-                    }
-                }
-            }
-        } catch {
-            // 尝试常见文件名
-            let commonFiles = ["DataSourceProfile.json", "wallhaven.json", "motionbgs.json"]
-            for file in commonFiles {
-                do {
-                    _ = try await ruleLoader.installRuleFromGitHub(
-                        owner: owner,
-                        repo: repo,
-                        path: file
-                    )
-                    print("[RuleRepository] Installed rule from: \(file)")
-                    break
-                } catch {
-                    continue
-                }
-            }
-        }
     }
 
     // MARK: - 辅助方法

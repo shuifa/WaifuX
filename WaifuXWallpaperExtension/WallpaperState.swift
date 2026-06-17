@@ -15,6 +15,7 @@ struct ActiveWallpaper: @unchecked Sendable {
     let renderer: VideoRenderer?
     let displayID: UInt32?
     let videoID: String?
+    let contextId: UInt32
 }
 
 final class WallpaperState: Sendable {
@@ -24,11 +25,19 @@ final class WallpaperState: Sendable {
 
     private struct State: @unchecked Sendable {
         var activeContexts: [UInt32: ActiveWallpaper] = [:]
-        var wallpaperIDToContext: [String: UInt32] = [:]
+        /// 已移除：历史上 wallpaperID → contextId 是单值映射，
+        /// 桌面和锁屏两个 instance 共享同一 wallpaperID 时后者会覆盖前者，
+        /// 导致被覆盖的 instance 的 renderer 被 stop（layers 全部拆除）→ 黑屏。
+        /// 现在按 contextId 独立存储，wallpaperID 查找改走 activeContexts.values 扫描。
         var cachedThumbnailURL: URL?
         var cacheDirectoryURL: URL?
+        // 兼容旧的全局单值缓存（findVideoURL/findImageURL 等非 display 特定路径仍会使用）。
         var cachedVideoURL: URL?
         var cachedImageURL: URL?
+        // 多显示器：每个显示器独立的“热切换”缓存。
+        // switch_video / switch_image 到达时按 displayID 写入各自一格，避免屏 A 的切换覆盖屏 B。
+        var cachedVideoURLs: [UInt32: URL] = [:]
+        var cachedImageURLs: [UInt32: URL] = [:]
         var currentVideoID: String? = UserDefaults.standard.string(forKey: WallpaperState.selectedVideoKey)
         var presentationMode: String = "active"
         var activityState: String = "active"
@@ -67,30 +76,36 @@ final class WallpaperState: Sendable {
             state.cachedVideoURL = nil
             state.cachedImageURL = nil
             state.cachedThumbnailURL = nil
+            state.cachedVideoURLs.removeAll()
+            state.cachedImageURLs.removeAll()
         }
     }
 
     // MARK: - Context Management
 
-    /// 存储新的渲染上下文。如果同一 wallpaperID 已有渲染器，先停止并返回旧的。
+    /// 存储新的渲染上下文。
+    /// 同一 wallpaperID 可对应多个 contextId（桌面 + 锁屏两个独立 instance 各自 acquire）。
+    /// 历史上此处按 wallpaperID 去重，会把先 acquire 的 instance（通常是桌面）的 renderer stop 掉，
+    /// 导致该 instance 的 rootLayer layers 全部拆除 → 黑屏，且永远无法被 alwaysPauseDesktop policy 命中。
+    /// 现改为只按 contextId 存储/去重，同一 wallpaperID 多 instance 共存。
     func storeContext(_ context: ActiveWallpaper, id: UInt32, wallpaperID: String?) -> ActiveWallpaper? {
         lock.withLock { state in
-            var existing: ActiveWallpaper?
-            if let wid = wallpaperID, let oldId = state.wallpaperIDToContext[wid] {
-                existing = state.activeContexts.removeValue(forKey: oldId)
-            }
+            let existing = state.activeContexts[id]
             state.activeContexts[id] = context
-            if let wid = wallpaperID {
-                state.wallpaperIDToContext[wid] = id
-            }
             return existing
         }
     }
 
+    /// 移除所有匹配 wallpaperID 的 context（桌面 + 锁屏均可能被系统一次性 invalidate）。
+    /// 返回最后一个被移除的 context（调用方只关心 stop renderer，多实例一并 stop）。
     func removeContext(wallpaperID: String) -> ActiveWallpaper? {
         lock.withLock { state in
-            guard let contextId = state.wallpaperIDToContext.removeValue(forKey: wallpaperID) else { return nil }
-            return state.activeContexts.removeValue(forKey: contextId)
+            var removed: ActiveWallpaper?
+            let matching = state.activeContexts.filter { $0.value.videoID == wallpaperID }.map { $0.key }
+            for id in matching {
+                removed = state.activeContexts.removeValue(forKey: id)
+            }
+            return removed
         }
     }
 
@@ -99,7 +114,6 @@ final class WallpaperState: Sendable {
             let all = Array(state.activeContexts.values)
             let ioRenderers = Array(state.ioSurfaceRenderers.values)
             state.activeContexts.removeAll()
-            state.wallpaperIDToContext.removeAll()
             state.ioSurfaceRenderers.removeAll()
             state.ioSurfaceRendererGenerations.removeAll()
             return (all, ioRenderers)
@@ -149,41 +163,46 @@ final class WallpaperState: Sendable {
         }
     }
 
+    /// 命令路由用的上下文查找：必须精确匹配 displayID。
+    /// 历史上此处带有”回退到任意 nil displayID 上下文 / count==1 就返回唯一上下文”的逻辑，
+    /// 在多显示器场景下会把发给屏幕 A 的 switch_video 命令命中到屏幕 B 的上下文（串屏/黑屏）。
+    /// 现改为精确匹配失败即返回 nil，调用方会通过 setPendingVideo 缓存命令，
+    /// 在对应屏幕下次 acquire 时自动应用。
     func activeContextForCommand(displayID: UInt32) -> ActiveWallpaper? {
         lock.withLock { state in
-            if let exact = state.activeContexts.values.first(where: { $0.displayID == displayID }) {
-                return exact
-            }
-            if let unbound = state.activeContexts.values.first(where: { $0.displayID == nil }) {
-                return unbound
-            }
-            if state.activeContexts.count == 1 {
-                return state.activeContexts.values.first
-            }
-            return nil
+            state.activeContexts.values.first(where: { $0.displayID == displayID })
+        }
+    }
+
+    /// 返回同一 displayID 的**所有**活跃上下文。
+    /// macOS 桌面实例和锁屏实例共享同一个 displayID 但各自 acquire 产生独立 context，
+    /// switch_video 命令必须更新两者，否则其中一个会停留在旧视频内容。
+    func allActiveContexts(for displayID: UInt32) -> [ActiveWallpaper] {
+        lock.withLock { state in
+            state.activeContexts.values.filter { $0.displayID == displayID }
         }
     }
 
     func activeContext(wallpaperID: String) -> ActiveWallpaper? {
         lock.withLock { state in
-            guard let contextId = state.wallpaperIDToContext[wallpaperID] else { return nil }
-            return state.activeContexts[contextId]
+            state.activeContexts.values.first { $0.videoID == wallpaperID }
         }
     }
 
     func updateContextDisplayID(wallpaperID: String, displayID: UInt32) {
         lock.withLock { state in
-            guard let contextId = state.wallpaperIDToContext[wallpaperID],
-                  let old = state.activeContexts[contextId],
-                  old.displayID != displayID else {
+            guard let pair = state.activeContexts.first(where: { $0.value.videoID == wallpaperID }),
+                  pair.value.displayID != displayID else {
                 return
             }
-            state.activeContexts[contextId] = ActiveWallpaper(
+            let old = pair.value
+            state.activeContexts[pair.key] = ActiveWallpaper(
                 caContext: old.caContext,
                 rootLayer: old.rootLayer,
                 renderer: old.renderer,
                 displayID: displayID,
-                videoID: old.videoID
+                videoID: old.videoID,
+                contextId: pair.key
             )
         }
     }
@@ -200,7 +219,8 @@ final class WallpaperState: Sendable {
                 rootLayer: old.rootLayer,
                 renderer: old.renderer,
                 displayID: displayID,
-                videoID: old.videoID
+                videoID: old.videoID,
+                contextId: pair.key
             )
         }
     }
@@ -220,27 +240,40 @@ final class WallpaperState: Sendable {
                 rootLayer: old.rootLayer,
                 renderer: renderer,
                 displayID: old.displayID,
-                videoID: videoID ?? old.videoID
+                videoID: videoID ?? old.videoID,
+                contextId: pair.key
             )
             return old.renderer
         }
     }
 
-    func replaceContextRendererForCommand(displayID: UInt32, renderer: VideoRenderer?, videoID: String?) -> VideoRenderer? {
+    /// 命令路由用的渲染器替换：必须精确匹配 displayID，不再回退到任意上下文，
+    /// 避免多显示器下把某一屏的渲染器替换错误地应用到另一屏（与 activeContextForCommand 保持一致）。
+    /// 替换指定 contextId 的渲染器，返回旧的渲染器（如果存在）。
+    /// 用于 switch_video 命令中需要精确更新特定 context 的场景。
+    func replaceContextRendererByContextId(contextId: UInt32, renderer: VideoRenderer?, videoID: String?) -> VideoRenderer? {
         lock.withLock { state in
-            let pair = state.activeContexts.first(where: { $0.value.displayID == displayID })
-                ?? state.activeContexts.first(where: { $0.value.displayID == nil })
-                ?? (state.activeContexts.count == 1 ? state.activeContexts.first : nil)
-            guard let pair else { return nil }
-            let old = pair.value
-            state.activeContexts[pair.key] = ActiveWallpaper(
+            guard let old = state.activeContexts[contextId] else {
+                return nil
+            }
+            state.activeContexts[contextId] = ActiveWallpaper(
                 caContext: old.caContext,
                 rootLayer: old.rootLayer,
                 renderer: renderer,
-                displayID: displayID,
-                videoID: videoID ?? old.videoID
+                displayID: old.displayID,
+                videoID: videoID ?? old.videoID,
+                contextId: contextId
             )
             return old.renderer
+        }
+    }
+
+    /// 替换指定 contextId 的上下文，返回旧的上下文（如果存在）。
+    func replaceContextById(contextId: UInt32, context: ActiveWallpaper) -> ActiveWallpaper? {
+        lock.withLock { state in
+            let old = state.activeContexts.removeValue(forKey: contextId)
+            state.activeContexts[contextId] = context
+            return old
         }
     }
 
@@ -344,6 +377,43 @@ final class WallpaperState: Sendable {
     var cachedImageURL: URL? {
         get { lock.withLock { $0.cachedImageURL } }
         set { lock.withLock { $0.cachedImageURL = newValue } }
+    }
+
+    // MARK: - Per-display 缓存（多显示器热切换）
+
+    /// 读取某块显示器热切换缓存到的视频 URL。优先返回 per-display 缓存，
+    /// 没有则回退到全局单值（兼容单显示器/旧调用方）。
+    func cachedVideoURL(for displayID: UInt32) -> URL? {
+        lock.withLock { $0.cachedVideoURLs[displayID] ?? $0.cachedVideoURL }
+    }
+
+    /// 写入某块显示器的热切换视频缓存，并清除该屏的图片缓存（互斥）。
+    func setCachedVideoURL(_ url: URL?, for displayID: UInt32) {
+        lock.withLock { state in
+            if let url {
+                state.cachedVideoURLs[displayID] = url
+            } else {
+                state.cachedVideoURLs.removeValue(forKey: displayID)
+            }
+            state.cachedImageURLs.removeValue(forKey: displayID)
+        }
+    }
+
+    /// 读取某块显示器热切换缓存到的图片 URL。
+    func cachedImageURL(for displayID: UInt32) -> URL? {
+        lock.withLock { $0.cachedImageURLs[displayID] ?? $0.cachedImageURL }
+    }
+
+    /// 写入某块显示器的热切换图片缓存，并清除该屏的视频缓存（互斥）。
+    func setCachedImageURL(_ url: URL?, for displayID: UInt32) {
+        lock.withLock { state in
+            if let url {
+                state.cachedImageURLs[displayID] = url
+            } else {
+                state.cachedImageURLs.removeValue(forKey: displayID)
+            }
+            state.cachedVideoURLs.removeValue(forKey: displayID)
+        }
     }
 
     var currentVideoID: String? {

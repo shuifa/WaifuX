@@ -134,6 +134,7 @@ final class StatusBarController: NSObject {
     private lazy var muteItem = NSMenuItem(title: t("statusbar.muteWallpaper"), action: #selector(toggleMute), keyEquivalent: "")
     private lazy var desktopIconsItem = NSMenuItem(title: t("statusbar.hideDesktopIcons"), action: #selector(toggleDesktopIcons), keyEquivalent: "")
     private lazy var designWallpaperItem = NSMenuItem(title: "设计壁纸", action: #selector(openWebWallpaperDesignPanel), keyEquivalent: "")
+    private lazy var sceneConfigItem = NSMenuItem(title: "场景高级设置", action: #selector(openSceneConfigPanel), keyEquivalent: "")
     private lazy var quitItem = NSMenuItem(title: t("statusbar.quit"), action: #selector(quitApplication), keyEquivalent: "q")
 
     private let videoWallpaperManager = VideoWallpaperManager.shared
@@ -207,6 +208,7 @@ final class StatusBarController: NSObject {
         muteItem.target = self
         desktopIconsItem.target = self
         designWallpaperItem.target = self
+        sceneConfigItem.target = self
         quitItem.target = self
 
         menu.addItem(openWindowItem)
@@ -215,6 +217,7 @@ final class StatusBarController: NSObject {
         menu.addItem(.separator())
         menu.addItem(desktopIconsItem)
         menu.addItem(designWallpaperItem)
+        menu.addItem(sceneConfigItem)
         // toggleWallpaperItem 和 playPauseItem 在 refreshMenuState 中动态构建
         menu.addItem(muteItem)
         menu.addItem(.separator())
@@ -288,6 +291,17 @@ final class StatusBarController: NSObject {
         }
         designWallpaperItem.isHidden = !shouldShowDesignWallpaperItem
         designWallpaperItem.isEnabled = shouldShowDesignWallpaperItem
+
+        // 场景高级设置（仅在实时渲染场景壁纸时显示）
+        let shouldShowSceneConfig = weBridge.isCurrentWallpaperScene
+            && UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled")
+        sceneConfigItem.isHidden = !shouldShowSceneConfig
+        sceneConfigItem.isEnabled = shouldShowSceneConfig
+        if shouldShowSceneConfig, let path = weBridge.currentWallpaperPathForDesign {
+            sceneConfigItem.representedObject = path
+        } else {
+            sceneConfigItem.representedObject = nil
+        }
 
         // 移除旧的动态菜单项
         for item in wallpaperControlItems {
@@ -586,6 +600,14 @@ final class StatusBarController: NSObject {
     @objc private func toggleDesktopIcons() {
         DesktopIconManager.shared.toggle()
         refreshMenuState()
+    }
+
+    @objc private func openSceneConfigPanel() {
+        guard let wallpaperPath = sceneConfigItem.representedObject as? String ?? weBridge.currentWallpaperPathForDesign else {
+            NSSound.beep()
+            return
+        }
+        SceneConfigOverridePanelController.shared.present(for: wallpaperPath)
     }
 
     @objc private func openWebWallpaperDesignPanel() {

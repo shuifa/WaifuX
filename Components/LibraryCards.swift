@@ -189,7 +189,7 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
     }
 
     private var shouldAnimateGIF: Bool {
-        isVisible && !LibraryScrollActivity.isActive
+        isHovered && isVisible
     }
 
     // 降采样目标尺寸（固定 512x512，避免窗口大小变化导致缓存失效）

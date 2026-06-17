@@ -414,7 +414,7 @@ enum SceneOfflineBakeService {
         eligibility: SceneBakeEligibilitySnapshot,
         contentRoot: URL,
         cacheItemID: String,
-        durationSeconds: Double = 15,
+        durationSeconds: Double? = nil,
         fps: Int32? = nil,
         renderer: SceneBakeRenderer = .wallpaperWgpu,
         persistArtifactToItemID: String? = nil,
@@ -427,6 +427,13 @@ enum SceneOfflineBakeService {
             let saved = UserDefaults.standard.double(forKey: "scene_bake_fps")
             effectiveFPS = saved >= 15 ? Int32(min(max(saved, 15), 60)) : 30
         }
+        let effectiveDuration: Double
+        if let durationSeconds {
+            effectiveDuration = durationSeconds
+        } else {
+            let saved = UserDefaults.standard.double(forKey: "scene_bake_duration")
+            effectiveDuration = saved >= 5 ? min(max(saved, 5), 60) : 15
+        }
         // 并发门控：防止多个烘焙同时运行
         let entered = await SceneOfflineBakeConcurrencyGate.shared.tryEnter()
         guard entered else {
@@ -437,7 +444,7 @@ enum SceneOfflineBakeService {
                 eligibility: eligibility,
                 contentRoot: contentRoot,
                 cacheItemID: cacheItemID,
-                durationSeconds: durationSeconds,
+                durationSeconds: effectiveDuration,
                 fps: effectiveFPS,
                 renderer: renderer,
                 persistArtifactToItemID: persistArtifactToItemID,
@@ -1079,7 +1086,7 @@ enum SceneOfflineBakeService {
     /// FPS 默认值取自用户设置 `scene_bake_fps`（回退 30）。
     static func bake(
         record: MediaDownloadRecord,
-        durationSeconds: Double = 15,
+        durationSeconds: Double? = nil,
         fps: Int32? = nil,
         renderer: SceneBakeRenderer = .wallpaperWgpu,
         progress: (@MainActor (Double) -> Void)? = nil
@@ -1091,6 +1098,13 @@ enum SceneOfflineBakeService {
             let saved = UserDefaults.standard.double(forKey: "scene_bake_fps")
             effectiveFPS = saved >= 15 ? Int32(min(max(saved, 15), 60)) : 30
         }
+        let effectiveDuration: Double
+        if let durationSeconds {
+            effectiveDuration = durationSeconds
+        } else {
+            let saved = UserDefaults.standard.double(forKey: "scene_bake_duration")
+            effectiveDuration = saved >= 5 ? min(max(saved, 5), 60) : 15
+        }
         guard let eligibility = record.sceneBakeEligibility else {
             throw SceneOfflineBakeError.ineligible
         }
@@ -1099,7 +1113,7 @@ enum SceneOfflineBakeService {
             eligibility: eligibility,
             contentRoot: contentRoot,
             cacheItemID: record.id,
-            durationSeconds: durationSeconds,
+            durationSeconds: effectiveDuration,
             fps: effectiveFPS,
             renderer: renderer,
             persistArtifactToItemID: record.id,

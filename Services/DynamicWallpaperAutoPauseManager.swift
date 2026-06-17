@@ -5,7 +5,7 @@ import Combine
 
 /// 动态壁纸自动暂停管理器
 /// 根据用户设置，在以下场景自动暂停/恢复动态壁纸：
-/// 1. 前台存在其他应用时（排除 Finder）
+/// 1. 前台存在其他应用时（排除 Finder，按屏幕独立判定）
 /// 2. 检测到有全屏窗口覆盖桌面时（按屏幕独立暂停）
 /// 3. 切换到电池供电时
 @MainActor
@@ -15,15 +15,15 @@ final class DynamicWallpaperAutoPauseManager {
     private var checkTimer: Timer?
     private var checkTimerCancellable: AnyCancellable?
     private var cancellables = Set<AnyCancellable>()
-    /// 当前是否存在“前台应用”这一自动暂停原因。
-    private var foregroundPauseRequested = false
-    /// 当前是否存在“电池供电”这一自动暂停原因。
+    /// 当前因前台存在其他应用而需要暂停的屏幕 ID 集合（按屏幕追踪）
+    private var foregroundPausedScreenIDs: Set<String> = []
+    /// 当前是否存在"电池供电"这一自动暂停原因。
     private var batteryPauseRequested = false
-    /// 全局自动暂停前，原生视频壁纸里真实处于播放中的屏幕。
+    /// 全局自动暂停（电池）前，原生视频壁纸里真实处于播放中的屏幕。
     private var globalAutoPausedNativePlayingScreenIDs: Set<String> = []
-    /// 触发全局自动暂停前，原生视频里已经处于手动暂停状态的屏幕。
+    /// 触发全局自动暂停（电池）前，原生视频里已经处于手动暂停状态的屏幕。
     private var globalAutoPausedNativeManuallyPausedScreenIDs: Set<String> = []
-    /// 全局自动暂停前，Wallpaper Engine 是否处于播放状态。
+    /// 全局自动暂停（电池）前，Wallpaper Engine 的全局暂停状态。
     private var globalAutoPausedExternalEngine = false
     /// 当前被全屏窗口覆盖的屏幕 ID 列表。
     private var fullscreenCoveredScreenIDs: Set<String> = []
@@ -115,6 +115,32 @@ final class DynamicWallpaperAutoPauseManager {
         suppressForegroundPauseUntil = Date().addingTimeInterval(duration)
     }
 
+    /// 壁纸切换后清除前台暂停状态。
+    /// 新启动的 wallpaper-wgpu 进程不应被旧的前台暂停状态误杀（SIGSTOP）。
+    /// 当用户之后切走应用时，NSWorkspace app activation 通知会重新施加前台暂停。
+    func clearForegroundPauseForWallpaperSwitch() {
+        let pausedIDs = foregroundPausedScreenIDs
+        foregroundPausedScreenIDs.removeAll()
+
+        guard !pausedIDs.isEmpty else { return }
+
+        let weBridge = WallpaperEngineXBridge.shared
+        if weBridge.isControllingExternalEngine {
+            for screenID in pausedIDs where weBridge.isManaging(screenID: screenID) {
+                weBridge.resumeWallpaper(for: screenID)
+            }
+        }
+
+        let videoManager = VideoWallpaperManager.shared
+        if videoManager.isVideoWallpaperActive {
+            for screen in NSScreen.screens where pausedIDs.contains(screen.wallpaperScreenIdentifier) {
+                if !fullscreenAutoPausedScreenIDs.contains(screen.wallpaperScreenIdentifier) {
+                    videoManager.resumeWallpaper(for: screen)
+                }
+            }
+        }
+    }
+
     private func updateTimer() {
         let needsFullscreenTimer = pauseWhenFullscreenCovers
         if needsFullscreenTimer {
@@ -173,7 +199,7 @@ final class DynamicWallpaperAutoPauseManager {
         let hasNative = VideoWallpaperManager.shared.isVideoWallpaperActive
         let hasExternal = WallpaperEngineXBridge.shared.isControllingExternalEngine
         guard hasNative || hasExternal else {
-            foregroundPauseRequested = false
+            foregroundPausedScreenIDs.removeAll()
             batteryPauseRequested = false
             globalAutoPausedNativePlayingScreenIDs.removeAll()
             globalAutoPausedNativeManuallyPausedScreenIDs.removeAll()
@@ -220,8 +246,10 @@ final class DynamicWallpaperAutoPauseManager {
         let screenIDsToResume = fullscreenAutoPausedScreenIDs.subtracting(newFullscreenIDs)
         if !screenIDsToResume.isEmpty {
             fullscreenAutoPausedScreenIDs.subtract(screenIDsToResume)
-            if !hasActiveGlobalPauseReason {
-                resumeScreens(byIDs: screenIDsToResume)
+            // 排除当前被前台暂停的屏幕（前台暂停是独立的，不应被全屏检测 override）
+            let filteredResumeIDs = screenIDsToResume.subtracting(foregroundPausedScreenIDs)
+            if !filteredResumeIDs.isEmpty, !hasActiveGlobalPauseReason {
+                resumeScreens(byIDs: filteredResumeIDs)
             }
         }
 
@@ -284,7 +312,7 @@ final class DynamicWallpaperAutoPauseManager {
         resumeFromGlobalPauseIfPossible()
     }
 
-    // MARK: - 检测逻辑
+    // MARK: - 前台应用检测（按屏幕）
 
     /// 前台应用切换时由通知驱动，无需轮询
     private func handleAppActivationChange() {
@@ -303,15 +331,149 @@ final class DynamicWallpaperAutoPauseManager {
                 return // 被取消
             }
             guard let self else { return }
-            let shouldPause = self.isOtherAppInForeground()
-            if shouldPause {
-                self.foregroundPauseRequested = true
-                self.applyGlobalPauseIfNeeded()
-            } else {
-                self.foregroundPauseRequested = false
-                self.resumeFromGlobalPauseIfPossible()
+
+            let newlyCoveredScreens = self.getForegroundAppCoveredScreens()
+            let newForegroundPausedIDs = Set(newlyCoveredScreens.map { $0.wallpaperScreenIdentifier })
+            let previouslyPausedIDs = self.foregroundPausedScreenIDs
+
+            guard newForegroundPausedIDs != previouslyPausedIDs else { return }
+            self.foregroundPausedScreenIDs = newForegroundPausedIDs
+
+            // 电池暂停期间：只记录前台状态变化，不实际暂停/恢复壁纸
+            // 壁纸已由电池全局暂停，恢复时会根据当前 foregroundPausedScreenIDs 重新施加前台暂停
+            guard !self.batteryPauseRequested else { return }
+
+            // 恢复不再被前台应用覆盖的屏幕
+            let screenIDsToResume = previouslyPausedIDs.subtracting(newForegroundPausedIDs)
+            if !screenIDsToResume.isEmpty {
+                self.applyPerScreenForegroundResume(screenIDs: screenIDsToResume)
+            }
+
+            // 暂停新被前台应用覆盖的屏幕
+            let screenIDsToPause = newForegroundPausedIDs.subtracting(previouslyPausedIDs)
+            if !screenIDsToPause.isEmpty {
+                self.applyPerScreenForegroundPause(screenIDs: screenIDsToPause)
             }
         }
+    }
+
+    /// 按屏幕施加前台暂停
+    private func applyPerScreenForegroundPause(screenIDs: Set<String>) {
+        let videoManager = VideoWallpaperManager.shared
+        let weBridge = WallpaperEngineXBridge.shared
+
+        for screenID in screenIDs {
+            // 暂停原生视频壁纸
+            if videoManager.isVideoWallpaperActive {
+                for screen in NSScreen.screens where screen.wallpaperScreenIdentifier == screenID {
+                    if !videoManager.isPaused(on: screen) &&
+                        !fullscreenAutoPausedScreenIDs.contains(screenID) {
+                        videoManager.pauseWallpaper(for: screen)
+                    }
+                    break
+                }
+            }
+
+            // 暂停外部引擎
+            if weBridge.isControllingExternalEngine && weBridge.isManaging(screenID: screenID) {
+                weBridge.pauseWallpaper(for: screenID)
+            }
+        }
+    }
+
+    /// 按屏幕恢复前台暂停
+    private func applyPerScreenForegroundResume(screenIDs: Set<String>) {
+        let videoManager = VideoWallpaperManager.shared
+        let weBridge = WallpaperEngineXBridge.shared
+
+        for screenID in screenIDs {
+            // 恢复原生视频壁纸（排除全屏暂停和手动暂停的屏幕）
+            if videoManager.isVideoWallpaperActive {
+                for screen in NSScreen.screens where screen.wallpaperScreenIdentifier == screenID {
+                    if !fullscreenAutoPausedScreenIDs.contains(screenID) {
+                        videoManager.resumeWallpaper(for: screen)
+                    }
+                    break
+                }
+            }
+
+            // 恢复外部引擎
+            if weBridge.isControllingExternalEngine && weBridge.isManaging(screenID: screenID) {
+                weBridge.resumeWallpaper(for: screenID)
+            }
+        }
+    }
+
+    /// 获取前台应用的窗口覆盖了哪些屏幕
+    /// 通过 CGWindowListCopyWindowInfo 查找前台应用（非本应用、非 Finder）的窗口位置
+    private func getForegroundAppCoveredScreens() -> [NSScreen] {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            return []
+        }
+        let frontmostPID = frontmostApp.processIdentifier
+
+        let ourBundleID = Bundle.main.bundleIdentifier
+        let finderBundleID = "com.apple.finder"
+        let frontBundleID = frontmostApp.bundleIdentifier
+
+        // 前台是本应用或 Finder → 没有"其他应用"覆盖
+        guard frontBundleID != ourBundleID && frontBundleID != finderBundleID else {
+            return []
+        }
+
+        guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+
+        let screens = NSScreen.screens
+        let desktopFrame = screens.reduce(CGRect.null) { $0.union($1.frame) }
+        var coveredScreens: [NSScreen] = []
+
+        // 找到前台应用的所有可见窗口
+        let appWindows = windowList.filter { window in
+            guard let ownerPID = window[kCGWindowOwnerPID as String] as? Int,
+                  ownerPID == frontmostPID else { return false }
+            guard let layer = window[kCGWindowLayer as String] as? Int, layer == 0 else { return false }
+            guard let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0 else { return false }
+            return true
+        }
+
+        guard !appWindows.isEmpty else { return [] }
+
+        // 检查这些窗口覆盖了哪些屏幕
+        for screen in screens {
+            let screenFrame = screen.frame
+            let screenArea = screenFrame.width * screenFrame.height
+            var isCovered = false
+
+            for window in appWindows {
+                guard let boundsDict = window[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
+                let rawBounds = CGRect(
+                    x: boundsDict["X"] ?? 0,
+                    y: boundsDict["Y"] ?? 0,
+                    width: boundsDict["Width"] ?? 0,
+                    height: boundsDict["Height"] ?? 0
+                )
+                let bounds = normalizedWindowBounds(rawBounds, screens: screens, desktopFrame: desktopFrame)
+
+                // 检查窗口是否覆盖了该屏幕的大部分区域
+                let intersection = bounds.intersection(screenFrame)
+                guard !intersection.isNull, !intersection.isEmpty else { continue }
+
+                let coveredArea = intersection.width * intersection.height
+                // 窗口覆盖屏幕 >= 30% 面积视为"覆盖"（低于全屏检测的 95%，因为普通窗口通常不会全屏）
+                if coveredArea >= screenArea * 0.3 {
+                    isCovered = true
+                    break
+                }
+            }
+
+            if isCovered {
+                coveredScreens.append(screen)
+            }
+        }
+
+        return coveredScreens
     }
 
     @objc private func handleActiveSpaceChange() {
@@ -321,7 +483,7 @@ final class DynamicWallpaperAutoPauseManager {
         checkAndApply()
     }
 
-    /// 检查前台是否是非本应用且非 Finder 的其他应用
+    /// 检查前台是否是非本应用且非 Finder 的其他应用（全局判断，供旧逻辑兼容）
     private func isOtherAppInForeground() -> Bool {
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else { return false }
         let bundleID = frontmostApp.bundleIdentifier
@@ -340,13 +502,13 @@ final class DynamicWallpaperAutoPauseManager {
     }
 
     /// 检查当前是否有全屏窗口覆盖桌面
-    /// 通过 CGWindowList 检测 layer 0 且覆盖屏幕绝大部分区域的窗口
     private func isFullscreenCovering() -> Bool {
         return !getFullscreenCoveredScreens().isEmpty
     }
 
     /// 获取被全屏窗口覆盖的屏幕列表（可在后台线程调用）
     /// 通过 CGWindowList 检测 layer 0 且覆盖屏幕绝大部分区域的窗口
+    /// 排除本应用自身的渲染窗口（如 wallpaper-wgpu 的 Metal 窗口）
     nonisolated private func getFullscreenCoveredScreens() -> [NSScreen] {
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
             return []
@@ -354,12 +516,20 @@ final class DynamicWallpaperAutoPauseManager {
 
         let screens = NSScreen.screens
         let desktopFrame = screens.reduce(CGRect.null) { $0.union($1.frame) }
+        let ourBundleID = Bundle.main.bundleIdentifier
         var coveredScreens: [NSScreen] = []
 
         for window in windowList {
             guard let layer = window[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
             guard let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0 else { continue }
             guard let boundsDict = window[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
+
+            // 跳过本应用的窗口（wallpaper-wgpu 的 Metal 渲染窗口属于本应用）
+            if let ownerPID = window[kCGWindowOwnerPID as String] as? Int,
+               let app = NSRunningApplication(processIdentifier: pid_t(ownerPID)),
+               app.bundleIdentifier == ourBundleID {
+                continue
+            }
 
             let rawBounds = CGRect(
                 x: boundsDict["X"] ?? 0,
@@ -459,8 +629,15 @@ final class DynamicWallpaperAutoPauseManager {
 
     private func syncForegroundPauseRequest() {
         guard pauseWhenOtherAppForeground else {
-            foregroundPauseRequested = false
-            resumeFromGlobalPauseIfPossible()
+            // 关闭前台暂停时：恢复所有被前台暂停的屏幕
+            if !foregroundPausedScreenIDs.isEmpty {
+                let pausedIDs = foregroundPausedScreenIDs
+                foregroundPausedScreenIDs.removeAll()
+                // 电池暂停期间不实际恢复（电池恢复时会处理）
+                if !batteryPauseRequested {
+                    applyPerScreenForegroundResume(screenIDs: pausedIDs)
+                }
+            }
             return
         }
         handleAppActivationChange()
@@ -486,22 +663,29 @@ final class DynamicWallpaperAutoPauseManager {
         }
     }
 
+    /// 应用全局暂停（目前仅电池供电触发）
+    /// 暂停所有正在播放的壁纸（原生视频 + 外部引擎），保存恢复所需的状态
     private func applyGlobalPauseIfNeeded() {
         guard hasActiveGlobalPauseReason else { return }
 
         let videoManager = VideoWallpaperManager.shared
         let weBridge = WallpaperEngineXBridge.shared
 
+        // ---- 外部引擎 ----
         if weBridge.isControllingExternalEngine {
             guard !weBridge.isExternalPaused else { return }
-            weBridge.pauseWallpaper()
             globalAutoPausedExternalEngine = true
+            weBridge.pauseWallpaper()
+        } else {
+            globalAutoPausedExternalEngine = false
+        }
+
+        // ---- 原生视频 ----
+        guard videoManager.isVideoWallpaperActive else {
             globalAutoPausedNativePlayingScreenIDs.removeAll()
             globalAutoPausedNativeManuallyPausedScreenIDs.removeAll()
             return
         }
-
-        guard videoManager.isVideoWallpaperActive else { return }
         guard globalAutoPausedNativePlayingScreenIDs.isEmpty else { return }
 
         let managedScreenIDs = Set(videoManager.activeScreens.map(\.wallpaperScreenIdentifier))
@@ -512,18 +696,22 @@ final class DynamicWallpaperAutoPauseManager {
         globalAutoPausedNativeManuallyPausedScreenIDs = managedScreenIDs
             .subtracting(playingScreenIDs)
             .subtracting(fullscreenAutoPausedScreenIDs)
-        globalAutoPausedExternalEngine = false
+            .subtracting(foregroundPausedScreenIDs.intersection(managedScreenIDs))
+
         if !videoManager.isPaused {
             videoManager.pauseWallpaper()
         }
     }
 
+    /// 从全局暂停恢复（目前仅电池从 AC 恢复触发）
+    /// 恢复时保留前台暂停的按屏幕状态
     private func resumeFromGlobalPauseIfPossible() {
         guard !hasActiveGlobalPauseReason else { return }
 
         let videoManager = VideoWallpaperManager.shared
         let weBridge = WallpaperEngineXBridge.shared
 
+        // ---- 外部引擎恢复 ----
         if globalAutoPausedExternalEngine {
             if weBridge.isControllingExternalEngine {
                 if weBridge.shouldPauseForFullscreenCoveredScreenIDs(fullscreenCoveredScreenIDs) {
@@ -538,9 +726,17 @@ final class DynamicWallpaperAutoPauseManager {
                 fullscreenAutoPausedExternalEngine = false
             }
             globalAutoPausedExternalEngine = false
-            return
+
+            // 恢复外部引擎后，重新施加前台暂停（如果前台仍有应用覆盖）
+            if !foregroundPausedScreenIDs.isEmpty,
+               weBridge.isControllingExternalEngine {
+                for screenID in foregroundPausedScreenIDs where weBridge.isManaging(screenID: screenID) {
+                    weBridge.pauseWallpaper(for: screenID)
+                }
+            }
         }
 
+        // ---- 原生视频恢复 ----
         guard !globalAutoPausedNativePlayingScreenIDs.isEmpty else {
             globalAutoPausedNativeManuallyPausedScreenIDs.removeAll()
             return
@@ -553,12 +749,18 @@ final class DynamicWallpaperAutoPauseManager {
 
         let managedScreenIDs = Set(videoManager.activeScreens.map(\.wallpaperScreenIdentifier))
         let coveredManagedScreenIDs = fullscreenCoveredScreenIDs.intersection(managedScreenIDs)
-        let screenIDsToKeepPaused = globalAutoPausedNativeManuallyPausedScreenIDs.union(coveredManagedScreenIDs)
+        // 电池恢复时，保留：手动暂停的屏幕 + 全屏覆盖的屏幕 + 前台暂停的屏幕
+        // 前台暂停使用当前 foregroundPausedScreenIDs（电池期间可能已变化）
+        let currentForegroundNativePausedIDs = foregroundPausedScreenIDs.intersection(managedScreenIDs)
+        let screenIDsToKeepPaused = globalAutoPausedNativeManuallyPausedScreenIDs
+            .union(coveredManagedScreenIDs)
+            .union(currentForegroundNativePausedIDs)
 
         if videoManager.isPaused {
             videoManager.resumeWallpaper()
         }
 
+        // 重新暂停需要保持暂停的屏幕
         for screen in NSScreen.screens where screenIDsToKeepPaused.contains(screen.wallpaperScreenIdentifier) {
             videoManager.pauseWallpaper(for: screen)
         }
@@ -569,7 +771,9 @@ final class DynamicWallpaperAutoPauseManager {
         globalAutoPausedNativeManuallyPausedScreenIDs.removeAll()
     }
 
+    /// 是否存在全局暂停原因（电池供电）
+    /// 注意：前台暂停现在是按屏幕的，不在这里判断
     private var hasActiveGlobalPauseReason: Bool {
-        foregroundPauseRequested || batteryPauseRequested
+        batteryPauseRequested
     }
 }

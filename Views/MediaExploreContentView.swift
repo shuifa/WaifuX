@@ -452,7 +452,6 @@ struct MediaExploreContentView: View {
     }
 
     private func handleScrollOffset(_ offset: CGFloat) {
-        MediaExploreScrollActivity.markActive()
         updateHeaderMountState(scrollOffset: offset)
     }
 

@@ -99,7 +99,7 @@ private func waifuXGrayscaleThumb(from cgImage: CGImage, dimension: Int) -> [UIn
 
 // MARK: - IPC
 private enum IPCCommand: String, Codable {
-    case set, pause, resume, stop, applyProperties
+    case set, pause, resume, stop, applyProperties, audioControl
 }
 
 private struct IPCMessage: Codable {
@@ -107,12 +107,16 @@ private struct IPCMessage: Codable {
     let path: String?
     let screen: Int?
     let propertiesJSON: String?
+    let muted: Bool?
+    let volume: Double?
 
-    init(command: IPCCommand, path: String?, screen: Int?, propertiesJSON: String? = nil) {
+    init(command: IPCCommand, path: String?, screen: Int?, propertiesJSON: String? = nil, muted: Bool? = nil, volume: Double? = nil) {
         self.command = command
         self.path = path
         self.screen = screen
         self.propertiesJSON = propertiesJSON
+        self.muted = muted
+        self.volume = volume
     }
 }
 
@@ -1332,6 +1336,16 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         NSApp.setActivationPolicy(.prohibited)
     }
 
+    /// 设置音频控制（静音/音量），通过 JS 注入作用于所有 <video>/<audio> 元素
+    func setAudioControl(muted: Bool?, volume: Double?) {
+        guard isLoaded, let webView else { return }
+        var js = "document.querySelectorAll('video,audio').forEach(e=>{"
+        if let muted { js += "e.muted=\(muted);" }
+        if let volume { js += "e.volume=\(max(0,min(1,volume)));" }
+        js += "})"
+        webView.evaluateJavaScript(js) { _, _ in }
+    }
+
     @discardableResult
     func applyUserProperties(jsonString: String) -> Bool {
         injectedPropertiesJSON = jsonString
@@ -1939,6 +1953,12 @@ private final class DesktopWallpaperManager {
         return WebRendererBridge.shared.applyUserProperties(jsonString: jsonString)
     }
 
+    /// 设置 Web 壁纸的音频控制（静音/音量）
+    func setWebAudioControl(muted: Bool?, volume: Double?) {
+        guard isRunning, isWebMode else { return }
+        WebRendererBridge.shared.setAudioControl(muted: muted, volume: volume)
+    }
+
     func stopWallpaper() {
         if isWebMode {
             WebRendererBridge.shared.stop()
@@ -2503,6 +2523,9 @@ private final class Daemon: NSObject, NSApplicationDelegate {
                     } else {
                         sendResponse("ERROR:缺少 propertiesJSON")
                     }
+                case .audioControl:
+                    DesktopWallpaperManager.shared.setWebAudioControl(muted: msg.muted, volume: msg.volume)
+                    sendResponse("OK")
                 }
             }
         }

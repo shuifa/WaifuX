@@ -8,22 +8,6 @@ private final class LibraryScrollRuntimeState: ObservableObject {
     var currentOffset: CGFloat = 0
 }
 
-// MARK: - 滚动状态追踪（我的库）
-enum LibraryScrollActivity {
-    private static let idleDelay: CFTimeInterval = 0.22
-    @MainActor private static var lastScrollEventTime: CFTimeInterval = 0
-
-    @MainActor
-    static func markActive() {
-        lastScrollEventTime = CACurrentMediaTime()
-    }
-
-    @MainActor
-    static var isActive: Bool {
-        CACurrentMediaTime() - lastScrollEventTime < idleDelay
-    }
-}
-
 // MARK: - Scroll 观察与恢复辅助组件
 /// 直接观察底层 NSScrollView，避免滚动时通过 PreferenceKey 持续触发整棵 SwiftUI 内容重算。
 private struct LibraryScrollObserver: NSViewRepresentable {
@@ -560,7 +544,6 @@ struct MyLibraryContentView: View {
     }
 
     private func handleLibraryScroll(_ offset: CGFloat) {
-        LibraryScrollActivity.markActive()
         libraryScrollRuntimeState.currentOffset = offset
 
         let hideThreshold = libraryHeaderHeight + 24
@@ -707,9 +690,6 @@ struct MyLibraryContentView: View {
                     estimatedHeight: LibraryCardMetrics.thumbnailHeight + 60
                 ) { entry in
                     wallpaperGridEntry(entry, config: config)
-                        .dropDestination(for: String.self) { strings, _ in
-                            handleGridReorderDrop(strings, before: entry.id)
-                        }
                 }
             }
         }
@@ -724,6 +704,9 @@ struct MyLibraryContentView: View {
             wallpaperGridItem(item: item, config: config)
                 .onAppear {
                     preloadNearbyWallpapers(around: item, config: config)
+                }
+                .dropDestination(for: String.self) { strings, _ in
+                    handleGridReorderDrop(strings, before: entry.id)
                 }
         }
     }
@@ -981,9 +964,6 @@ struct MyLibraryContentView: View {
                     estimatedHeight: LibraryCardMetrics.thumbnailHeight + 56
                 ) { entry in
                     mediaGridEntry(entry, config: config)
-                        .dropDestination(for: String.self) { strings, _ in
-                            handleGridReorderDrop(strings, before: entry.id)
-                        }
                 }
             }
         }
@@ -998,6 +978,9 @@ struct MyLibraryContentView: View {
             mediaGridItem(item: item, config: config)
                 .onAppear {
                     preloadNearbyMedia(around: item, config: config)
+                }
+                .dropDestination(for: String.self) { strings, _ in
+                    handleGridReorderDrop(strings, before: entry.id)
                 }
         }
     }

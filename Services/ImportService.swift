@@ -252,7 +252,6 @@ final class ImportService: ObservableObject {
 
             if isDirectory { continue } // 不递归子目录（避免扫描 workshop 深层结构）
 
-            let ext = fileURL.pathExtension.lowercased()
             if isImageFile(fileURL) {
                 items.append(ImportItem(type: .wallpaper(sourceURL: fileURL)))
             } else if isVideoFile(fileURL) {
@@ -293,11 +292,11 @@ final class ImportService: ObservableObject {
     private func processImportItem(_ item: ImportItem, folderID: String?) async -> Bool {
         switch item.type {
         case .wallpaper(let sourceURL):
-            return await importWallpaper(from: sourceURL, folderID: folderID)
+            return importWallpaper(from: sourceURL, folderID: folderID)
         case .media(let sourceURL):
             return await importMedia(from: sourceURL, folderID: folderID)
         case .workshop(let dirURL, let projectJSONURL, let json):
-            return await importWorkshop(
+            return importWorkshop(
                 sourceDir: dirURL,
                 projectJSONURL: projectJSONURL,
                 json: json,

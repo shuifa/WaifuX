@@ -68,7 +68,7 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
 
     /// UI 更新节流（~30fps）
     nonisolated(unsafe) private var lastUIUpdateTime: UInt64 = 0
-    nonisolated(unsafe) private static let uiUpdateIntervalNs: UInt64 = 33_000_000 // ~30fps
+    nonisolated private static let uiUpdateIntervalNs: UInt64 = 33_000_000 // ~30fps
 
     private override init() {
         super.init()

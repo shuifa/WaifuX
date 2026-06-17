@@ -954,18 +954,6 @@ private struct AboutSettingsTab: View {
     @State private var showAutoUpdateSheet = false
     @State private var showResetAlert = false
 
-    private var wallpaperRuleSourceText: String {
-        if viewModel.currentRuleRepository.isEmpty {
-            return "GitHub"
-        }
-        let url = viewModel.currentRuleRepository
-        if let range = url.range(of: "github.com/") {
-            let repo = String(url[range.upperBound...])
-            return repo.replacingOccurrences(of: ".git", with: "")
-        }
-        return "GitHub"
-    }
-
     var body: some View {
         ZStack {
             MacSettingsForm {
@@ -975,7 +963,6 @@ private struct AboutSettingsTab: View {
                 // 项目信息组
                 MacSettingsSection(header: t("projectInfo")) {
                     infoRow(title: t("developer"), value: "jipika", isLast: false)
-                    infoRow(title: t("wallpaperRuleSource"), value: wallpaperRuleSourceText, isLast: false)
                     infoRow(title: t("animeRuleSource"), value: "KazumiRules", isLast: false)
                     infoRow(title: t("techStack"), value: "SwiftUI + AppKit", isLast: true)
                 }
@@ -1452,6 +1439,20 @@ private struct WorkshopSettingsTab: View {
                             set: { viewModel.upscalingEnabled = $0 }
                         ))
                     }
+
+                    if viewModel.upscalingEnabled {
+                        MacSettingsRow(title: t("workshop.upscalingRatio"), showDivider: false) {
+                            HStack(spacing: 8) {
+                                Text("\(Int(viewModel.upscalingPercent))%")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .frame(minWidth: 36, alignment: .trailing)
+                                Slider(value: $viewModel.upscalingPercent, in: 30...100, step: 5)
+                                    .frame(width: 120)
+                                    .tint(Color(hex: "30D158"))
+                            }
+                        }
+                    }
                 }
 
                 // 渲染帧率上限
@@ -1484,6 +1485,18 @@ private struct WorkshopSettingsTab: View {
                                 .foregroundStyle(.secondary)
                                 .frame(minWidth: 52, alignment: .trailing)
                             Slider(value: $viewModel.sceneBakeFPS, in: 15...60, step: 5)
+                                .frame(width: 120)
+                                .tint(Color(hex: "30D158"))
+                        }
+                    }
+
+                    MacSettingsRow(title: t("workshop.bakeDuration"), subtitle: t("workshop.bakeDurationDesc"), showDivider: false) {
+                        HStack(spacing: 8) {
+                            Text("\(Int(viewModel.sceneBakeDuration))s")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 36, alignment: .trailing)
+                            Slider(value: $viewModel.sceneBakeDuration, in: 5...60, step: 5)
                                 .frame(width: 120)
                                 .tint(Color(hex: "30D158"))
                         }

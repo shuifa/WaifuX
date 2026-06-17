@@ -582,7 +582,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 await KazumiRuleLoader.shared.clearCache()
                 await AnimeRuleStore.shared.clearInMemoryCache()
                 await RuleLoader.shared.clearInMemoryCache()
-                await RuleRepository.shared.clearCache()
             }
             return
         }

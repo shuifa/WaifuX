@@ -440,9 +440,18 @@ final class VideoRenderer: @unchecked Sendable {
         nextOutput = nil
 
         guard let reader = try? AVAssetReader(asset: asset) else {
-            extLog("  [Renderer] 重建时创建 reader 失败")
+            extLog("  [Renderer] 重建时创建 reader 失败 — 启用 BMP 底图兜底")
             currentReader = nil
             currentOutput = nil
+            // R6 兜底：唤醒/恢复失败时用缓存 BMP 代替黑屏
+            if let bmp = loadCachedSnapshotImage() {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.backgroundFrameLayer.contents = bmp
+                    self.backgroundFrameLayer.opacity = 1
+                    extLog("  [Renderer] 已回退到缓存 BMP 底图")
+                }
+            }
             return
         }
         let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)

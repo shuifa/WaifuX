@@ -391,9 +391,6 @@ function App() {
                                 <a href="https://github.com/jipika/WaifuX" target="_blank" rel="noopener noreferrer">
                                     <GithubIcon className="w-3.5 h-3.5" />{t.footer.github}
                                 </a>
-                                <a href="https://github.com/jipika/WaifuX-Profiles" target="_blank" rel="noopener noreferrer">
-                                    <ExternalLink className="w-3 h-3" />{t.footer.rules}
-                                </a>
                             </div>
                             <div className="nt-footer-col">
                                 <h4>{t.footer.info}</h4>

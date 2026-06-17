@@ -122,6 +122,16 @@ struct WallpaperExtensionConfiguration: AppExtensionConfiguration {
     }
 }
 
+/// 所有 socket 命令消费（drainPendingSocketCommands）统一走此串行后台队列。
+/// 原因：drain 内部使用同步 socket I/O（connect 超时 2s + read 超时 1s），
+/// 在主线程执行会阻塞 run loop，导致系统 WallpaperAgent 的 XPC 回调（acquire/update）
+/// 延迟甚至超时，进而判定扩展无响应并将其重启 → 表现为"用一会儿偶尔黑屏"。
+/// 串行队列还避免 commandsChanged / prefsChanged 两个 Darwin 通知路径并发 drain 时的竞争。
+///
+/// ⚠️ 必须作为模块级常量而非 `static let`：Darwin 通知回调是 C 函数指针，
+/// 不能捕获 dynamic Self；引用模块顶层 `let` 不属于捕获，可编译通过。
+let wallpaperCommandQueue = DispatchQueue(label: "com.waifux.wallpaperextension.command", qos: .utility)
+
 @main
 final class WaifuXWallpaperExtension: NSObject, AppExtension {
     typealias Configuration = WallpaperExtensionConfiguration
@@ -307,7 +317,7 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
     /// 在主线程执行会阻塞 run loop，影响 XPC 回调响应和 CACommit 等关键事件的处理。
     private func observeSocketCommands() {
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            DispatchQueue.global(qos: .utility).async {
+            wallpaperCommandQueue.async {
                 Self.drainPendingSocketCommands(reason: "timer")
             }
         }
@@ -321,7 +331,9 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             center,
             observer,
             { _, _, _, _, _ in
-                DispatchQueue.main.async {
+                // ⚠️ 必须走后台串行队列：drainPendingSocketCommands 内部是同步 socket I/O，
+                // 在主线程执行会阻塞 run loop（见 commandQueue 注释），曾被系统判定无响应而重启扩展。
+                wallpaperCommandQueue.async {
                     WaifuXWallpaperExtension.drainPendingSocketCommands(reason: "commandsChanged")
                 }
             },
@@ -406,18 +418,47 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             if let path = UnixSocketClient.shared.fetchVideoPathSync(for: videoID) {
                 let url = URL(fileURLWithPath: path)
                 if FileManager.default.fileExists(atPath: path) {
-                    WallpaperState.shared.cachedVideoURL = url
-                    WallpaperState.shared.cachedImageURL = nil
+                    // 多显示器：按 displayID 写各自一格缓存，避免覆盖其它屏的缓存。
+                    WallpaperState.shared.setCachedVideoURL(url, for: displayID)
                     WallpaperState.shared.removeIOSurfaceRenderer(for: displayID)
                     FrameChannel.shared.unregisterCallback(displayID: displayID)
-                    if let active = WallpaperState.shared.activeContextForCommand(displayID: displayID),
-                       let renderer = active.renderer {
-                        renderer.replaceVideo(with: url)
-                        _ = WallpaperState.shared.replaceContextRendererForCommand(displayID: displayID, renderer: renderer, videoID: videoID)
-                        WallpaperPrefs.shared.updateCurrentVideo()
-                        WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: active.rootLayer)
-                        extLog("[Commands] ✅ 已热切换显示器 \(displayID) 到视频: \(videoID)")
-                    } else if let active = WallpaperState.shared.activeContextForCommand(displayID: displayID) {
+
+                    // macOS 桌面实例和锁屏实例共享 displayID 但各自有独立 context，
+                    // 必须遍历所有匹配的 context 进行热切换，否则其中一个会停留在旧视频内容。
+                    let allContexts = WallpaperState.shared.allActiveContexts(for: displayID)
+
+                    if allContexts.isEmpty {
+                        // 无活跃上下文（扩展刚重启），缓存视频等待 acquire 后自动应用
+                        WallpaperState.shared.setPendingVideo(url, for: displayID)
+                        extLog("[Commands] ⏳ 无活跃上下文 display=\(displayID)，已缓存待处理视频: \(videoID)")
+                        return
+                    }
+
+                    // Path A: 有 renderer 的 context → 热切换视频
+                    let contextsWithRenderer = allContexts.filter { $0.renderer != nil }
+                    if !contextsWithRenderer.isEmpty {
+                        for active in contextsWithRenderer {
+                            guard let renderer = active.renderer else { continue }
+                            renderer.replaceVideo(with: url)
+                            WallpaperPrefs.shared.updateCurrentVideo()
+                            WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: active.rootLayer)
+                            // 更新 context 的 videoID
+                            let updated = ActiveWallpaper(
+                                caContext: active.caContext,
+                                rootLayer: active.rootLayer,
+                                renderer: renderer,
+                                displayID: active.displayID,
+                                videoID: videoID,
+                                contextId: active.contextId
+                            )
+                            WallpaperState.shared.replaceContextById(contextId: active.contextId, context: updated)
+                        }
+                        extLog("[Commands] ✅ 已热切换显示器 \(displayID) 到视频: \(videoID) (\(contextsWithRenderer.count) 个 context)")
+                    }
+
+                    // Path B: 无 renderer 的 context（之前是静态图模式）→ 创建新的视频 renderer
+                    let contextsWithoutRenderer = allContexts.filter { $0.renderer == nil }
+                    for active in contextsWithoutRenderer {
                         // handleSocketCommand 始终在主线程调用，rootLayer 在此之后
                         // 不会被其他线程修改，使用 nonisolated(unsafe) 绕过严格的 Sendable 检查。
                         let rootLayer = active.rootLayer
@@ -429,8 +470,12 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                                 FrameChannel.shared.unregisterCallback(displayID: displayID)
                                 rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
                                 let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: url)
-                                let oldRenderer = WallpaperState.shared.replaceContextRendererForCommand(displayID: displayID, renderer: renderer, videoID: videoID)
-                                oldRenderer?.stop()
+                                // 更新这个特定 context 的 renderer（通过 contextId 精确匹配）
+                                WallpaperState.shared.replaceContextRendererByContextId(
+                                    contextId: active.contextId,
+                                    renderer: renderer,
+                                    videoID: videoID
+                                )
                                 renderer.start()
                                 WallpaperPrefs.shared.updateCurrentVideo()
                                 WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: rootLayer)
@@ -452,10 +497,6 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                                 }
                             }
                         }
-                    } else {
-                        // 无活跃上下文（扩展刚重启），缓存视频等待 acquire 后自动应用
-                        WallpaperState.shared.setPendingVideo(url, for: displayID)
-                        extLog("[Commands] ⏳ 无活跃上下文 display=\(displayID)，已缓存待处理视频: \(videoID)")
                     }
                 }
             }
@@ -464,8 +505,8 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             if let path = UnixSocketClient.shared.fetchVideoPathSync(for: sourceID) {
                 let url = URL(fileURLWithPath: path)
                 if FileManager.default.fileExists(atPath: path) {
-                    WallpaperState.shared.cachedImageURL = url
-                    WallpaperState.shared.cachedVideoURL = nil
+                    // 多显示器：按 displayID 写各自一格缓存，避免覆盖其它屏的缓存。
+                    WallpaperState.shared.setCachedImageURL(url, for: displayID)
                     WallpaperXPCHandler.switchActiveContextToStaticImage(displayID: displayID, sourceID: sourceID, imageURL: url)
                 }
             }
@@ -484,7 +525,9 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                 VideoLibrary.shared.scan()
                 WallpaperState.shared.clearCaches()
                 extLog("[Extension] Library changed — re-scanned")
-                DispatchQueue.main.async {
+                // 与 commandsChanged 路径共用同一串行后台队列，避免并发 drain 竞争，
+                // 且不阻塞主线程。
+                wallpaperCommandQueue.async {
                     WaifuXWallpaperExtension.drainPendingSocketCommands(reason: "prefsChanged")
                 }
             },
