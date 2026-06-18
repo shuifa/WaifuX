@@ -17,6 +17,7 @@ class SettingsViewModel: ObservableObject {
     @Published var launchAtLogin = false { didSet { UserDefaults.standard.set(launchAtLogin, forKey: "launch_at_login") } }
     @Published var grainTextureEnabled = false {
         didSet {
+            guard !isBatchUpdating else { return }
             UserDefaults.standard.set(grainTextureEnabled, forKey: "grain_texture_enabled")
             ArcBackgroundSettings.shared.grainTextureEnabled = grainTextureEnabled
             VideoWallpaperManager.shared.refreshGrainOverlay()
@@ -26,6 +27,7 @@ class SettingsViewModel: ObservableObject {
     /// 颗粒度强度 0.0~1.0，同步到 ArcBackgroundSettings.grainIntensity
     @Published var grainIntensity: Double = 0.5 {
         didSet {
+            guard !isBatchUpdating else { return }
             UserDefaults.standard.set(grainIntensity, forKey: "arc_grain_intensity")
             ArcBackgroundSettings.shared.grainIntensity = grainIntensity
             VideoWallpaperManager.shared.refreshGrainOverlay()
@@ -34,6 +36,7 @@ class SettingsViewModel: ObservableObject {
     /// 隐藏刘海（菜单栏纯黑覆盖）
     @Published var hideNotch = false {
         didSet {
+            guard !isBatchUpdating else { return }
             UserDefaults.standard.set(hideNotch, forKey: "hide_notch")
             NotchOverlayManager.shared.setEnabled(hideNotch)
         }
@@ -48,6 +51,7 @@ class SettingsViewModel: ObservableObject {
     /// 与桌面动态元素（时钟、音频柱状图等）互斥
     @Published var sceneRealtimeRenderingEnabled = false {
         didSet {
+            guard !isBatchUpdating else { return }
             UserDefaults.standard.set(sceneRealtimeRenderingEnabled, forKey: "scene_realtime_rendering_enabled")
             // 与桌面动态元素互斥
             if sceneRealtimeRenderingEnabled {
@@ -82,6 +86,11 @@ class SettingsViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(sceneBakeDuration, forKey: "scene_bake_duration") }
     }
 
+    /// 下载完成后自动烘焙场景壁纸
+    @Published var autoBakeScene: Bool = true {
+        didSet { UserDefaults.standard.set(autoBakeScene, forKey: "auto_bake_scene") }
+    }
+
     /// 动态锁屏壁纸开关（仅 macOS 26+ 可用，关闭后走旧逻辑）
     @Published var dynamicLockScreenEnabled = false {
         didSet {
@@ -96,9 +105,27 @@ class SettingsViewModel: ObservableObject {
         }
     }
 
-    @Published var proxyEnabled = false { didSet { UserDefaults.standard.set(proxyEnabled, forKey: "proxy_enabled"); syncProxySettings() } }
-    @Published var proxyHost: String = "" { didSet { UserDefaults.standard.set(proxyHost, forKey: "proxy_host"); syncProxySettings() } }
-    @Published var proxyPort: String = "" { didSet { UserDefaults.standard.set(proxyPort, forKey: "proxy_port"); syncProxySettings() } }
+    @Published var proxyEnabled = false {
+        didSet {
+            guard !isBatchUpdating else { return }
+            UserDefaults.standard.set(proxyEnabled, forKey: "proxy_enabled")
+            syncProxySettings()
+        }
+    }
+    @Published var proxyHost: String = "" {
+        didSet {
+            guard !isBatchUpdating else { return }
+            UserDefaults.standard.set(proxyHost, forKey: "proxy_host")
+            syncProxySettings()
+        }
+    }
+    @Published var proxyPort: String = "" {
+        didSet {
+            guard !isBatchUpdating else { return }
+            UserDefaults.standard.set(proxyPort, forKey: "proxy_port")
+            syncProxySettings()
+        }
+    }
 
     @Published var cacheSize: String = "0 MB"
     @Published var cacheProgress: Double = 0.0
@@ -113,6 +140,46 @@ class SettingsViewModel: ObservableObject {
     @Published var updateCheckError: String?
 
     private var cancellables = Set<AnyCancellable>()
+
+    /// 批量更新标志。为 true 时，各 @Published 的 didSet 跳过单例副作用与 UserDefaults 写入，
+    /// 由 withBatchUpdate 结束时统一补齐，避免批量恢复设置时触发数十次级联 objectWillChange/单例调用。
+    private var isBatchUpdating = false
+
+    /// 在闭包内批量修改设置属性，期间所有 didSet 副作用被抑制；
+    /// 闭包返回后统一应用被抑制的副作用（UserDefaults + 单例）。
+    /// 用于 restoreSavedSettings() 等一次性恢复多个设置的场景。
+    func withBatchUpdate(_ updates: () throws -> Void) rethrows {
+        isBatchUpdating = true
+        defer { isBatchUpdating = false }
+        try updates()
+        applyDeferredSideEffects()
+    }
+
+    /// 应用批量更新期间被抑制的副作用。只处理含单例级联的属性，
+    /// 其余纯 UserDefaults 写入属性在批量期间已被跳过——这里统一补写一次即可。
+    private func applyDeferredSideEffects() {
+        // UserDefaults 补写（批量期间 didSet 未执行）
+        UserDefaults.standard.set(grainTextureEnabled, forKey: "grain_texture_enabled")
+        UserDefaults.standard.set(grainIntensity, forKey: "arc_grain_intensity")
+        UserDefaults.standard.set(hideNotch, forKey: "hide_notch")
+        UserDefaults.standard.set(sceneRealtimeRenderingEnabled, forKey: "scene_realtime_rendering_enabled")
+        UserDefaults.standard.set(proxyEnabled, forKey: "proxy_enabled")
+        UserDefaults.standard.set(proxyHost, forKey: "proxy_host")
+        UserDefaults.standard.set(proxyPort, forKey: "proxy_port")
+
+        // 单例级联副作用
+        ArcBackgroundSettings.shared.grainTextureEnabled = grainTextureEnabled
+        ArcBackgroundSettings.shared.grainIntensity = grainIntensity
+        VideoWallpaperManager.shared.refreshGrainOverlay()
+        NotchOverlayManager.shared.setEnabled(hideNotch)
+        if sceneRealtimeRenderingEnabled {
+            LiquidGlassClockSettings.shared.update { $0.enabled = false }
+        }
+        syncProxySettings()
+
+        // 纯 UserDefaults 属性（批量期间 didSet 被跳过，统一补写）
+        UserDefaults.standard.set(autoBakeScene, forKey: "auto_bake_scene")
+    }
 
     // MARK: - 调度器相关（延迟初始化，避免启动时阻塞）
     private var _schedulerViewModel: WallpaperSchedulerViewModel?
@@ -169,41 +236,46 @@ class SettingsViewModel: ObservableObject {
     /// 在 applicationDidFinishLaunching 完成后的 DispatchQueue.main.async 中调用
     func restoreSavedSettings() {
         // 第一步：快速恢复基本设置（UserDefaults 读取很快）
+        // 用 withBatchUpdate 包裹：一次性赋值 20+ 个 @Published，期间 didSet 的
+        // 单例副作用与 UserDefaults 写入被抑制，结束后统一补齐，避免启动时数十次级联。
         let defaults = UserDefaults.standard
-        saveToDownloads = defaults.object(forKey: DownloadPathManager.persistDownloadsToAppLibraryDefaultsKey) as? Bool ?? true
-        if let raw = defaults.string(forKey: "theme_mode"), let _ = ThemeMode(rawValue: raw) {
-            themeModeRawValue = raw
-        }
-        launchAtLogin = defaults.bool(forKey: "launch_at_login")
-        grainTextureEnabled = defaults.object(forKey: "grain_texture_enabled") as? Bool ?? false
-        grainTextureQuality = defaults.string(forKey: "grain_texture_quality") ?? "high"
-        let savedGrainIntensity = defaults.double(forKey: "arc_grain_intensity")
-        grainIntensity = savedGrainIntensity > 0 ? savedGrainIntensity : 0.5
-        hideNotch = defaults.bool(forKey: "hide_notch")
-        pauseWhenOtherAppForeground = defaults.bool(forKey: "pause_when_other_app_foreground")
-        pauseWhenFullscreenCovers = defaults.bool(forKey: "pause_when_fullscreen_covers")
-        pauseOnBatteryPower = defaults.bool(forKey: "pause_on_battery_power")
-        hdrEnabled = defaults.object(forKey: "hdr_enabled") as? Bool ?? true
-        showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
-        sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
-        upscalingEnabled = defaults.object(forKey: "upscaling_enabled") as? Bool ?? true
-        upscalingPercent = defaults.object(forKey: "upscaling_percent") as? Double ?? 70
-        wallpaperEngineFPS = defaults.object(forKey: "wallpaper_engine_fps") as? Double ?? 60.0
-        sceneBakeFPS = defaults.object(forKey: "scene_bake_fps") as? Double ?? 30.0
-        sceneBakeDuration = defaults.object(forKey: "scene_bake_duration") as? Double ?? 15
-        dynamicLockScreenEnabled = defaults.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? false
-        // 非 macOS 26+ 系统强制关闭动态锁屏
-        if #available(macOS 26.0, *) { } else {
-            dynamicLockScreenEnabled = false
-        }
+        withBatchUpdate {
+            saveToDownloads = defaults.object(forKey: DownloadPathManager.persistDownloadsToAppLibraryDefaultsKey) as? Bool ?? true
+            if let raw = defaults.string(forKey: "theme_mode"), let _ = ThemeMode(rawValue: raw) {
+                themeModeRawValue = raw
+            }
+            launchAtLogin = defaults.bool(forKey: "launch_at_login")
+            grainTextureEnabled = defaults.object(forKey: "grain_texture_enabled") as? Bool ?? false
+            grainTextureQuality = defaults.string(forKey: "grain_texture_quality") ?? "high"
+            let savedGrainIntensity = defaults.double(forKey: "arc_grain_intensity")
+            grainIntensity = savedGrainIntensity > 0 ? savedGrainIntensity : 0.5
+            hideNotch = defaults.bool(forKey: "hide_notch")
+            pauseWhenOtherAppForeground = defaults.bool(forKey: "pause_when_other_app_foreground")
+            pauseWhenFullscreenCovers = defaults.bool(forKey: "pause_when_fullscreen_covers")
+            pauseOnBatteryPower = defaults.bool(forKey: "pause_on_battery_power")
+            hdrEnabled = defaults.object(forKey: "hdr_enabled") as? Bool ?? true
+            showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
+            sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
+            upscalingEnabled = defaults.object(forKey: "upscaling_enabled") as? Bool ?? true
+            upscalingPercent = defaults.object(forKey: "upscaling_percent") as? Double ?? 70
+            wallpaperEngineFPS = defaults.object(forKey: "wallpaper_engine_fps") as? Double ?? 60.0
+            sceneBakeFPS = defaults.object(forKey: "scene_bake_fps") as? Double ?? 30.0
+            sceneBakeDuration = defaults.object(forKey: "scene_bake_duration") as? Double ?? 15
+            autoBakeScene = defaults.object(forKey: "auto_bake_scene") as? Bool ?? true
+            dynamicLockScreenEnabled = defaults.bool(forKey: "dynamic_lock_screen_enabled")
+            // 非 macOS 26+ 系统强制关闭动态锁屏
+            if #available(macOS 26.0, *) { } else {
+                dynamicLockScreenEnabled = false
+            }
 
-        proxyEnabled = defaults.bool(forKey: "proxy_enabled")
-        proxyHost = defaults.string(forKey: "proxy_host") ?? ""
-        proxyPort = defaults.string(forKey: "proxy_port") ?? ""
+            proxyEnabled = defaults.bool(forKey: "proxy_enabled")
+            proxyHost = defaults.string(forKey: "proxy_host") ?? ""
+            proxyPort = defaults.string(forKey: "proxy_port") ?? ""
 
-        // 恢复 API Key 缓存
-        Self._cachedAPIKey = defaults.string(forKey: apiKeyUserDefaultsKey)
-        Self._apiKeyRestored = true
+            // 恢复 API Key 缓存
+            Self._cachedAPIKey = defaults.string(forKey: apiKeyUserDefaultsKey)
+            Self._apiKeyRestored = true
+        }
 
         // 第二步：后台异步执行耗时操作
         Task(priority: .background) { @MainActor in

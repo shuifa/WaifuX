@@ -45,6 +45,8 @@ public struct LiquidGlassClockView: View {
     }
 
     @State private var now: Date = .init()
+    /// 频谱数据（通过 Publisher 精确订阅，不走 @Published objectWillChange）
+    @State private var spectrum: [Float] = Array(repeating: 0, count: 32)
 
     /// 每秒更新一次的定时器
     private let timer = Timer.publish(every: 1, tolerance: 0.1, on: .main, in: .common).autoconnect()
@@ -56,10 +58,41 @@ public struct LiquidGlassClockView: View {
     public var body: some View {
         textOverlayContent
             .onReceive(timer) { newDate in
-                withAnimation(config.animationEnabled ? .easeInOut(duration: 0.2) : nil) {
-                    now = newDate
-                }
+                // 不使用 withAnimation 包裹整个状态更新，避免玻璃背景和音频可视化走动画管线
+                // 时间文字的动画由 .contentTransition(.numericText) 和 .animation 精确控制
+                now = newDate
             }
+            .onReceive(spectrumPublisher) { newSpectrum in
+                spectrum = newSpectrum
+            }
+            .onAppear {
+                // 初始订阅：获取当前频谱值
+                spectrum = currentSpectrumSnapshot
+            }
+            // audioBarCount 变化时，spectrumPublisher 会指向不同的频段 Publisher。
+            // onReceive 在视图首次构建时绑定一次，不会自动重新订阅，因此用 .id 强制
+            // 在频段切换时重建该视图分支，使 onReceive 重新绑定到新的 Publisher。
+            .id(config.audioBarCount)
+    }
+
+    /// 根据 audioBarCount 选择对应的频谱 Publisher
+    private var spectrumPublisher: AnyPublisher<[Float], Never> {
+        let service = SystemAudioCaptureService.shared
+        switch config.audioBarCount {
+        case 16:  return service.spectrum16Publisher.eraseToAnyPublisher()
+        case 64:  return service.spectrum64Publisher.eraseToAnyPublisher()
+        default:  return service.spectrum32Publisher.eraseToAnyPublisher()
+        }
+    }
+
+    /// 初始频谱快照（onAppear 时获取）
+    private var currentSpectrumSnapshot: [Float] {
+        let service = SystemAudioCaptureService.shared
+        switch config.audioBarCount {
+        case 16:  return service.spectrum16
+        case 64:  return service.spectrum64
+        default:  return service.spectrum32
+        }
     }
 
     /// 文字内容 + 玻璃背景
@@ -137,11 +170,7 @@ public struct LiquidGlassClockView: View {
             if config.showAudioVisualizer {
                 LiquidGlassAudioVisualizer(
                     config: config.audioVisualizerConfig,
-                    spectrum: config.audioBarCount == 16
-                        ? SystemAudioCaptureService.shared.spectrum16
-                        : (config.audioBarCount == 64
-                            ? SystemAudioCaptureService.shared.spectrum64
-                            : SystemAudioCaptureService.shared.spectrum32)
+                    spectrum: spectrum
                 )
                 .frame(maxWidth: 200)
                 .padding(.top, 6)

@@ -54,6 +54,9 @@ final class SceneWallpaperPropertiesPanelController {
         currentPath = wallpaperPath
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+
+        // 异步加载壁纸属性，避免 .pkg 解压等 I/O 阻塞主线程
+        Task { await viewModel.loadAsync() }
     }
 
     func closePanel() {
@@ -91,6 +94,7 @@ final class SceneWallpaperPropertiesViewModel: ObservableObject {
 
     @Published private(set) var wallpaperName: String
     @Published var rows: [PropertyRow] = []
+    @Published private(set) var isLoading: Bool = true
 
     let wallpaperPath: String
     private let onClose: () -> Void
@@ -99,15 +103,21 @@ final class SceneWallpaperPropertiesViewModel: ObservableObject {
     init(wallpaperPath: String, onClose: @escaping () -> Void) {
         self.wallpaperPath = wallpaperPath
         self.onClose = onClose
-        self.wallpaperName = SceneWallpaperDesignService.wallpaperTitle(for: wallpaperPath)
-        load()
+        self.wallpaperName = URL(fileURLWithPath: wallpaperPath).lastPathComponent
     }
 
-    func load() {
-        wallpaperName = SceneWallpaperDesignService.wallpaperTitle(for: wallpaperPath)
-        let properties = SceneWallpaperPropertiesService.loadVisibleProperties(for: wallpaperPath)
-        rows = properties.map { prop in
-            PropertyRow(id: prop.key, property: prop, currentValue: prop.currentValue)
+    func loadAsync() async {
+        await MainActor.run { isLoading = true }
+        let name = await Task.detached(priority: .userInitiated) {
+            SceneWallpaperDesignService.wallpaperTitle(for: self.wallpaperPath)
+        }.value
+        let properties = await SceneWallpaperPropertiesService.loadVisiblePropertiesAsync(for: wallpaperPath)
+        await MainActor.run {
+            wallpaperName = name
+            rows = properties.map { prop in
+                PropertyRow(id: prop.key, property: prop, currentValue: prop.currentValue)
+            }
+            isLoading = false
         }
     }
 
@@ -116,7 +126,7 @@ final class SceneWallpaperPropertiesViewModel: ObservableObject {
         rows[index].currentValue = value
         try? SceneWallpaperPropertiesService.setProperty(key: key, value: value, for: wallpaperPath)
         // 重新加载可见属性（条件可能变化）
-        reloadVisible()
+        Task { await reloadVisibleAsync() }
         scheduleApply()
     }
 
@@ -124,20 +134,22 @@ final class SceneWallpaperPropertiesViewModel: ObservableObject {
         guard let index = rows.firstIndex(where: { $0.id == key }) else { return }
         rows[index].currentValue = rows[index].property.originalValue
         try? SceneWallpaperPropertiesService.resetProperty(key: key, for: wallpaperPath)
-        reloadVisible()
+        Task { await reloadVisibleAsync() }
         scheduleApply()
     }
 
     func resetAll() {
         try? SceneWallpaperPropertiesService.resetAllProperties(for: wallpaperPath)
-        load()
+        Task { await loadAsync() }
         scheduleApply()
     }
 
-    private func reloadVisible() {
-        let properties = SceneWallpaperPropertiesService.loadVisibleProperties(for: wallpaperPath)
-        rows = properties.map { prop in
-            PropertyRow(id: prop.key, property: prop, currentValue: prop.currentValue)
+    private func reloadVisibleAsync() async {
+        let properties = await SceneWallpaperPropertiesService.loadVisiblePropertiesAsync(for: wallpaperPath)
+        await MainActor.run {
+            rows = properties.map { prop in
+                PropertyRow(id: prop.key, property: prop, currentValue: prop.currentValue)
+            }
         }
     }
 
@@ -415,7 +427,10 @@ struct SceneWallpaperPropertiesPanel: View {
                 .padding(.bottom, 4)
             glassDivider
 
-            if viewModel.rows.isEmpty {
+            if viewModel.isLoading {
+                loadingState
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.rows.isEmpty {
                 emptyState
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -493,6 +508,17 @@ struct SceneWallpaperPropertiesPanel: View {
                 endPoint: .trailing
             ))
             .frame(height: 0.5)
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.2)
+                .controlSize(.small)
+            Text("加载中...")
+                .font(.system(size: 12))
+                .foregroundStyle(LiquidGlassColors.textSecondary)
+        }
     }
 
     private var emptyState: some View {
@@ -788,7 +814,6 @@ struct SceneWallpaperPropertiesPanel: View {
                     .labelsHidden()
                     .controlSize(.small)
                     .frame(width: 54, height: 24)
-                    .opacity(0.02)
             }
         }
     }

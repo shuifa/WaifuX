@@ -1366,7 +1366,6 @@ struct WallpaperDetailSheet: View {
                 await MainActor.run {
                     PreviewWindowManager.shared.openPreview(
                         url: url,
-                        isMuted: true,
                         aspectRatio: wallpaper.aspectRatioValue
                     )
                 }

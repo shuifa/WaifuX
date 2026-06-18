@@ -178,6 +178,10 @@ enum SceneOfflineBakeService {
     @MainActor
     static func scheduleRealtimeCompanionBake(path: String, targetScreens: [NSScreen]? = nil, reason: String) {
         guard #available(macOS 26.0, *) else { return }
+        guard UserDefaults.standard.bool(forKey: "auto_bake_scene") else {
+            print("[SceneOfflineBake] realtime companion bake skipped (\(reason)): auto_bake_scene is disabled")
+            return
+        }
         let contentRoot = WorkshopService.resolveWallpaperEngineProjectRoot(startingAt: URL(fileURLWithPath: path))
         guard SceneBakeEligibilityAnalyzer.sceneContentRootIfEligibleForAnalysis(localFileURL: contentRoot) != nil else {
             print("[SceneOfflineBake] realtime companion bake skipped (\(reason)): not a scene project \(contentRoot.path)")

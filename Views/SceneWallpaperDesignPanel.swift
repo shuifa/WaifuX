@@ -52,6 +52,9 @@ final class SceneWallpaperDesignPanelController {
         currentPath = wallpaperPath
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+
+        // 异步加载设计数据，避免主线程阻塞
+        Task { await viewModel.loadAsync() }
     }
 
     func closePanel() {
@@ -134,6 +137,7 @@ final class SceneWallpaperDesignViewModel: ObservableObject {
 
     @Published private(set) var wallpaperName: String
     @Published var languageGroups: [LanguageGroup] = []
+    @Published private(set) var isLoading: Bool = true
 
     let wallpaperPath: String
     private let onClose: () -> Void
@@ -142,52 +146,67 @@ final class SceneWallpaperDesignViewModel: ObservableObject {
     init(wallpaperPath: String, onClose: @escaping () -> Void) {
         self.wallpaperPath = wallpaperPath
         self.onClose = onClose
-        self.wallpaperName = SceneWallpaperDesignService.wallpaperTitle(for: wallpaperPath)
-        load()
+        self.wallpaperName = URL(fileURLWithPath: wallpaperPath).lastPathComponent
     }
 
-    func load() {
-        wallpaperName = SceneWallpaperDesignService.wallpaperTitle(for: wallpaperPath)
-        let document = SceneWallpaperDesignService.loadDocument(for: wallpaperPath)
-        guard let sidecar = currentDynamicTextInfo() else {
-            languageGroups = []
-            return
-        }
-        let designed = SceneWallpaperDesignService.resolveDesignedInfo(from: sidecar, wallpaperPath: wallpaperPath)
-        let rows: [EntryRow] = designed.entries.map { entry in
-            EntryRow(
-                id: entry.id,
-                name: entry.source.name,
-                value: entry.source.resolvedText ?? entry.source.value ?? "",
-                key: entry.id,
-                source: entry.source,
-                override: document.overrides[entry.id] ?? SceneDynamicTextDesignOverride()
-            )
-        }
-        languageGroups = Self.groupByPosition(rows)
+    func loadAsync() async {
+        await MainActor.run { isLoading = true }
 
-        // 对于多语言组，确保初始状态下仅选中语言可见，其余隐藏
-        // 避免初次打开时所有语言都 visible 导致 deduplicateByPosition 覆盖用户预期
-        var doc = document
-        var needsSave = false
-        for (gIdx, group) in languageGroups.enumerated() where group.entries.count > 1 {
-            let hasExplicitOverride = group.entries.contains(where: {
-                doc.overrides[$0.key]?.hidden != nil
-            })
-            if !hasExplicitOverride {
-                for (eIdx, entry) in group.entries.enumerated() {
-                    let shouldHide = eIdx != group.selectedLanguageIndex
-                    var mutableEntry = languageGroups[gIdx].entries[eIdx]
-                    mutableEntry.override.hidden = shouldHide
-                    languageGroups[gIdx].entries[eIdx] = mutableEntry
-                    doc.overrides[entry.key] = mutableEntry.override
-                }
-                needsSave = true
-            }
+        // 主线程：访问 VideoWallpaperManager（必须主线程）
+        let sidecar = await MainActor.run {
+            currentDynamicTextInfo()
         }
-        if needsSave {
-            try? SceneWallpaperDesignService.saveDocument(doc, for: wallpaperPath)
-            LiquidGlassClockOverlayManager.shared.rebuildAll()
+
+        // 后台线程：文件 I/O 和数据处理
+        let result = await Task.detached(priority: .userInitiated) { [wallpaperPath] in
+            let name = SceneWallpaperDesignService.wallpaperTitle(for: wallpaperPath)
+            let document = SceneWallpaperDesignService.loadDocument(for: wallpaperPath)
+            guard let sidecar = sidecar else {
+                return (name: name, languageGroups: [LanguageGroup](), needsSave: false, doc: document)
+            }
+            let designed = SceneWallpaperDesignService.resolveDesignedInfo(from: sidecar, wallpaperPath: wallpaperPath)
+            let rows: [EntryRow] = designed.entries.map { entry in
+                EntryRow(
+                    id: entry.id,
+                    name: entry.source.name,
+                    value: entry.source.resolvedText ?? entry.source.value ?? "",
+                    key: entry.id,
+                    source: entry.source,
+                    override: document.overrides[entry.id] ?? SceneDynamicTextDesignOverride()
+                )
+            }
+            var languageGroups = Self.groupByPosition(rows)
+            var doc = document
+            var needsSave = false
+            for (gIdx, group) in languageGroups.enumerated() where group.entries.count > 1 {
+                let hasExplicitOverride = group.entries.contains(where: {
+                    doc.overrides[$0.key]?.hidden != nil
+                })
+                if !hasExplicitOverride {
+                    for (eIdx, entry) in group.entries.enumerated() {
+                        let shouldHide = eIdx != group.selectedLanguageIndex
+                        var mutableEntry = languageGroups[gIdx].entries[eIdx]
+                        mutableEntry.override.hidden = shouldHide
+                        languageGroups[gIdx].entries[eIdx] = mutableEntry
+                        doc.overrides[entry.key] = mutableEntry.override
+                    }
+                    needsSave = true
+                }
+            }
+            return (name: name, languageGroups: languageGroups, needsSave: needsSave, doc: doc)
+        }.value
+
+        // 主线程：更新 UI + 保存文档
+        await MainActor.run {
+            wallpaperName = result.name
+            languageGroups = result.languageGroups
+            isLoading = false
+        }
+        if result.needsSave {
+            try? SceneWallpaperDesignService.saveDocument(result.doc, for: wallpaperPath)
+            await MainActor.run {
+                LiquidGlassClockOverlayManager.shared.rebuildAll()
+            }
         }
     }
 
@@ -206,7 +225,7 @@ final class SceneWallpaperDesignViewModel: ObservableObject {
     }
 
     /// 按位置分组（5 scene units 以内视为同一位置的多语言版本）
-    static func groupByPosition(_ rows: [EntryRow]) -> [LanguageGroup] {
+    nonisolated static func groupByPosition(_ rows: [EntryRow]) -> [LanguageGroup] {
         var groups: [LanguageGroup] = []
         var used = Set<String>()
         let rowsByParent = Dictionary(grouping: rows) { $0.source.parentID }
@@ -334,7 +353,7 @@ final class SceneWallpaperDesignViewModel: ObservableObject {
 
     func resetToDefaults() {
         SceneWallpaperDesignService.resetDocument(for: wallpaperPath)
-        load()
+        Task { await loadAsync() }
         LiquidGlassClockOverlayManager.shared.rebuildAll()
     }
 
@@ -371,64 +390,80 @@ struct SceneWallpaperDesignPanel: View {
                 .padding(.bottom, 4)
             glassDivider
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if viewModel.languageGroups.isEmpty {
-                        Text(t("design.noDesignableText"))
-                            .font(.system(size: 12))
-                            .foregroundStyle(LiquidGlassColors.textSecondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 4)
-                    }
+            if viewModel.isLoading {
+                loadingState
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if viewModel.languageGroups.isEmpty {
+                            Text(t("design.noDesignableText"))
+                                .font(.system(size: 12))
+                                .foregroundStyle(LiquidGlassColors.textSecondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 4)
+                        }
 
-                    ForEach(viewModel.languageGroups) { group in
-                        if group.entries.count > 1 {
-                            LanguageGroupEditor(
-                                group: Binding(
-                                    get: { viewModel.languageGroups.first(where: { $0.id == group.id }) ?? group },
-                                    set: { viewModel.updateGroup($0) }
-                                ),
-                                onSelectLanguage: { index in
-                                    viewModel.selectLanguage(in: group.id, index: index)
-                                }
-                            )
-                        } else if let single = group.entries.first {
-                            SceneTextEntryEditor(
-                                row: Binding(
-                                    get: {
-                                        viewModel.languageGroups
-                                            .first(where: { $0.id == group.id })?
-                                            .entries.first ?? single
-                                    },
-                                    set: { newRow in
-                                        var g = viewModel.languageGroups.first(where: { $0.id == group.id }) ?? group
-                                        g.entries[0] = newRow
-                                        viewModel.updateGroup(g)
+                        ForEach(viewModel.languageGroups) { group in
+                            if group.entries.count > 1 {
+                                LanguageGroupEditor(
+                                    group: Binding(
+                                        get: { viewModel.languageGroups.first(where: { $0.id == group.id }) ?? group },
+                                        set: { viewModel.updateGroup($0) }
+                                    ),
+                                    onSelectLanguage: { index in
+                                        viewModel.selectLanguage(in: group.id, index: index)
                                     }
                                 )
-                            )
+                            } else if let single = group.entries.first {
+                                SceneTextEntryEditor(
+                                    row: Binding(
+                                        get: {
+                                            viewModel.languageGroups
+                                                .first(where: { $0.id == group.id })?
+                                                .entries.first ?? single
+                                        },
+                                        set: { newRow in
+                                            var g = viewModel.languageGroups.first(where: { $0.id == group.id }) ?? group
+                                            g.entries[0] = newRow
+                                            viewModel.updateGroup(g)
+                                        }
+                                    )
+                                )
+                            }
                         }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
+                }
+                .scrollIndicators(.hidden)
+
+                glassDivider
+
+                HStack {
+                    resetButton
                 }
                 .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 8)
+                .padding(.vertical, 10)
             }
-            .scrollIndicators(.hidden)
-
-            glassDivider
-
-            HStack {
-                resetButton
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
         }
         .glassBackground()
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .frame(width: 360, height: 600)
         .tint(accentTint)
         .accentColor(accentTint)
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.2)
+                .controlSize(.small)
+            Text("加载中...")
+                .font(.system(size: 12))
+                .foregroundStyle(LiquidGlassColors.textSecondary)
+        }
     }
 
     private var header: some View {
@@ -920,7 +955,6 @@ private struct SceneTextConfigPanel: View {
                     .labelsHidden()
                     .controlSize(.small)
                     .frame(width: 54, height: 24)
-                    .opacity(0.02)
             }
         }
     }

@@ -1457,6 +1457,32 @@ final class VideoWallpaperManager: ObservableObject {
                     if isLockScreenExtensionActive {
                         print("[VideoWallpaperManager] 📺 视频源恢复完成,扩展已激活,同步视频源到锁屏扩展")
                         syncAllDisplayVideosToExtension()
+                    } else {
+                        // 扩展未激活，可能是开机后系统未自动启动扩展
+                        // 延迟 2 秒后发送系统桌面通知，尝试触发系统刷新壁纸设置从而启动扩展
+                        print("[VideoWallpaperManager] ⏳ 扩展未激活，延迟触发系统壁纸刷新")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                            guard let self else { return }
+                            print("[VideoWallpaperManager] 📢 发送 com.apple.desktop 通知，尝试触发扩展启动")
+                            // 发送系统桌面壁纸刷新通知，可能触发系统重新启动扩展
+                            DistributedNotificationCenter.default().postNotificationName(
+                                NSNotification.Name("com.apple.desktop"),
+                                object: nil,
+                                userInfo: nil,
+                                deliverImmediately: true
+                            )
+                            // 再延迟 3 秒后检查扩展是否被启动
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                                guard let self else { return }
+                                self.checkExtensionState()
+                                if self.isLockScreenExtensionActive {
+                                    print("[VideoWallpaperManager] 📺 系统通知触发后扩展已激活，同步视频源")
+                                    self.syncAllDisplayVideosToExtension()
+                                } else {
+                                    print("[VideoWallpaperManager] ⚠️ 系统通知未能触发扩展启动，等待用户手动打开设置")
+                                }
+                            }
+                        }
                     }
                 }
             } else {

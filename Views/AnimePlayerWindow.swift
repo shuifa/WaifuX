@@ -179,7 +179,7 @@ private struct PlayerSection: View {
                                 SleepPreventer.shared.startPreventingSleep()
                             }
                         }
-                        .onReceive(player.$currentTime) { newTime in
+                        .onReceive(player.currentTimePublisher) { newTime in
                             viewModel.handlePlayerProgress(currentTime: newTime, totalTime: player.totalDuration)
                         }
                         .overlay(alignment: .bottom) {
@@ -282,6 +282,7 @@ private struct PlayerControlOverlay: View {
     let isPlayerFullscreen: Bool
     let isControlBarVisible: Bool
     @State private var currentState: PlaybackState = .idle
+    @State private var currentTime: TimeInterval = 0
     @State private var sliderValue: Float = 0
     @State private var wasPlayingBeforeDrag = false
     @State private var isDraggingSlider = false
@@ -298,7 +299,7 @@ private struct PlayerControlOverlay: View {
             VStack(spacing: 12) {
                 // 时间滑块
                 HStack(spacing: 12) {
-                    Text(formatPlayerTime(player.currentTime))
+                    Text(formatPlayerTime(currentTime))
                         .font(.system(size: 12, weight: .medium).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.9))
 
@@ -318,7 +319,7 @@ private struct PlayerControlOverlay: View {
                     .tint(.white)
                     .frame(height: 16)
                     .focusable(false)
-                    .onChange(of: player.currentTime) { _, newValue in
+                    .onChange(of: currentTime) { _, newValue in
                         if !isDraggingSlider && !player.isSeeking {
                             sliderValue = Float(newValue)
                         }
@@ -327,7 +328,7 @@ private struct PlayerControlOverlay: View {
                         // macOS 点击 Slider 轨道不会触发 onEditingChanged，
                         // 因此通过值变化来检测点击并执行 seek
                         if !isDraggingSlider && !player.isSeeking {
-                            let diff = abs(newValue - Float(player.currentTime))
+                            let diff = abs(newValue - Float(currentTime))
                             if diff > 0.5 {
                                 wasPlayingBeforeDrag = player.state.isPlaying
                                 player.seek(to: TimeInterval(newValue), resumeAfterSeek: wasPlayingBeforeDrag)
@@ -443,7 +444,11 @@ private struct PlayerControlOverlay: View {
         .allowsHitTesting(isControlBarVisible)
         .onAppear {
             currentState = player.state
+            currentTime = player.currentTime
             sliderValue = Float(player.currentTime)
+        }
+        .onReceive(player.currentTimePublisher) { newTime in
+            currentTime = newTime
         }
         .onReceive(player.$state) { newState in
             currentState = newState

@@ -113,7 +113,6 @@ public struct SceneWallpaperPropertiesDocument: Codable, Equatable, Sendable {
 /// 3. 备份原始属性用于重置
 /// 4. 生成 wallpaper-wgpu 所需的属性 JSON
 /// 5. 支持条件显示（condition 字段）
-@MainActor
 enum SceneWallpaperPropertiesService {
     private static let folderName = "SceneProperties"
 
@@ -193,6 +192,27 @@ enum SceneWallpaperPropertiesService {
     }
 
     // MARK: - 属性 JSON 生成
+
+    /// 异步加载可见属性（后台队列执行文件 I/O）
+    static func loadVisiblePropertiesAsync(for wallpaperPath: String) async -> [SceneWallpaperProperty] {
+        await Task.detached(priority: .userInitiated) {
+            self.loadVisibleProperties(for: wallpaperPath)
+        }.value
+    }
+
+    /// 异步加载属性列表（后台队列执行文件 I/O，防止 .pkg 解压阻塞主线程）
+    static func loadPropertiesAsync(for wallpaperPath: String) async -> [SceneWallpaperProperty] {
+        await Task.detached(priority: .userInitiated) {
+            self.loadProperties(for: wallpaperPath)
+        }.value
+    }
+
+    /// 异步加载带覆盖值的属性列表（后台队列执行文件 I/O）
+    static func loadPropertiesWithOverridesAsync(for wallpaperPath: String) async -> [SceneWallpaperProperty] {
+        await Task.detached(priority: .userInitiated) {
+            self.loadPropertiesWithOverrides(for: wallpaperPath)
+        }.value
+    }
 
     /// 生成用于 wallpaper-wgpu 的属性覆盖 JSON 字符串
     /// 格式: {"prop_key": "value", ...}

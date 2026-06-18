@@ -442,22 +442,30 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                             renderer.replaceVideo(with: url)
                             WallpaperPrefs.shared.updateCurrentVideo()
                             WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: active.rootLayer)
-                            // 更新 context 的 videoID
+                            // 更新 context 的 videoID（保留原 wallpaperID 不变）
                             let updated = ActiveWallpaper(
                                 caContext: active.caContext,
                                 rootLayer: active.rootLayer,
                                 renderer: renderer,
                                 displayID: active.displayID,
                                 videoID: videoID,
-                                contextId: active.contextId
+                                contextId: active.contextId,
+                                wallpaperID: active.wallpaperID
                             )
-                            WallpaperState.shared.replaceContextById(contextId: active.contextId, context: updated)
+                            _ = WallpaperState.shared.replaceContextById(contextId: active.contextId, context: updated)
                         }
                         extLog("[Commands] ✅ 已热切换显示器 \(displayID) 到视频: \(videoID) (\(contextsWithRenderer.count) 个 context)")
                     }
 
                     // Path B: 无 renderer 的 context（之前是静态图模式）→ 创建新的视频 renderer
                     let contextsWithoutRenderer = allContexts.filter { $0.renderer == nil }
+                    if !contextsWithoutRenderer.isEmpty {
+                        // per-displayID 全局清理只在循环外做一次：IOSurface 渲染器和 FrameChannel
+                        // 回调都是按 displayID 共享的，桌面+锁屏两个 context 各自 dispatch 一次
+                        // 会重复清理同一份资源（race + 多余 stop）。
+                        WallpaperState.shared.removeIOSurfaceRenderer(for: displayID)
+                        FrameChannel.shared.unregisterCallback(displayID: displayID)
+                    }
                     for active in contextsWithoutRenderer {
                         // handleSocketCommand 始终在主线程调用，rootLayer 在此之后
                         // 不会被其他线程修改，使用 nonisolated(unsafe) 绕过严格的 Sendable 检查。
@@ -466,17 +474,18 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                         // 需要在主线程执行，否则视频不会动画（displayLayer 无帧输出）。
                         Task { @MainActor in
                             do {
-                                WallpaperState.shared.removeIOSurfaceRenderer(for: displayID)
-                                FrameChannel.shared.unregisterCallback(displayID: displayID)
                                 rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
                                 let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: url)
                                 // 更新这个特定 context 的 renderer（通过 contextId 精确匹配）
-                                WallpaperState.shared.replaceContextRendererByContextId(
+                                _ = WallpaperState.shared.replaceContextRendererByContextId(
                                     contextId: active.contextId,
                                     renderer: renderer,
                                     videoID: videoID
                                 )
                                 renderer.start()
+                                // 应用当前 policy（锁屏 / userPaused / display paused / 热限频等）。
+                                // 否则新建 renderer 会在暂停状态下也满速跑，直到下次 update() 才被拉回。
+                                Self.recomputeAndApplyPolicy()
                                 WallpaperPrefs.shared.updateCurrentVideo()
                                 WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: rootLayer)
                                 extLog("[Commands] ✅ 已从静态图切回视频: display=\(displayID) video=\(videoID)")
@@ -522,9 +531,16 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             center,
             observer,
             { _, _, _, _, _ in
-                VideoLibrary.shared.scan()
+                // 注意：App 侧的 prefsChanged 通知是混用的（库变化 + prefs 变化共用同一通知）。
+                // 历史实现这里直接 `VideoLibrary.shared.scan()` —— 用户每次按"暂停"都会通过 socket
+                // 拉取整个视频库，性能严重浪费。
+                //
+                // 现在 acquire 的 fallback 路径全部走 prefs JSON（prefsVideoURL / prefsImageURL），
+                // 不再依赖 in-memory 视频库；VideoLibrary 仅为 findVideoURL/findImageURL 等少量
+                // fallback 路径服务，启动时扫一次即可。如有真实库变化导致缓存失效，
+                // clearCaches() + 共享容器目录扫描会即时反映。
                 WallpaperState.shared.clearCaches()
-                extLog("[Extension] Library changed — re-scanned")
+                extLog("[Extension] prefsChanged — caches cleared")
                 // 与 commandsChanged 路径共用同一串行后台队列，避免并发 drain 竞争，
                 // 且不阻塞主线程。
                 wallpaperCommandQueue.async {
@@ -573,6 +589,10 @@ private var extLogFileURL: URL {
     return URL(fileURLWithPath: "/tmp/waifux-extension.log")
 }
 
+/// 串行化日志文件 IO，避免多线程同时 seek/write/close 导致日志错乱。
+/// 模块级 `let`：Darwin 通知 C 函数指针不能捕获 dynamic Self，模块级常量不属于捕获。
+private let extLogFileLock = OSAllocatedUnfairLock(initialState: ())
+
 func extLog(_ message: String) {
     if #available(macOS 11.0, *) {
         os_log("[WaifuXExt] %{public}@", log: .default, type: .info, message)
@@ -581,13 +601,15 @@ func extLog(_ message: String) {
     }
     // 也写入文件便于调试
     let line = "[\(Date())] \(message)\n"
-    if let handle = try? FileHandle(forWritingTo: extLogFileURL) {
-        handle.seekToEndOfFile()
-        if let data = line.data(using: .utf8) {
-            handle.write(data)
+    extLogFileLock.withLock { _ in
+        if let handle = try? FileHandle(forWritingTo: extLogFileURL) {
+            handle.seekToEndOfFile()
+            if let data = line.data(using: .utf8) {
+                handle.write(data)
+            }
+            try? handle.close()
+        } else {
+            try? line.write(to: extLogFileURL, atomically: true, encoding: .utf8)
         }
-        try? handle.close()
-    } else {
-        try? line.write(to: extLogFileURL, atomically: true, encoding: .utf8)
     }
 }

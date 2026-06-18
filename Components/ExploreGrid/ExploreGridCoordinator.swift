@@ -103,6 +103,9 @@ final class ExploreGridCoordinator: NSObject {
         self.layout = ExploreGridCollectionViewLayout()
         self.layout.hoverExpansionAllowance = parent.hoverExpansionAllowance
         self.layout.preferredColumnCount = parent.gridColumnCount
+        if let insets = parent.contentInsets {
+            self.layout.contentInsets = insets
+        }
 
         // 配置 NSCollectionView
         self.collectionView = NSCollectionView()
@@ -161,7 +164,22 @@ final class ExploreGridCoordinator: NSObject {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
-        // pendingHeaderUpdate / pendingLayoutDocument 使用 [weak self]，coordinator 释放后自然 no-op
+        // 显式 cancel 所有 pending work item，避免 view 频繁重建时遗留延后副作用。
+        // 仅靠闭包内 [weak self] 的 no-op 不够——work item 仍会被主队列调度执行一次空 block，
+        // 且部分 work item 通过闭包捕获了 parent / scrollView 等强引用。
+        // 注：Coordinator 是 @MainActor 的，由 SwiftUI 主线程在 makeCoordinator/拆 view 时持有/释放，
+        // 因此 deinit 实际运行在主线程。assumeIsolated 是为了让 Swift 6 strict concurrency
+        // 允许从 nonisolated deinit 访问主 actor 隔离的 DispatchWorkItem 属性。
+        MainActor.assumeIsolated {
+            scrollDebounceWorkItem?.cancel()
+            restoreHoverWorkItem?.cancel()
+            pendingLayoutDocument?.cancel()
+            pendingReload?.cancel()
+            pendingBatchUpdate?.cancel()
+            pendingViewUpdateLayout?.cancel()
+            pendingVisibilityRefreshWorkItems.forEach { $0.cancel() }
+            pendingVisibilityRefreshWorkItems.removeAll()
+        }
     }
 
     // MARK: - 滚动处理
@@ -173,11 +191,15 @@ final class ExploreGridCoordinator: NSObject {
     }
 
     func scheduleHoverRestoreAfterScrollWheel() {
-        let coordinator = self
         scrollDebounceWorkItem?.cancel()
-        let workItem = DispatchWorkItem {
-            coordinator.handleScrollUpdate()
-            coordinator.scheduleHoverRestore()
+        // ⚠️ 必须 [weak self]：这里把 workItem 存到 self.scrollDebounceWorkItem，
+        // 若闭包强捕获 self（旧版 `let coordinator = self` 的写法）会形成
+        // self → workItem → self 的临时循环引用。即便后续 cancel + 替换，
+        // 老 workItem 仍要等主队列把待执行项收掉才能释放，会延迟 coordinator 的 deinit。
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.handleScrollUpdate()
+            self.scheduleHoverRestore()
         }
         scrollDebounceWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: workItem)
@@ -452,6 +474,9 @@ final class ExploreGridCoordinator: NSObject {
         lastLaidOutWidth = 0
         layout.hoverExpansionAllowance = parent.hoverExpansionAllowance
         layout.preferredColumnCount = parent.gridColumnCount
+        if let insets = parent.contentInsets {
+            layout.contentInsets = insets
+        }
         syncHoverAllowanceForVisibleItems()
         layout.invalidateLayout()
         scheduleViewUpdateLayout()
@@ -461,34 +486,63 @@ final class ExploreGridCoordinator: NSObject {
         guard let scrollView = scrollView as? ExploreGridScrollView else { return }
         scrollView.allowsGridScrolling = allowsScrolling
         self.scrollView.verticalScrollElasticity = allowsScrolling ? .allowed : .none
+
+        // `allowsScrolling=false` 时本 NSScrollView 不内部滚动（外层 SwiftUI ScrollView 总滚动），
+        // 默认 NSClipView.masksToBounds=true 会把 cell hover 1.02 缩放在网格四角溢出的部分裁掉。
+        // 在非滚动模式下解除该裁切（cell 自带 zPosition=100 抬层，不会被邻居/父级遮挡）。
+        // 仍滚动模式下保持默认裁切，避免滚动出可视区的内容溢出可见。
+        applyClipMaskingForScrollingMode(allowsScrolling)
+    }
+
+    /// 根据是否允许滚动调整 clipView / collectionView 层的裁切。
+    /// 仅在非滚动模式下解除裁切，确保 hover 缩放在网格边缘不被切。
+    private func applyClipMaskingForScrollingMode(_ allowsScrolling: Bool) {
+        scrollView.contentView.wantsLayer = true
+        scrollView.contentView.layer?.masksToBounds = allowsScrolling
+        collectionView.layer?.masksToBounds = allowsScrolling
+    }
+
+    /// 父端 `contentInsets` 变化时由 container 触发，写回 layout 并强制重排。
+    /// 写 nil 时保持现有值不变（container 不会调本方法），由 container 侧的 equality 判断决定。
+    func applyContentInsetsIfNeeded() {
+        guard let insets = parent.contentInsets else { return }
+        layout.contentInsets = insets
+        layout.invalidateLayout()
+        scheduleViewUpdateLayout()
     }
 
     func forceVisibilityRefresh() {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.parent.isVisible else { return }
-            self.lastItemCount = self.parent.itemCount()
+
+            let expectedCount = self.parent.itemCount()
+            let currentCount = self.collectionView.numberOfItems(inSection: 0)
+
             self.lastReportedVisibleItemRange = nil
             self.lastReportedScrollOffset = nil
             self.lastLaidOutWidth = 0
             self.layout.hoverExpansionAllowance = self.parent.hoverExpansionAllowance
             self.layout.preferredColumnCount = self.parent.gridColumnCount
-            self.layout.invalidateLayout()
-            self.collectionView.reloadData()
+
+            if expectedCount != currentCount {
+                // 数据数量真变化时才整表 reloadData。
+                self.lastItemCount = expectedCount
+                self.layout.invalidateLayout()
+                self.collectionView.reloadData()
+            } else {
+                // 数量未变 → 只重配可视 cell，保留图片，不重启下载。
+                // 历史上这里曾用双层 reloadData 作"切回 tab 双保险"，会强制重建可视 cell
+                // 并重启 Kingfisher 任务，触发不必要的下载和解码——已由
+                // scheduleNonDestructiveVisibilityRestore() 路径覆盖。
+                self.layout.invalidateLayout()
+                self.reconfigureVisibleItems()
+            }
+
             self.collectionView.needsLayout = true
             self.collectionView.layoutSubtreeIfNeeded()
             self.layoutDocument()
             self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
             self.handleScrollUpdate()
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.parent.isVisible else { return }
-                self.collectionView.reloadData()
-                self.collectionView.needsLayout = true
-                self.collectionView.layoutSubtreeIfNeeded()
-                self.layoutDocument()
-                self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
-                self.handleScrollUpdate()
-            }
         }
         pendingVisibilityRefreshWorkItems.append(workItem)
         DispatchQueue.main.async(execute: workItem)

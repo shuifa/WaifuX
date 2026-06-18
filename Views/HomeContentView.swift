@@ -109,6 +109,12 @@ fileprivate enum HeroItem: Identifiable {
     }
 }
 
+/// 轮播显示项：包装 HeroItem 并提供位置唯一的 id，避免无缝循环克隆与原项 id 重复。
+fileprivate struct HeroCarouselSlide: Identifiable {
+    let id: String
+    let item: HeroItem
+}
+
 struct HomeContentView: View {
     @ObservedObject var viewModel: WallpaperViewModel
     @ObservedObject var mediaViewModel: MediaExploreViewModel
@@ -390,10 +396,10 @@ struct HomeContentView: View {
 
         return ZStack(alignment: .leading) {
             HStack(spacing: 0) {
-                ForEach(Array(displayItems.enumerated()), id: \.offset) { _, item in
+                ForEach(displayItems) { slide in
                     HeroSlide(
-                        item: item,
-                        isCurrent: item.id == currentHeroID && isTabActive,
+                        item: slide.item,
+                        isCurrent: slide.item.id == currentHeroID && isTabActive,
                         width: width,
                         height: height
                     )
@@ -468,16 +474,28 @@ struct HomeContentView: View {
         heroItems.map(\.id)
     }
 
-    private func carouselDisplayItems(from items: [HeroItem]) -> [HeroItem] {
+    private func carouselDisplayItems(from items: [HeroItem]) -> [HeroCarouselSlide] {
+        // 无缝循环轮播：在首尾各克隆一帧形成视觉首尾相接。
+        // 注意：克隆与原项的 HeroItem.id 相同，若直接以 \.id 作为 ForEach 的标识会出现
+        // "the ID xxx occurs multiple times" 警告并导致 SwiftUI diff 行为未定义。
+        // 这里用位置前缀（head- / real-{idx}- / tail-）保证 ForEach id 唯一。
         guard
             items.count > 1,
             let firstItem = items.first,
             let lastItem = items.last
         else {
-            return items
+            return items.enumerated().map { idx, item in
+                HeroCarouselSlide(id: "real-\(idx)-\(item.id)", item: item)
+            }
         }
 
-        return [lastItem] + items + [firstItem]
+        var result: [HeroCarouselSlide] = []
+        result.append(HeroCarouselSlide(id: "head-\(lastItem.id)", item: lastItem))
+        for (idx, item) in items.enumerated() {
+            result.append(HeroCarouselSlide(id: "real-\(idx)-\(item.id)", item: item))
+        }
+        result.append(HeroCarouselSlide(id: "tail-\(firstItem.id)", item: firstItem))
+        return result
     }
 
     private var currentHeroItem: HeroItem? {

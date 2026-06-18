@@ -130,7 +130,9 @@ private final class MainTabViewController: NSTabViewController {
             mediaViewModel: mediaViewModel
         ))
         addPage(title: MainTab.myMedia.title, view: MyLibraryTabPage(
-            navigationState: navigationState
+            navigationState: navigationState,
+            wallpaperViewModel: wallpaperViewModel,
+            mediaViewModel: mediaViewModel
         ))
 
         isConfigured = true
@@ -212,9 +214,13 @@ private struct MediaExploreTabPage: View {
 
 private struct MyLibraryTabPage: View {
     @ObservedObject var navigationState: MainContentNavigationState
+    @ObservedObject var wallpaperViewModel: WallpaperViewModel
+    @ObservedObject var mediaViewModel: MediaExploreViewModel
 
     var body: some View {
         MyLibraryContentView(
+            viewModel: wallpaperViewModel,
+            mediaViewModel: mediaViewModel,
             selectedWallpaper: navigationState.binding(for: \.librarySelectedWallpaper),
             selectedMedia: navigationState.binding(for: \.librarySelectedMedia),
             selectedAnime: navigationState.binding(for: \.librarySelectedAnime),
@@ -227,13 +233,23 @@ private struct MyLibraryTabPage: View {
 }
 
 struct ContentView: View {
-    @StateObject private var viewModel = WallpaperViewModel()
-    @StateObject private var mediaViewModel = MediaExploreViewModel()
-    @StateObject private var animeViewModel = AnimeViewModel()
+    // 全局 ViewModel：由 AppDelegate 持有，通过 init 参数注入；
+    // 用普通 let 持有而非 @StateObject —— ContentView 本身不响应这 3 个 ViewModel 的
+    // @Published 变化（body 内只命令式调用其方法，不读响应式属性），从而不会因
+    // 例如 LocalWallpaperScanner 完成时 WallpaperViewModel 的多次 @Published 更新
+    // 而连锁触发整个 ContentView body 及下游 tab 子视图的反复重算。
+    // 子视图（5 个 TabPage）继续以 @ObservedObject 接收这些 ViewModel —— 该响应链是必要的。
+    let viewModel: WallpaperViewModel
+    let mediaViewModel: MediaExploreViewModel
+    let animeViewModel: AnimeViewModel
+
     @StateObject private var navigationState = MainContentNavigationState()
     @StateObject private var guessYouLikeVM = GuessYouLikeViewModel()
     @ObservedObject private var localization = LocalizationService.shared
-    @ObservedObject private var sourceManager = WallpaperSourceManager.shared
+    // 注意：WallpaperSourceManager.shared 不在此顶层观察。
+    // 它有 5 个 @Published 属性，若顶层 @ObservedObject 会在数据源切换时触发整个 ContentView body 重算。
+    // 顶层仅在 .task 中一次性轮询 isInitialSourceSelectionComplete，无需响应式；
+    // 数据源切换提示由独立的 SourceSwitchToast / WorkshopSourceSwitchToast 子视图各自观察。
     @State private var detailPath: [MainDetailRoute] = []
 
     // 更新弹窗状态
@@ -241,7 +257,21 @@ struct ContentView: View {
     @State private var updateRelease: GitHubRelease?
     @State private var updateCommit: GitHubCommit?
 
+    init(
+        wallpaperViewModel: WallpaperViewModel,
+        mediaViewModel: MediaExploreViewModel,
+        animeViewModel: AnimeViewModel
+    ) {
+        self.viewModel = wallpaperViewModel
+        self.mediaViewModel = mediaViewModel
+        self.animeViewModel = animeViewModel
+    }
+
     var body: some View {
+        // 性能测量：开启 PERF_TRACE 编译标记后，会在控制台打印触发本 body 的属性来源
+        #if PERF_TRACE
+        let _ = Self._printChanges()
+        #endif
         ZStack {
             NavigationStack(path: $detailPath) {
                 mainContent
@@ -293,6 +323,8 @@ struct ContentView: View {
         .task {
             // ⚠️ 等待启动时数据源选择完成（ping Google 决策）
             // 在确定数据源之前不加载壁纸列表数据
+            // 直接读单例（非观察）：isInitialSourceSelectionComplete 只在启动决策时变化一次，无需响应式
+            let sourceManager = WallpaperSourceManager.shared
             if !sourceManager.isInitialSourceSelectionComplete {
                 print("[ContentView] Waiting for initial source selection...")
                 // 最多等待 10 秒超时

@@ -113,14 +113,17 @@ struct ParallaxScrollModifier: ViewModifier {
     func body(content: Content) -> some View {
         GeometryReader { geo in
             let frame = geo.frame(in: .named("exploreScroll"))
-            let clampedOffset: CGFloat = {
-                let rawOffset: CGFloat
+            let rawOffset: CGFloat = {
                 if axis == .horizontal {
-                    rawOffset = frame.midX - (geo.size.width / 2)
+                    return frame.midX - (geo.size.width / 2)
                 } else {
-                    rawOffset = frame.midY - (geo.size.height / 2)
+                    return frame.midY - (geo.size.height / 2)
                 }
-                return min(max(rawOffset * intensity, -20), 20)
+            }()
+            // 量化为 5px 步进，大幅减少动画触发频率（每 5px 才触发一次而非每像素）
+            let clampedOffset: CGFloat = {
+                let clamped = min(max(rawOffset * intensity, -20), 20)
+                return (clamped / 5).rounded() * 5
             }()
 
             content

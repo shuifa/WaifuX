@@ -206,8 +206,11 @@ struct WallpaperExploreContentView: View {
     var isVisible: Bool = true
     @StateObject private var exploreAtmosphere = ExploreAtmosphereController(wallpaperMode: true)
     @ObservedObject private var arcSettings = ArcBackgroundSettings.shared
-    @ObservedObject private var videoWallpaperManager = VideoWallpaperManager.shared
-    @ObservedObject private var wallpaperEngineBridge = WallpaperEngineXBridge.shared
+    // 注意：VideoWallpaperManager / WallpaperEngineXBridge 不在顶层观察。
+    // 它们各有多个 @Published（isPaused/isMuted/volume 等），若顶层观察会导致
+    // 视频壁纸暂停/恢复时整个壁纸探索页 body 重算（含瀑布流布局重计算）。
+    // 仅 shouldUseLightweightEffects 依赖它们的播放状态，已下沉到
+    // WallpaperExploreAtmosphereBackground 子视图内自行观察，只重建背景。
     @StateObject private var translationBridge = SearchTranslationBridge()
     @Environment(\.mainTopBarContentPadding) private var mainTopBarContentPadding
     init(viewModel: WallpaperViewModel, selectedWallpaper: Binding<Wallpaper?>, isVisible: Bool = true) {
@@ -249,9 +252,9 @@ struct WallpaperExploreContentView: View {
     @State private var visibleWallpapers: [Wallpaper] = []
     /// 防止重复设置同一个 visibleWallpapers 值触发不必要重建；必须保留顺序，排序变化也要刷新瀑布流。
     @State private var lastVisibleIDs: [Wallpaper.ID] = []
-    /// 瀑布流分列缓存，避免每次 body 重绘时全量重算瀑布流列分配。
-    /// 收藏状态已移除 @State 缓存，改为视图在 ForEach 中直接读取 viewModel.favoriteIDSet。
-    @State private var waterfallLayoutCache = WallpaperWaterfallLayoutCache()
+    // 注意：旧版"按列缓存"机制 (WallpaperWaterfallLayoutCache) 已移除——
+    // 新瀑布流走 SwiftUI Layout protocol（WaterfallChunkLayout），其内部自带 cache。
+    // 收藏状态已移除 @State 缓存，改为视图在 ForEach 中直接读取 viewModel.favoriteIDSet。
     // MARK: - 渲染限流防御
     /// 用于异步防抖执行 recomputeVisibleWallpapers，避免高频触发时主线程堆积。
     @State private var recomputeTask: Task<Void, Never>? = nil
@@ -262,12 +265,23 @@ struct WallpaperExploreContentView: View {
     @State private var measuredGridHeaderHeight: CGFloat = 0
     @State private var isGridHeaderContentMounted = true
 
-    private var shouldUseLightweightEffects: Bool {
-        (videoWallpaperManager.isVideoWallpaperActive && !videoWallpaperManager.isPaused) ||
-        (wallpaperEngineBridge.isControllingExternalEngine && !wallpaperEngineBridge.isExternalPaused)
-    }
+    // MARK: - AppKit 瀑布流（NSCollectionView 通道）状态
+    /// AppKit `ExploreGridContainer` 汇报回的内容总高度。外层 SwiftUI ScrollView
+    /// 用 `.frame(height:)` 把这个值兑现给 grid，让网格在共享滚动模型下成为定高块。
+    @State private var gridContentHeight: CGFloat = 600
+    /// 触发可视 cell 重配的 token（数据数量未变但内容/收藏/标记发生变化时）。
+    @State private var gridReloadToken: Int = 0
+    /// 强制 AppKit 网格重做布局的 token（窗口宽度变化、tab 切回等场景）。
+    @State private var gridLayoutRefreshToken: Int = 0
+
+    // shouldUseLightweightEffects 已下沉到 WallpaperExploreAtmosphereBackground 子视图，
+    // 该子视图自行观察 VideoWallpaperManager / WallpaperEngineXBridge 的播放状态。
 
     var body: some View {
+        // 性能测量：开启 PERF_TRACE 编译标记后，会在控制台打印触发本 body 的属性来源
+        #if PERF_TRACE
+        let _ = Self._printChanges()
+        #endif
         mainContent
     }
 
@@ -282,17 +296,16 @@ struct WallpaperExploreContentView: View {
                     arcSettings.compactBackground
                         .ignoresSafeArea()
                 } else {
-                    ArcAtmosphereBackground(
+                    // 背景渲染下沉到独立子视图：自行观察 VideoWallpaperManager /
+                    // WallpaperEngineXBridge 的播放状态，视频壁纸暂停/恢复只重建本背景，
+                    // 不触发整个壁纸探索页 body 重算（含瀑布流布局重计算）。
+                    WallpaperExploreAtmosphereBackground(
                         tint: exploreAtmosphere.tint,
-                        referenceImage: shouldUseLightweightEffects ? nil : exploreAtmosphere.referenceImage,
+                        referenceImage: exploreAtmosphere.referenceImage,
                         isLightMode: arcSettings.isLightMode,
                         dotGridOpacity: arcSettings.dotGridOpacity,
-                        useNoise: true,
-                        grainIntensity: arcSettings.exploreGrainWallpaper,
-                        lightweight: shouldUseLightweightEffects
+                        grainIntensity: arcSettings.exploreGrainWallpaper
                     )
-                    // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
-                    .drawingGroup(opaque: true)
                     .ignoresSafeArea()
                 }
 
@@ -329,6 +342,8 @@ struct WallpaperExploreContentView: View {
                     }
                     syncAtmosphereIfNeeded()
                 }
+                // tab 切回时让 AppKit 网格主动补一次布局，覆盖 hide/unhide 期间的脏布局
+                gridLayoutRefreshToken &+= 1
             }
         }
         .onChange(of: searchText) { _, newValue in
@@ -382,18 +397,28 @@ struct WallpaperExploreContentView: View {
                 syncAtmosphereIfNeeded()
             }
 
-            // ✅ 异步防抖：取消上一次尚未执行的重算，开启新任务并等待 200ms 缓冲。
-            // wallpapers 变更通知 + upsert 的 @Published 通知可能重叠，200ms 给 SwiftUI 足够时间
+            // ✅ 异步防抖：取消上一次尚未执行的重算，开启新任务并等待 400ms 缓冲。
+            // wallpapers 变更通知 + upsert 的 @Published 通知可能重叠，400ms 给 SwiftUI 足够时间
             // 完成观察系统处理，避免与滚动期间的 view 更新竞态导致主线程死锁。
+            // ⚠️ 之前是 200ms，但偶发场景下仍能击破竞态保护——加大到 400ms 几乎能压住所有
+            // 边界情况，代价仅是 loadMore 后新数据呈现稍晚 200ms（用户几乎感知不到）。
             recomputeTask?.cancel()
             recomputeTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 200_000_000) // 200ms 缓冲，避免与 SwiftUI 观察系统竞态
+                try? await Task.sleep(nanoseconds: 400_000_000) // 400ms 缓冲，避免与 SwiftUI 观察系统竞态
                 guard !Task.isCancelled else { return }
                 recomputeVisibleWallpapers()
             }
         }
         // ❌ 已移除 .onChange(of: libraryContentRevision)，收藏状态改为视图在 ForEach 中
         // 直接读取 viewModel.favoriteIDSet，避免 @State 中间赋值引发不必要的 body 重算。
+        // ✅ AppKit 通道：收藏集合变化时只重配可视 cell（不整表 reload，不重启图片下载）
+        .onChange(of: viewModel.favoriteIDSet) { _, _ in
+            gridReloadToken &+= 1
+        }
+        // 数据顺序/身份变化（同长度筛选切换、排序变化等）也要让可视 cell 重读 wallpaper
+        .onChange(of: lastVisibleIDs) { _, _ in
+            gridReloadToken &+= 1
+        }
         .overlay(alertOverlay)
         .sheet(isPresented: $showWallpaperURLSheet) {
             WorkshopURLInputSheet(
@@ -1060,24 +1085,80 @@ struct WallpaperExploreContentView: View {
     // MARK: - Grid & Cards
 
     private func wallpaperGrid(config: WallpaperGridConfig) -> some View {
-        WallpaperGridContainerView(
-            wallpapers: visibleWallpapers,
-            layoutKey: WallpaperWaterfallLayoutKey(
-                ids: lastVisibleIDs,
-                columnCount: config.columnCount,
-                cardWidth: config.cardWidth,
-                spacing: config.spacing
-            ),
-            layoutCache: waterfallLayoutCache,
-            config: config,
-            // ✅ 直接读取 viewModel.favoriteIDSet，无需 @State 缓存
-            favoriteIDs: viewModel.favoriteIDSet,
-            onSelect: { wallpaper in
-                if let index = visibleWallpapers.firstIndex(where: { $0.id == wallpaper.id }) {
-                    selectedWallpaper = visibleWallpapers[index]
+        // 走 AppKit `NSCollectionView` 通道（`ExploreGridContainer` + `WallpaperGridCell`）。
+        // 关键参数：
+        //   - allowsScrolling: false → 外层 SwiftUI ScrollView 拥有总滚动权，
+        //     header / 网格 / loadMore sentinel 共享同一滚动模型。
+        //   - onContentHeightChange → 把 AppKit 算出来的内容高度写回 SwiftUI，
+        //     再用 .frame(height: gridContentHeight) 把高度兑现给外层 ScrollView。
+        //   - onReachBottom: 空实现 — loadMore 全权由 SwiftUI sentinel/scrollGeometry
+        //     驱动，避免双源竞态。allowsScrolling=false 时 AppKit 也不会发该回调。
+        //   - onScrollOffsetChange: 不消费 — AppKit 不滚动不会发；滚回顶部按钮
+        //     可见性继续由外层 SwiftUI offset 计算（handleScrollOffset）。
+        // 备胎：`WallpaperGridContainerView`（SwiftUI ZStack chunks）保留在本文件下方
+        // 与 `Components/WaterfallChunkLayout.swift`，未来如需切回再启用。
+        ExploreGridContainer(
+            itemCount: { visibleWallpapers.count },
+            aspectRatio: { idx in
+                guard idx < visibleWallpapers.count else {
+                    return wallpaperCellAspectRatio(config: config)
                 }
-            }
+                return wallpaperCellAspectRatio(for: visibleWallpapers[idx], config: config)
+            },
+            configureCell: { cell, idx in
+                guard idx < visibleWallpapers.count else { return }
+                cell.configure(
+                    with: visibleWallpapers[idx],
+                    isFavorite: viewModel.isFavorite(visibleWallpapers[idx])
+                )
+            },
+            cellClass: WallpaperGridCell.self,
+            onSelect: { idx in
+                guard idx < visibleWallpapers.count else { return }
+                selectedWallpaper = visibleWallpapers[idx]
+            },
+            onVisibleItemsChange: nil, // 不再做近邻预取，依赖每个 cell 自己 lazy 加载
+            onScrollOffsetChange: nil, // allowsScrolling=false 时不会触发
+            onReachBottom: {},          // loadMore 由 SwiftUI sentinel 驱动
+            scrollToTopToken: 0,        // 滚回顶部由外层 SwiftUI ScrollView 处理
+            reloadToken: gridReloadToken,
+            layoutRefreshToken: gridLayoutRefreshToken,
+            allowsScrolling: false,
+            onContentHeightChange: { height in
+                if abs(gridContentHeight - height) > 0.5 {
+                    gridContentHeight = height
+                }
+            },
+            isVisible: isVisible,
+            layoutWidth: config.contentWidth,
+            gridColumnCount: config.columnCount,
+            // hover scale 仅 1.02 + zPosition=100 + masksToBounds=false，column/row spacing 16pt
+            // 已远大于缩放溢出，不需要预留扩张空间。设 0 让卡片完整占满列宽，对齐旧 SwiftUI 视觉。
+            hoverExpansionAllowance: 0,
+            // 默认 contentInsets 包含 bottom: 48 给动漫/媒体页留触底缓冲，
+            // 但壁纸探索页外层 SwiftUI ScrollView 自己控边距，AppKit 不应再加。
+            contentInsets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         )
+        .frame(height: max(gridContentHeight, 320))
+    }
+
+    /// 卡片整体（图像 + 46pt 底栏）的宽高比，供 ExploreGridCollectionViewLayout 计算 cell 高度。
+    /// 默认值（无具体壁纸时）：按 0.6 图像宽高比 + 46pt 底栏估算，保持视觉占位接近常见值。
+    private func wallpaperCellAspectRatio(config: WallpaperGridConfig) -> CGFloat {
+        let safeCardWidth = max(1, config.cardWidth)
+        let height = safeCardWidth * 0.6 + 46
+        return safeCardWidth / max(1, height)
+    }
+
+    /// 单张壁纸的卡片宽高比。原始图像比例钳制在 0.35...3.6（与 WallpaperCardView 一致），
+    /// 防止超长竖图把列撑爆，或超宽横图破坏视觉。
+    private func wallpaperCellAspectRatio(for wallpaper: Wallpaper, config: WallpaperGridConfig) -> CGFloat {
+        let safeCardWidth = max(1, config.cardWidth)
+        let imageAspectRatio = CGFloat(wallpaper.effectiveAspectRatioValue)
+        let clampedImageAspectRatio = min(max(imageAspectRatio, 0.35), 3.6)
+        let imageHeight = safeCardWidth / clampedImageAspectRatio
+        let height = imageHeight + 46
+        return safeCardWidth / max(1, height)
     }
 
     // MARK: - UI Components
@@ -1607,42 +1688,103 @@ struct WallpaperExploreContentView: View {
     }
 }
 
+// MARK: - 壁纸探索页氛围背景（独立观察视频壁纸播放状态）
+/// 从 WallpaperExploreContentView 下沉而来：自行观察 VideoWallpaperManager /
+/// WallpaperEngineXBridge，仅当播放状态变化时重建本背景视图，避免整个壁纸探索页
+/// body 重算（含瀑布流布局重计算）。
+private struct WallpaperExploreAtmosphereBackground: View {
+    let tint: ExploreAtmosphereTint
+    let referenceImage: NSImage?
+    let isLightMode: Bool
+    let dotGridOpacity: Double
+    let grainIntensity: Double
+
+    @ObservedObject private var videoWallpaperManager = VideoWallpaperManager.shared
+    @ObservedObject private var wallpaperEngineBridge = WallpaperEngineXBridge.shared
+
+    /// 动态壁纸正在播放时启用轻量特效，降低 GPU/WindowServer 压力
+    private var shouldUseLightweightEffects: Bool {
+        (videoWallpaperManager.isVideoWallpaperActive && !videoWallpaperManager.isPaused) ||
+        (wallpaperEngineBridge.isControllingExternalEngine && !wallpaperEngineBridge.isExternalPaused)
+    }
+
+    var body: some View {
+        ArcAtmosphereBackground(
+            tint: tint,
+            referenceImage: shouldUseLightweightEffects ? nil : referenceImage,
+            isLightMode: isLightMode,
+            dotGridOpacity: dotGridOpacity,
+            useNoise: true,
+            grainIntensity: grainIntensity,
+            lightweight: shouldUseLightweightEffects
+        )
+        // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
+        .drawingGroup(opaque: true)
+    }
+}
+
 // MARK: - Grid Configuration
 
-/// 瀑布流网格容器。使用 HStack + 多列 LazyVStack 实现瀑布流效果。
-/// 每列内使用 LazyVStack 提供懒加载（仅创建可见区域内的卡片）。
+/// 瀑布流网格容器（**备胎，当前未被引用**）。
+///
+/// 当前壁纸探索页瀑布流走 `Components/ExploreGrid/ExploreGridContainer`
+/// + `WallpaperGridCell`（AppKit `NSCollectionView` 通道）。本结构体保留作为
+/// 未来 SwiftUI 化的备胎，万一 AppKit 通道又出问题可以快速切回——只需把
+/// `wallpaperGrid(config:)` 的实现替换回调用本类型即可。配套的
+/// `WallpaperChunkView` / `Components/WaterfallChunkLayout.swift` 同样保留。
+///
+/// 设计：把 wallpapers 切成固定大小的 chunk（默认 30 张），外层用单 `LazyVStack`
+/// 提供 chunk 级别的 lazy 加载（仅可见 chunk 实例化）。每个 chunk 内部使用
+/// `WallpaperChunkView` —— 它**完全不使用 SwiftUI Layout protocol**，而是用
+/// 纯算法预计算所有卡片位置，然后用 `ZStack` + `.position` 绝对定位。
+///
+/// 这样 SwiftUI 在 chunk 内部不会进入 LayoutEngineBox/UnaryLayoutEngine 的
+/// 复杂 measure/place 路径——彻底绕过 macOS 26 上偶发的 SwiftUI 系统库
+/// 死循环（CPU 100% 主线程卡死 5+ 秒）。
 private struct WallpaperGridContainerView: View, Equatable {
     let wallpapers: [Wallpaper]
+    /// 用于 Equatable 比较的稳定标识；变化时整个 grid 重建。
     let layoutKey: WallpaperWaterfallLayoutKey
-    let layoutCache: WallpaperWaterfallLayoutCache
     let config: WallpaperGridConfig
     let favoriteIDs: Set<Wallpaper.ID>
     let onSelect: (Wallpaper) -> Void
 
-    var body: some View {
-        let columnItems = layoutCache.columns(for: wallpapers, key: layoutKey, config: config)
+    /// 每 chunk 包含的卡片数。30 是兼顾视觉、内存与系统稳定性的折中值。
+    private static let chunkSize: Int = 30
 
-        HStack(alignment: .top, spacing: config.spacing) {
-            ForEach(0..<config.columnCount, id: \.self) { columnIndex in
-                LazyVStack(spacing: config.spacing) {
-                    ForEach(columnItems[safe: columnIndex] ?? []) { wallpaper in
-                        WallpaperCardView(
-                            wallpaper: wallpaper,
-                            isFavorite: favoriteIDs.contains(wallpaper.id),
-                            cardWidth: config.cardWidth
-                        ) {
-                            onSelect(wallpaper)
-                        }
-                        .equatable()
-                        // ⚡ 显式设定卡片高度，让 LazyVStack 无需创建子视图即
-                        // 可估算列总高度，确保真正的懒加载行为。
-                        .frame(height: WallpaperCardView.estimatedHeight(
-                            cardWidth: config.cardWidth,
-                            wallpaper: wallpaper
-                        ))
-                    }
-                }
-                .frame(width: config.cardWidth)
+    private var chunks: [(index: Int, items: [Wallpaper])] {
+        guard !wallpapers.isEmpty else { return [] }
+        var result: [(index: Int, items: [Wallpaper])] = []
+        var start = 0
+        var idx = 0
+        while start < wallpapers.count {
+            let end = Swift.min(start + Self.chunkSize, wallpapers.count)
+            result.append((index: idx, items: Array(wallpapers[start..<end])))
+            start = end
+            idx += 1
+        }
+        return result
+    }
+
+    var body: some View {
+        let cardMaxHeight = WallpaperCardView.maxAllowedHeight(cardWidth: config.cardWidth)
+        let totalChunkCount = chunks.count
+
+        LazyVStack(spacing: config.spacing) {
+            ForEach(chunks, id: \.index) { chunk in
+                // 末尾 chunk 不做对齐——loadMore 时该位置数据会变化，
+                // 若做对齐会引起末尾卡片高度跳变（用户感知"卡片放大缩小"）。
+                // 非末尾 chunk 必然完整且后续不再变，可安全做对齐。
+                WallpaperChunkView(
+                    items: chunk.items,
+                    columns: config.columnCount,
+                    cardWidth: config.cardWidth,
+                    spacing: config.spacing,
+                    cardMaxHeight: cardMaxHeight,
+                    alignToBaseline: chunk.index < totalChunkCount - 1,
+                    favoriteIDs: favoriteIDs,
+                    onSelect: onSelect
+                )
             }
         }
     }
@@ -1654,6 +1796,88 @@ private struct WallpaperGridContainerView: View, Equatable {
     }
 }
 
+// MARK: - WallpaperChunkView：纯 ZStack + 绝对定位的 chunk 容器
+//
+// **核心设计**：完全不使用 SwiftUI Layout protocol，而是用纯 Swift 函数预计算
+// 所有卡片位置，再用 ZStack + .position 直接放置。这样 SwiftUI 在 chunk 内部
+// 不会进入 LayoutEngineBox/UnaryLayoutEngine 的复杂 measure/place 路径——
+// 彻底绕过 macOS 26 上偶发的 SwiftUI 系统库死循环（CPU 100% 卡死 5+ 秒）。
+//
+// 性能特性：
+// - chunk 内 30 张卡片全部实例化（不 lazy），但 KFImage 通过 hasStartedImageLoading
+//   仍是延迟加载，单 chunk 内存可控
+// - 外层 LazyVStack 通过 chunk 的固定 height 直接知道总高度，不需调 sizeThatFits
+// - 仅可见 chunk 的视图被构造（外层 LazyVStack 的 lazy 行为）
+private struct WallpaperChunkView: View, Equatable {
+    let items: [Wallpaper]
+    let columns: Int
+    let cardWidth: CGFloat
+    let spacing: CGFloat
+    let cardMaxHeight: CGFloat
+    let alignToBaseline: Bool
+    let favoriteIDs: Set<Wallpaper.ID>
+    let onSelect: (Wallpaper) -> Void
+
+    /// chunk 容器的总宽度。理论上等于父容器（grid contentWidth），但布局计算只
+    /// 关心相对位置 + 居中偏移。这里取 columns × cardWidth + (columns-1) × spacing
+    /// 作为最小所需宽，外层 ScrollView 已限定 contentWidth ≥ 此值。
+    private var chunkLayout: WallpaperChunkLayoutResult {
+        let totalWidth = CGFloat(columns) * cardWidth + CGFloat(Swift.max(0, columns - 1)) * spacing
+        return computeWallpaperChunkLayout(
+            cardCount: items.count,
+            baseHeight: { idx in
+                WallpaperCardView.estimatedHeight(cardWidth: cardWidth, wallpaper: items[idx])
+            },
+            maxHeight: { _ in cardMaxHeight },
+            columns: columns,
+            columnWidth: cardWidth,
+            spacing: spacing,
+            totalWidth: totalWidth,
+            alignToBaseline: alignToBaseline
+        )
+    }
+
+    var body: some View {
+        let layout = chunkLayout
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { idx, wallpaper in
+                if idx < layout.placements.count {
+                    let frame = layout.placements[idx].frame
+                    WallpaperCardView(
+                        wallpaper: wallpaper,
+                        isFavorite: favoriteIDs.contains(wallpaper.id),
+                        cardWidth: cardWidth
+                    ) {
+                        onSelect(wallpaper)
+                    }
+                    .equatable()
+                    .frame(width: frame.width, height: frame.height)
+                    // .position 接受卡片的中心点；frame 是左上角原点，需转换
+                    .position(x: frame.midX, y: frame.midY)
+                }
+            }
+        }
+        // 关键：固定 chunk 整体高度，外层 LazyVStack 直接知道总高，
+        // 不需要调用任何 sizeThatFits / Layout protocol 路径
+        .frame(maxWidth: .infinity)
+        .frame(height: layout.totalHeight)
+    }
+
+    nonisolated static func == (lhs: WallpaperChunkView, rhs: WallpaperChunkView) -> Bool {
+        // 比较 IDs 数组以判断 chunk 内容是否变化（避免在 favoriteIDs 等无关变化时重算布局）
+        guard lhs.items.count == rhs.items.count else { return false }
+        for i in 0..<lhs.items.count where lhs.items[i].id != rhs.items[i].id {
+            return false
+        }
+        return lhs.columns == rhs.columns
+            && lhs.cardWidth == rhs.cardWidth
+            && lhs.spacing == rhs.spacing
+            && lhs.cardMaxHeight == rhs.cardMaxHeight
+            && lhs.alignToBaseline == rhs.alignToBaseline
+            && lhs.favoriteIDs == rhs.favoriteIDs
+    }
+}
+
 private struct WallpaperWaterfallLayoutKey: Equatable {
     let ids: [Wallpaper.ID]
     let columnCount: Int
@@ -1661,56 +1885,9 @@ private struct WallpaperWaterfallLayoutKey: Equatable {
     let spacing: CGFloat
 }
 
-@MainActor
-private final class WallpaperWaterfallLayoutCache {
-    private var cachedKey: WallpaperWaterfallLayoutKey?
-    private var cachedColumns: [[Wallpaper]] = []
-
-    func columns(
-        for wallpapers: [Wallpaper],
-        key: WallpaperWaterfallLayoutKey,
-        config: WallpaperGridConfig
-    ) -> [[Wallpaper]] {
-        if cachedKey == key {
-            WallpaperExploreDiagnostics.markLayout(
-                durationMS: 0,
-                itemCount: wallpapers.count,
-                columnCount: config.columnCount,
-                reusedCache: true
-            )
-            return cachedColumns
-        }
-
-        let start = Date()
-        let columns = ExploreGridLayout.waterfallColumns(
-            items: wallpapers,
-            columnCount: config.columnCount,
-            cardWidth: config.cardWidth,
-            spacing: config.spacing,
-            heightProvider: { wallpaper in
-                WallpaperCardView.estimatedHeight(cardWidth: config.cardWidth, wallpaper: wallpaper)
-            }
-        )
-        cachedKey = key
-        cachedColumns = columns
-        let duration = Date().timeIntervalSince(start) * 1000
-        WallpaperExploreDiagnostics.markLayout(
-            durationMS: duration,
-            itemCount: wallpapers.count,
-            columnCount: config.columnCount,
-            reusedCache: false
-        )
-        // ⚠️ 诊断日志：检测瀑布流布局计算性能
-        if duration > 16 {
-            AppLogger.warn(.wallpaper, "[性能] waterfallColumns 计算耗时过长", metadata: [
-                "durationMS": String(format: "%.2f", duration),
-                "itemCount": "\(wallpapers.count)",
-                "columnCount": "\(config.columnCount)"
-            ])
-        }
-        return columns
-    }
-}
+// 注：原基于 SwiftUI Layout protocol 的 `WaterfallChunkLayout` 已移除——
+// macOS 26 上 Layout protocol 实现会触发 SwiftUICore 死循环（CPU 100% 卡死）。
+// 现在使用纯算法 + ZStack/.position 的 `WallpaperChunkView`。
 
 private struct WallpaperGridConfig: Equatable {
     let columnCount: Int

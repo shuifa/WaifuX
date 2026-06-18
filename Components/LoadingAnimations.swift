@@ -722,6 +722,9 @@ struct AnimatedEmptyState: View {
                 isAnimating = true
             }
         }
+        .onDisappear {
+            isAnimating = false
+        }
     }
 }
 

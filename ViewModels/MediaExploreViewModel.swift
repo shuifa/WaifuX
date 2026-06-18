@@ -99,7 +99,7 @@ final class MediaExploreViewModel: ObservableObject {
     // MARK: - Workshop 分页状态
     private var workshopCurrentPage = 1
     private var workshopHasMore = true
-    private var workshopSearchQuery = ""
+    private(set) var workshopSearchQuery = ""
     private var workshopCurrentTags: [String] = []
     private var workshopCurrentType: WorkshopSourceManager.WorkshopTypeFilter = .all
     /// 默认 SFW（Steam `requiredtags[]=Everyone`），避免未选级别时混入全年龄未分级内容

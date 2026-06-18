@@ -13,6 +13,9 @@ extension CAContext: @unchecked @retroactive Sendable {}
 final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
     var agentProxy: (any WallpaperExtensionProxyXPCProtocol)?
     private var previousPresentationMode = "default"
+    /// 上次收到 presentationMode == "locked" 的时间。用于防止 screenIsUnlocked
+    /// DistributedNotification 偶发丢失导致 isScreenLocked 永久卡死。
+    private var lastLockedUpdate: Date = .distantPast
 
     private static func extractWallpaperContextIdentifier(from object: Any?) -> String? {
         guard let object else { return nil }
@@ -135,15 +138,16 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         size requestedSize: CGSize?,
         scale requestedScale: CGFloat?
     ) {
+        // 收集所有需要更新的 context。
+        // 桌面 + 锁屏两个 instance 共享 displayID 但各自有独立 context — 以前
+        // 用 `activeContextForCommand(displayID:)` 只取第一个，导致拔插显示器/分辨率
+        // 切换时另一个 layer 的 frame/scale 不更新。改用 allActiveContexts(for:) 全部更新。
         let contexts: [ActiveWallpaper]
         if let wallpaperID,
            let active = WallpaperState.shared.activeContext(wallpaperID: wallpaperID) {
             contexts = [active]
-        } else if let displayID,
-                  let active = WallpaperState.shared.activeContextForCommand(displayID: displayID) {
-            contexts = [active]
-        } else if displayID != nil {
-            contexts = []
+        } else if let displayID {
+            contexts = WallpaperState.shared.allActiveContexts(for: displayID)
         } else {
             contexts = WallpaperState.shared.activeContextsSnapshot()
         }
@@ -151,6 +155,9 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         guard !contexts.isEmpty else { return }
 
         let applyBlock: @Sendable () -> Void = {
+            // per-display 的 IOSurface 重分配只做一次（surface 是按 display 共享的）
+            var reallocatedDisplays = Set<UInt32>()
+
             for active in contexts {
                 let targetDisplayID = displayID ?? active.displayID
                 guard let targetDisplayID else { continue }
@@ -174,23 +181,24 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                 active.rootLayer.contentsScale = targetScale
                 active.renderer?.relayoutForCurrentDisplayGeometry()
 
-                // IOSurface 渲染器也需要重新布局
+                // IOSurface 渲染器也需要重新布局，但分辨率重分配 per-display 只做一次。
                 if let ioRenderer = WallpaperState.shared.ioSurfaceRenderer(for: targetDisplayID) {
                     ioRenderer.relayout(rootLayer: active.rootLayer)
 
-                    // 分辨率变化时重新分配 surface 并通知 App
-                    let pixelWidth = Int(targetSize.width * targetScale)
-                    let pixelHeight = Int(targetSize.height * targetScale)
-                    if #available(macOS 15.0, *) {
-                        if let newIDs = ioRenderer.reallocateSurfacesIfNeeded(width: pixelWidth, height: pixelHeight) {
-                            Task {
-                                _ = await UnixSocketClient.shared.registerSurfaces(
-                                    displayID: targetDisplayID,
-                                    surfaceID0: newIDs.surfaceID0,
-                                    surfaceID1: newIDs.surfaceID1,
-                                    videoID: active.videoID ?? ""
-                                )
-                                extLog("[Geometry] re-registered surfaces display=\(targetDisplayID) [\(newIDs.surfaceID0), \(newIDs.surfaceID1)]")
+                    if reallocatedDisplays.insert(targetDisplayID).inserted {
+                        let pixelWidth = Int(targetSize.width * targetScale)
+                        let pixelHeight = Int(targetSize.height * targetScale)
+                        if #available(macOS 15.0, *) {
+                            if let newIDs = ioRenderer.reallocateSurfacesIfNeeded(width: pixelWidth, height: pixelHeight) {
+                                Task {
+                                    _ = await UnixSocketClient.shared.registerSurfaces(
+                                        displayID: targetDisplayID,
+                                        surfaceID0: newIDs.surfaceID0,
+                                        surfaceID1: newIDs.surfaceID1,
+                                        videoID: active.videoID ?? ""
+                                    )
+                                    extLog("[Geometry] re-registered surfaces display=\(targetDisplayID) [\(newIDs.surfaceID0), \(newIDs.surfaceID1)]")
+                                }
                             }
                         }
                     }
@@ -205,7 +213,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                 }
 
                 extLog(
-                    "[Geometry] updated display=\(targetDisplayID) "
+                    "[Geometry] updated context=\(active.contextId) display=\(targetDisplayID) "
                         + "\(Int(oldBounds.width))x\(Int(oldBounds.height))@\(oldScale) -> "
                         + "\(Int(targetSize.width))x\(Int(targetSize.height))@\(targetScale)"
                 )
@@ -471,7 +479,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
             rootLayer.addSublayer(gradientLayer)
             caContext.layer = rootLayer
             _ = WallpaperState.shared.storeContext(
-                ActiveWallpaper(caContext: caContext, rootLayer: rootLayer, renderer: nil, displayID: displayID, videoID: choiceConfiguration, contextId: contextId),
+                ActiveWallpaper(caContext: caContext, rootLayer: rootLayer, renderer: nil, displayID: displayID, videoID: choiceConfiguration, contextId: contextId, wallpaperID: wallpaperIDString),
                 id: contextId,
                 wallpaperID: wallpaperIDString
             )
@@ -522,11 +530,15 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                     renderer: renderer,
                     displayID: displayID,
                     videoID: instanceID,
-                    contextId: contextId
+                    contextId: contextId,
+                    wallpaperID: wallpaperIDString
                 )
                 let existing = WallpaperState.shared.storeContext(activeCtx, id: contextId, wallpaperID: wallpaperIDString)
                 existing?.renderer?.stop()
                 renderer.start()
+                // 应用当前 policy（可能正处于锁屏 / userPaused / display paused 等暂停状态），
+                // 否则新 renderer 会一直满速跑到下一次 update() 才被拉回。
+                WaifuXWallpaperExtension.recomputeAndApplyPolicy()
                 writeSnapshotCacheIfPossible(videoURL: pendingURL, videoID: instanceID, rootLayer: rootLayer)
                 WallpaperPrefs.shared.setActive(true)
                 extLog("  [Acquire] ✅ 待处理视频渲染已启动 display=\(displayID) video=\(pendingURL.lastPathComponent)")
@@ -551,11 +563,14 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                     renderer: renderer,
                     displayID: displayID,
                     videoID: instanceID,
-                    contextId: contextId
+                    contextId: contextId,
+                    wallpaperID: wallpaperIDString
                 )
                 let existing = WallpaperState.shared.storeContext(activeCtx, id: contextId, wallpaperID: wallpaperIDString)
                 existing?.renderer?.stop()
                 renderer.start()
+                // 应用当前 policy，避免锁屏/暂停状态下新 renderer 自动播放。
+                WaifuXWallpaperExtension.recomputeAndApplyPolicy()
                 writeSnapshotCacheIfPossible(videoURL: videoURL, videoID: instanceID, rootLayer: rootLayer)
                 WallpaperPrefs.shared.setActive(true)
                 extLog("  [Acquire] ✅ 本地回退渲染已启动 display=\(displayID) video=\(videoURL.lastPathComponent)")
@@ -734,7 +749,8 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
             renderer: nil,
             displayID: displayID,
             videoID: instanceID,
-            contextId: contextId
+            contextId: contextId,
+            wallpaperID: wallpaperIDString
         )
         let existing = WallpaperState.shared.storeContext(activeCtx, id: contextId, wallpaperID: wallpaperIDString)
         existing?.renderer?.stop()
@@ -756,25 +772,37 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
             return
         }
 
-        for active in allContexts {
-            let rootLayer = active.rootLayer
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-            rootLayer.contentsGravity = .resizeAspectFill
-            rootLayer.contents = image
-            CATransaction.commit()
+        // CALayer / CATransaction 不是线程安全的；handleSocketCommand 把这个调用挂在
+        // wallpaperCommandQueue（utility 后台串行队列）上，必须切到主线程做 layer 修改。
+        // image 和 allContexts 都是 Sendable，可直接捕获到 @Sendable 闭包里。
+        let applyBlock: @Sendable () -> Void = {
+            for active in allContexts {
+                let rootLayer = active.rootLayer
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+                rootLayer.contentsGravity = .resizeAspectFill
+                rootLayer.contents = image
+                CATransaction.commit()
 
-            if let renderer = active.renderer {
-                renderer.stop()
+                if let renderer = active.renderer {
+                    renderer.stop()
+                }
+                _ = WallpaperState.shared.replaceContextRendererByContextId(
+                    contextId: active.contextId,
+                    renderer: nil,
+                    videoID: sourceID
+                )
             }
-            WallpaperState.shared.replaceContextRendererByContextId(
-                contextId: active.contextId,
-                renderer: nil,
-                videoID: sourceID
-            )
         }
 
+        if Thread.isMainThread {
+            applyBlock()
+        } else {
+            DispatchQueue.main.async(execute: applyBlock)
+        }
+
+        // 这些是线程安全的，可以在当前线程执行
         WallpaperState.shared.removeIOSurfaceRenderer(for: displayID)
         FrameChannel.shared.unregisterCallback(displayID: displayID)
         WallpaperPrefs.shared.updateCurrentVideo()
@@ -817,10 +845,19 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
 
         if presentationMode == "locked" {
             WallpaperState.shared.isScreenLocked = true
+            lastLockedUpdate = Date()
+        } else if presentationMode == "active",
+                  WallpaperState.shared.isScreenLocked,
+                  Date().timeIntervalSince(lastLockedUpdate) > 3.0 {
+            // 自愈：screenIsUnlocked DistributedNotification 偶发会丢失，导致 isScreenLocked
+            // 卡死为 true，桌面壁纸永远走 "locked" policy 不再播放。
+            // 看到 presentationMode 持续 active 超过 3s 就强制清除，恢复桌面播放。
+            WallpaperState.shared.isScreenLocked = false
+            extLog("[Update] 自愈：presentationMode 持续 active，强制清 isScreenLocked")
         }
-        // 注意：不在 update() 中设置 isScreenLocked = false。
-        // screenIsLocked/screenIsUnlocked 的 DistributedNotification 才是锁屏状态的正确信源。
-        // WallpaperAgent 在锁屏过渡期间会发 update("active")，此时不应该覆盖 isScreenLocked。
+        // 注意：不在每个 active update 都设置 isScreenLocked = false。
+        // screenIsLocked/screenIsUnlocked 的 DistributedNotification 才是锁屏状态的正确信源；
+        // WallpaperAgent 在锁屏过渡期间会发 update("active")，此时不应该立刻覆盖 isScreenLocked。
 
         let prefs = WallpaperPrefs.shared
         let power = PowerMonitor.shared.currentState
@@ -850,18 +887,22 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
     }
 
     func invalidate(withId id: Any?, reply: @escaping @Sendable ((any Error)?) -> Void) {
-        var cleaned = false
         let identifier = Self.extractWallpaperContextIdentifier(from: id)
-        if let identifier,
-           let active = WallpaperState.shared.removeContext(wallpaperID: identifier) {
-            active.renderer?.stop()
-            cleaned = true
+        var cleanedCount = 0
+        if let identifier {
+            // 桌面 + 锁屏共享同一 wallpaperID（系统 WallpaperAgent 一次 invalidate 两个 instance），
+            // 必须循环 stop 所有匹配的 renderer，否则前面的 context renderer 永久泄漏。
+            let removed = WallpaperState.shared.removeContext(wallpaperID: identifier)
+            for ctx in removed {
+                ctx.renderer?.stop()
+            }
+            cleanedCount = removed.count
         }
         let remaining = WallpaperState.shared.activeContextCount
         if remaining == 0 {
             WallpaperPrefs.shared.setActive(false)
         }
-        extLog("=== INVALIDATE === (identifier: \(identifier ?? "nil"), cleaned: \(cleaned), remaining: \(remaining))")
+        extLog("=== INVALIDATE === (identifier: \(identifier ?? "nil"), cleaned: \(cleanedCount), remaining: \(remaining))")
         reply(nil)
     }
 

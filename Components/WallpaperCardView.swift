@@ -79,6 +79,13 @@ struct WallpaperCardView: View, @preconcurrency Equatable {
         imageHeight(cardWidth: cardWidth, wallpaper: wallpaper) + bottomBarHeight
     }
 
+    /// 卡片在 `WaterfallChunkLayout` 中允许加高到的"最大允许高度"。
+    /// 等于 aspectRatio 取下限（最纵向 0.35）时的图像高度 + bottomBar 高度。
+    /// 用于 chunk 末尾把短列卡片反向加高对齐时的上限。
+    static func maxAllowedHeight(cardWidth: CGFloat) -> CGFloat {
+        cardWidth / maxAspectRatioClamp.lowerBound + bottomBarHeight
+    }
+
     private var effectiveAspectRatio: CGFloat {
         Self.effectiveAspectRatio(for: wallpaper)
     }
@@ -132,8 +139,12 @@ struct WallpaperCardView: View, @preconcurrency Equatable {
     var body: some View {
         ZStack(alignment: .topLeading) {
             VStack(spacing: 0) {
+                // 图像区域：高度由父布局决定（卡片整体高 - bottomBar 固定 46）。
+                // image 用 .fill + .clipped 在动态高度下裁剪显示中央区域，
+                // 配合 WaterfallChunkLayout 的"末尾加高"对齐策略，视觉上卡片末端
+                // 露出图片更多内容（横屏壁纸尤其受益），无可见空白。
                 coverImage
-                    .frame(width: cardWidth, height: imageHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 bottomBar
                     .frame(height: Self.bottomBarHeight)
@@ -151,7 +162,11 @@ struct WallpaperCardView: View, @preconcurrency Equatable {
         }
         .drawingGroup(opaque: true)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-        .frame(width: cardWidth, height: cardHeight)
+        // 卡片宽度固定为 cardWidth；高度由父布局通过 ProposedViewSize 决定
+        // （在 WaterfallChunkLayout 中由对齐算法决定每张卡片的最终高度）。
+        // 调用方需保证父 Layout 的 columnWidth 与此处 cardWidth 严格相等，
+        // 否则 SwiftUI 会按双重 frame 收紧导致渲染异常。
+        .frame(width: cardWidth)
         .contentShape(Rectangle())
         .onTapGesture { onTap?() }
         .scaleEffect(isHovered ? 1.01 : 1.0)
@@ -248,11 +263,16 @@ struct WallpaperCardView: View, @preconcurrency Equatable {
                 }
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: cardWidth, height: imageHeight)
+                // 高度撑满父 VStack 分配的图像区域（卡片整体高 - bottomBar 46）
+                .frame(maxHeight: .infinity)
+                // 宽度严格固定为 cardWidth：避免 .fill + maxWidth: .infinity 让 KFImage
+                // 按图片自然尺寸渲染导致溢出（KFImage 是 resizable，没有 ideal size）
+                .frame(width: cardWidth)
                 .clipped()
         } else {
             imagePlaceholder
-                .frame(width: cardWidth, height: imageHeight)
+                .frame(maxHeight: .infinity)
+                .frame(width: cardWidth)
         }
     }
 
@@ -293,32 +313,31 @@ struct WallpaperCardView: View, @preconcurrency Equatable {
         .frame(height: Self.bottomBarHeight)
     }
 
+    // ⚡ macOS 26 SwiftUI bug：内层嵌套 HStack 在父级 sizeThatFits 时，会触发
+    // `_HStackLayout.explicitAlignment` 互相递归，30 张卡片同时递归计算 alignment guide
+    // 直接卡死主线程。改用 Text + Text 拼接（单一 Text 视图，零嵌套 HStack）。
     private func colorChip(hex: String) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(Color(hex: hex))
-                .frame(width: 8, height: 8)
-                .overlay(Circle().stroke(Color.white.opacity(0.22), lineWidth: 0.5))
-            Text("#\(hex)")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(badgeTextColor)
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 22)
-        .background(
-            RoundedRectangle(cornerRadius: 11)
-                .fill(Color.black.opacity(0.22))
-        )
+        let dot = Text(Image(systemName: "circle.fill"))
+            .foregroundColor(Color(hex: hex))
+        let label = Text(" #\(hex)")
+            .foregroundColor(badgeTextColor)
+        return (dot + label)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: 11)
+                    .fill(Color.black.opacity(0.22))
+            )
     }
 
     private func statView(symbol: String, value: String, tint: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .bold))
-            Text(value)
-                .font(.system(size: 11, weight: .semibold, design: .default))
-        }
-        .foregroundColor(tint)
+        let icon = Text(Image(systemName: symbol))
+            .font(.system(size: 10, weight: .bold))
+        let label = Text(" \(value)")
+            .font(.system(size: 11, weight: .semibold, design: .default))
+        return (icon + label)
+            .foregroundColor(tint)
     }
 
     // MARK: - Badges
@@ -334,14 +353,15 @@ struct WallpaperCardView: View, @preconcurrency Equatable {
         }
     }
 
+    @ViewBuilder
     private var topTrailingBadge: some View {
-        HStack {
-            Spacer()
-            let label = wallpaper.effectiveResolutionLabel
-                .replacingOccurrences(of: "x", with: "×")
-            if !label.isEmpty {
-                badgeText(label)
-            }
+        // ⚡ 用 .frame(maxWidth:.infinity, alignment:.trailing) 取代 HStack { Spacer; badge }
+        // 减少一层 HStack alignment guide 递归（macOS 26 SwiftUI 卡死优化）
+        let label = wallpaper.effectiveResolutionLabel
+            .replacingOccurrences(of: "x", with: "×")
+        if !label.isEmpty {
+            badgeText(label)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 

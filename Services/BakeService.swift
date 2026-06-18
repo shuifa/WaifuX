@@ -1671,10 +1671,10 @@ final class BakeService: ObservableObject {
         }
         context.draw(sourceImage, in: drawRect)
 
-        // 等待输入就绪
+        // 等待输入就绪（5ms 步进，最多 6 秒；替代原来 usleep(1ms) 的忙等，降低 CPU 占用）
         var waitCount = 0
-        while !input.isReadyForMoreMediaData, waitCount < 6000 {
-            usleep(1000)
+        while !input.isReadyForMoreMediaData, waitCount < 1200 {
+            Thread.sleep(forTimeInterval: 0.005)
             waitCount += 1
         }
         guard input.isReadyForMoreMediaData else {

@@ -70,7 +70,6 @@ public struct SceneDesignedDynamicTextInfo: Equatable, Sendable {
     public let entries: [SceneDesignedDynamicTextEntry]
 }
 
-@MainActor
 enum SceneWallpaperDesignService {
     private static let folderName = "SceneDesigns"
 

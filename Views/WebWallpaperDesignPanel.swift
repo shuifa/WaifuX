@@ -54,6 +54,9 @@ final class WebWallpaperDesignPanelController {
         currentPath = wallpaperPath
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+
+        // 异步加载壁纸数据，避免主线程阻塞
+        Task { await viewModel.loadAsync() }
     }
 
     func closePanel() {
@@ -83,6 +86,7 @@ final class WebWallpaperDesignViewModel: ObservableObject {
     @Published var currentValues: [String: WebWallpaperPropertyValue] = [:]
     @Published private(set) var errorMessage: String?
     @Published private(set) var saveMessage: String?
+    @Published private(set) var isLoading: Bool = true
 
     let wallpaperPath: String
     private let onClose: () -> Void
@@ -95,7 +99,6 @@ final class WebWallpaperDesignViewModel: ObservableObject {
         self.onClose = onClose
         self.title = URL(fileURLWithPath: wallpaperPath).lastPathComponent
         self.wallpaperName = URL(fileURLWithPath: wallpaperPath).lastPathComponent
-        load()
     }
 
     var visibleProperties: [WebWallpaperProperty] {
@@ -191,22 +194,31 @@ final class WebWallpaperDesignViewModel: ObservableObject {
         }
     }
 
-    private func load() {
+    func loadAsync() async {
+        await MainActor.run { isLoading = true }
+        let path = wallpaperPath
         do {
-            let document = try service.loadDocument(for: wallpaperPath)
-            properties = document.properties
-            currentValues = document.currentValues
-            title = URL(fileURLWithPath: wallpaperPath).lastPathComponent
-            wallpaperName = document.wallpaperTitle
-            errorMessage = nil
+            let document = try await Task.detached(priority: .userInitiated) {
+                try WebWallpaperDesignService.loadDocumentFromDisk(for: path)
+            }.value
+            await MainActor.run {
+                properties = document.properties
+                currentValues = document.currentValues
+                title = URL(fileURLWithPath: path).lastPathComponent
+                wallpaperName = document.wallpaperTitle
+                errorMessage = nil
+                isLoading = false
+            }
         } catch {
-            errorMessage = error.localizedDescription
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                isLoading = false
+            }
         }
     }
 
     func reload() {
-        load()
-        saveMessage = nil
+        Task { await loadAsync() }
     }
 
     func resetToDefaults() {
@@ -298,7 +310,10 @@ struct WebWallpaperDesignPanel: View {
                 .padding(.bottom, 4)
             glassDivider
 
-            if let errorMessage = viewModel.errorMessage, viewModel.properties.isEmpty {
+            if viewModel.isLoading {
+                loadingState
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let errorMessage = viewModel.errorMessage, viewModel.properties.isEmpty {
                 errorState(errorMessage)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -340,6 +355,17 @@ struct WebWallpaperDesignPanel: View {
         .frame(width: 360, height: 600)
         .tint(accentTint)
         .accentColor(accentTint)
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.2)
+                .controlSize(.small)
+            Text("加载中...")
+                .font(.system(size: 12))
+                .foregroundStyle(LiquidGlassColors.textSecondary)
+        }
     }
 
     private var glassDivider: some View {
@@ -463,7 +489,6 @@ struct WebWallpaperDesignPanel: View {
                             .labelsHidden()
                             .controlSize(.small)
                             .frame(width: 54, height: 24)
-                            .opacity(0.02)
                             .tint(accentTint)
                             .accentColor(accentTint)
                     }

@@ -264,7 +264,7 @@ final class MediaLibraryService: ObservableObject {
         syncDlIndex()
         downloadRecords = Array(downloadRecords)
 
-        if triggerAutoBake, snapshot.isEligibleForOfflineBake {
+        if triggerAutoBake, UserDefaults.standard.bool(forKey: "auto_bake_scene"), snapshot.isEligibleForOfflineBake {
             SceneOfflineBakeService.scheduleAutoBakeAfterEligibility(itemID: itemID)
         }
     }

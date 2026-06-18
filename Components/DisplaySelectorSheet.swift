@@ -73,7 +73,7 @@ struct DisplaySelectorSheet: View {
                     )
 
                     // 单个显示器选项
-                    ForEach(Array(screens.enumerated()), id: \.offset) { index, screen in
+                    ForEach(Array(screens.enumerated()), id: \.element.screenIdentifier) { index, screen in
                         DisplayOptionButton(
                             icon: "display",
                             title: "\(t("display")) \(index + 1)",

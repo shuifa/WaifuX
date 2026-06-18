@@ -1,196 +1,29 @@
 import SwiftUI
 import Kingfisher
 
-// MARK: - NativeGIFView（CALayer 直通，绕过 SwiftUI 重绘）
-
-/// 用 NSViewRepresentable 封装 GIF 宿主，帧更新直接写 `layer.contents`，
-/// 完全绕过 SwiftUI 的 Body 评估和 Diff 算法。
-/// 默认显示第一帧非黑帧；`isPlaying = true` 时播放动画，`isPlaying = false` 时回到静态帧。
-struct NativeGIFView: NSViewRepresentable {
-    let url: URL
-    let isPlaying: Bool
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.contentsGravity = .resizeAspectFill
-        view.layer?.isOpaque = true
-        context.coordinator.load(url: url)
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.layer = nsView.layer
-        if isPlaying {
-            context.coordinator.startAnimation()
-        } else {
-            context.coordinator.stopAnimation()
-        }
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.stopAnimation()
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    final class Coordinator: @unchecked Sendable {
-        weak var layer: CALayer?
-        private var imageSource: CGImageSource?
-        private var frames: [(image: CGImage, duration: TimeInterval)] = []
-        private var timer: Timer?
-        private var currentFrameIndex = 0
-        private var staticFrameIndex = 0
-        private var loadTask: Task<Void, Never>?
-        private var isLoaded = false
-
-        func load(url: URL) {
-            loadTask?.cancel()
-            frames = []
-            imageSource = nil
-            isLoaded = false
-            timer?.invalidate()
-            timer = nil
-            staticFrameIndex = 0
-
-            loadTask = Task.detached(priority: .userInitiated) { [weak self] in
-                guard let self else { return }
-                guard let (data, _) = try? await URLSession.shared.data(from: url),
-                      !data.isEmpty else { return }
-                guard !Task.isCancelled else { return }
-                guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return }
-                let count = CGImageSourceGetCount(source)
-                guard count > 1 else {
-                    if let img = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-                        await MainActor.run { [weak self] in
-                            self?.layer?.contents = img
-                            self?.isLoaded = true
-                        }
-                    }
-                    return
-                }
-
-                let maxFrames = 20
-                let frameStep = max(1, count / maxFrames)
-                var decoded: [(CGImage, TimeInterval)] = []
-                var i = 0
-                while i < count, decoded.count < maxFrames {
-                    let dur = Self.frameDuration(at: i, source: source)
-                    let opts: [CFString: Any] = [
-                        kCGImageSourceCreateThumbnailFromImageAlways: true,
-                        kCGImageSourceThumbnailMaxPixelSize: 512,
-                        kCGImageSourceCreateThumbnailWithTransform: true
-                    ]
-                    if let thumb = CGImageSourceCreateThumbnailAtIndex(source, i, opts as CFDictionary) {
-                        decoded.append((thumb, dur))
-                    }
-                    i += frameStep
-                }
-
-                guard !decoded.isEmpty, !Task.isCancelled else { return }
-                let frames = decoded
-                // 找第一帧非黑帧作为默认静态展示帧
-                let staticIdx = Self.findFirstNonBlackFrameIndex(in: frames)
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.frames = frames
-                    self.imageSource = source
-                    self.isLoaded = true
-                    self.staticFrameIndex = staticIdx
-                    self.layer?.contents = frames[staticIdx].0
-                }
-            }
-        }
-
-        func startAnimation() {
-            guard timer == nil, !frames.isEmpty else { return }
-            currentFrameIndex = staticFrameIndex
-            layer?.contents = frames[currentFrameIndex].0
-            scheduleNextFrame()
-        }
-
-        func stopAnimation() {
-            timer?.invalidate()
-            timer = nil
-            guard !frames.isEmpty else { return }
-            currentFrameIndex = staticFrameIndex
-            layer?.contents = frames[staticFrameIndex].0
-        }
-
-        private func scheduleNextFrame() {
-            guard !frames.isEmpty else { return }
-            let dur = max(frames[currentFrameIndex].duration, 0.05)
-            timer = Timer.scheduledTimer(withTimeInterval: dur, repeats: false) { [weak self] _ in
-                guard let self else { return }
-                self.currentFrameIndex = (self.currentFrameIndex + 1) % self.frames.count
-                self.layer?.contents = self.frames[self.currentFrameIndex].0
-                self.scheduleNextFrame()
-            }
-        }
-
-        // MARK: - 非黑帧检测
-
-        /// 从已解码帧中找出第一帧非纯黑/纯暗帧的索引，用于默认静态展示。
-        private static func findFirstNonBlackFrameIndex(in frames: [(CGImage, TimeInterval)]) -> Int {
-            for i in 0..<frames.count {
-                if !Self.isMostlyBlackFrame(frames[i].0) {
-                    return i
-                }
-            }
-            return 0 // fallback
-        }
-
-        /// 将 CGImage 缩到 16×16 检测是否有足够多的非黑像素。
-        private static func isMostlyBlackFrame(_ image: CGImage, threshold: UInt8 = 20) -> Bool {
-            let w = 16, h = 16
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
-            guard let ctx = CGContext(
-                data: nil,
-                width: w, height: h,
-                bitsPerComponent: 8,
-                bytesPerRow: w * 4,
-                space: colorSpace,
-                bitmapInfo: bitmapInfo
-            ) else { return false }
-            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-            guard let data = ctx.data else { return false }
-
-            let pixels = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
-            var brightCount = 0
-            let total = w * h
-            for i in 0..<total {
-                let offset = i * 4
-                // byteOrder32Big + noneSkipFirst → [skip, R, G, B]
-                let r = pixels[offset + 1]
-                let g = pixels[offset + 2]
-                let b = pixels[offset + 3]
-                let maxChannel = max(r, g, b)
-                if maxChannel > threshold {
-                    brightCount += 1
-                }
-            }
-
-            return Double(brightCount) / Double(total) < 0.03
-        }
-
-        private static func frameDuration(at index: Int, source: CGImageSource) -> TimeInterval {
-            guard let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
-                  let gifProps = props[kCGImagePropertyGIFDictionary] as? [CFString: Any] else { return 0.1 }
-            if let dur = gifProps[kCGImagePropertyGIFDelayTime] as? NSNumber, dur.doubleValue > 0 { return dur.doubleValue }
-            if let dur = gifProps[kCGImagePropertyGIFUnclampedDelayTime] as? NSNumber, dur.doubleValue > 0 { return dur.doubleValue }
-            return 0.1
-        }
-    }
-}
-
 // MARK: - SwiftUI 媒体卡片
 
 struct MediaCardView: View, @preconcurrency Equatable {
     let media: MediaItem
     let isFavorite: Bool
     let cardWidth: CGFloat
+    /// 强制使用统一高度（用于 LazyVGrid 网格化布局）。设为 nil 时回退到按媒体自身比例计算。
+    let forcedHeight: CGFloat?
     let onTap: (() -> Void)?
+
+    init(
+        media: MediaItem,
+        isFavorite: Bool,
+        cardWidth: CGFloat,
+        forcedHeight: CGFloat? = nil,
+        onTap: (() -> Void)? = nil
+    ) {
+        self.media = media
+        self.isFavorite = isFavorite
+        self.cardWidth = cardWidth
+        self.forcedHeight = forcedHeight
+        self.onTap = onTap
+    }
 
     @State private var animatedProbeResult: AnimatedProbeResult?
     @State private var isHovered = false
@@ -203,7 +36,8 @@ struct MediaCardView: View, @preconcurrency Equatable {
     static func == (lhs: MediaCardView, rhs: MediaCardView) -> Bool {
         lhs.media.id == rhs.media.id &&
         lhs.isFavorite == rhs.isFavorite &&
-        lhs.cardWidth == rhs.cardWidth
+        lhs.cardWidth == rhs.cardWidth &&
+        lhs.forcedHeight == rhs.forcedHeight
     }
 
     private var effectiveAspectRatio: CGFloat {
@@ -221,12 +55,15 @@ struct MediaCardView: View, @preconcurrency Equatable {
     }
 
     private var imageHeight: CGFloat {
+        if let forced = forcedHeight {
+            return max(0, forced - bottomBarHeight)
+        }
         let maxImageHeight: CGFloat = cardWidth * 1.8
         return min(cardWidth / effectiveAspectRatio, maxImageHeight)
     }
 
     private var cardHeight: CGFloat {
-        imageHeight + bottomBarHeight
+        forcedHeight ?? (imageHeight + bottomBarHeight)
     }
 
     private var staticDisplayURL: URL {
@@ -241,16 +78,55 @@ struct MediaCardView: View, @preconcurrency Equatable {
         isHovered && coverGIFPlaybackHostActive
     }
 
+    /// 同步从 probe 缓存解析当前 candidate 列表 → 已缓存为 GIF 的 URL（若有）
+    /// 没有命中或缓存里只有 false 时返回 nil。
+    private var cachedAnimatedURL: URL? {
+        for url in animatedProbeCandidates {
+            if AnimatedImageProbeCache.shared.cachedIsAnimatedGIF(url, maxByteCount: maxAnimatedGIFBytes) == true {
+                return url
+            }
+        }
+        return nil
+    }
+
+    /// 全部 candidate 都已被探测过且全为 false → 不需要再发起异步 probe。
+    private var allCandidatesProbedAsNonAnimated: Bool {
+        let candidates = animatedProbeCandidates
+        guard !candidates.isEmpty else { return true }
+        for url in candidates {
+            if AnimatedImageProbeCache.shared.cachedIsAnimatedGIF(url, maxByteCount: maxAnimatedGIFBytes) == nil {
+                return false
+            }
+        }
+        return true
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             VStack(spacing: 0) {
                 coverImage
                     .frame(width: cardWidth, height: imageHeight)
                     .task(id: media.id) {
-                        animatedProbeResult = nil
+                        // 优化点 1：probe 缓存命中时直接同步设值，不发起异步任务也不抖动。
+                        if let hitURL = cachedAnimatedURL {
+                            if animatedProbeResult?.animatedURL != hitURL {
+                                animatedProbeResult = AnimatedProbeResult(animatedURL: hitURL)
+                            }
+                            return
+                        }
+                        if allCandidatesProbedAsNonAnimated {
+                            if animatedProbeResult?.animatedURL != nil {
+                                animatedProbeResult = AnimatedProbeResult(animatedURL: nil)
+                            }
+                            return
+                        }
+                        // 优化点 2：未命中才走异步。**不再先把 animatedProbeResult 设为 nil**
+                        // ——避免每次卡片 mount 都触发一次空 body 重算。
                         let result = await probeAnimatedImage()
                         guard !Task.isCancelled else { return }
-                        animatedProbeResult = result
+                        if animatedProbeResult?.animatedURL != result.animatedURL {
+                            animatedProbeResult = result
+                        }
                     }
 
                 bottomBar
@@ -258,12 +134,7 @@ struct MediaCardView: View, @preconcurrency Equatable {
             }
             .background(Color(hex: "1C2431"))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .shadow(
-                color: Color.black.opacity(0.16),
-                radius: 8,
-                x: 0,
-                y: 5
-            )
+            .mediaCardHoverShadow(isHovered: isHovered)
 
             RoundedRectangle(cornerRadius: cornerRadius)
                 .stroke(
@@ -276,33 +147,33 @@ struct MediaCardView: View, @preconcurrency Equatable {
         }
         .frame(width: cardWidth, height: cardHeight)
         .contentShape(Rectangle())
-        .scaleEffect(isHovered ? 1.02 : 1.0)
-        .animation(AppFluidMotion.hoverEase, value: isHovered)
+        .mediaCardHoverScale(isHovered: isHovered)
         .throttledHover(interval: 0.05) { hovering in
             isHovered = hovering
         }
         .zIndex(isHovered ? 1 : 0)
         .onTapGesture { onTap?() }
-        .onReceive(NotificationCenter.default.publisher(for: .appShouldReleaseForegroundMemory)) { _ in
-            animatedProbeResult = nil
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .appDidReceiveMemoryPressure)) { _ in
-            animatedProbeResult = nil
-        }
+        // 内存压力下的 probe 重置已上提到 ViewModel/Bridge 层（参见 MediaCardMemoryBridge），
+        // 此处不再在每张卡片注册 NotificationCenter 订阅 —— 滚动期间 mount/unmount
+        // 反复创建/销毁数百个 Combine sink 是重要的性能开销点。
     }
 
     @ViewBuilder
     private var coverImage: some View {
-        if let animatedURL = animatedDisplayURL {
-            NativeGIFView(url: animatedURL, isPlaying: shouldAnimateGIF)
-                .frame(width: cardWidth, height: imageHeight)
-                .clipped()
-        } else {
-            let scale = NSScreen.main?.backingScaleFactor ?? 2
-            let targetSize = CGSize(
-                width: min(cardWidth * scale, 1600),
-                height: min(imageHeight * scale, 1600)
-            )
+        // ZStack 双层 GIF 播放方案（替代旧的自家 NativeGIFView 路径，已删除）：
+        // - 底层 KFImage 静态封面**永不销毁**：消除从静态切到动画那一瞬的黑底闪烁。
+        // - 顶层仅 `isHovered && detectedGIF` 时叠加 KFAnimatedImage；`id` 含 hover
+        //   状态以触发 NSView 重建，确保 Kingfisher 的 `autoPlayAnimatedImage = true`
+        //   真实生效（这是项目里 KFMediaCoverImage 验证过的模式）。
+        // - 滚动经过 GIF 卡片：条件不成立 → KFAnimatedImage 不创建 → 零下载/解码。
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let targetSize = CGSize(
+            width: min(Self.quantize(cardWidth * scale, step: 32), 1600),
+            height: min(Self.quantize(imageHeight * scale, step: 32), 1600)
+        )
+
+        ZStack {
+            // 底层：静态封面，始终存在，量化降采样以稳定 Kingfisher cache key。
             KFImage(staticDisplayURL)
                 .setProcessor(DownsamplingImageProcessor(size: targetSize))
                 .cacheMemoryOnly(false)
@@ -313,7 +184,34 @@ struct MediaCardView: View, @preconcurrency Equatable {
                 .scaledToFill()
                 .frame(width: cardWidth, height: imageHeight)
                 .clipped()
+
+            // 顶层：仅在 hover + 已确认 GIF 时叠加 Kingfisher 的 AnimatedImageView 播放。
+            // - 滚动经过 GIF 卡片不会触发任何下载/解码（条件不成立，view 不创建）。
+            // - hover 触发后 `id` 包含 hover 状态，KFAnimatedImage 重建为新 NSView 并应用
+            //   `autoPlayAnimatedImage = true`；首帧出来前底层 KFImage 仍可见，无黑底。
+            if let animatedURL = animatedDisplayURL, isHovered {
+                KFAnimatedImage.url(animatedURL)
+                    .memoryCacheExpiration(.expired)
+                    .diskCacheExpiration(.days(3))
+                    .cancelOnDisappear(true)
+                    .configure { view in
+                        configureAnimatedGIFViewForAspectFill(view, autoPlay: shouldAnimateGIF)
+                    }
+                    .placeholder { _ in Color.clear }
+                    .onFailure { _ in /* 静默失败：底层 KFImage 兜底 */ }
+                    .id("\(animatedURL.absoluteString)|hover:\(isHovered)")
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: cardWidth, height: imageHeight)
+                    .clipped()
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: isHovered)
+    }
+
+    private static func quantize(_ value: CGFloat, step: CGFloat) -> CGFloat {
+        guard step > 0 else { return value }
+        return ceil(value / step) * step
     }
 
     private var bottomBar: some View {
@@ -398,4 +296,30 @@ struct MediaCardView: View, @preconcurrency Equatable {
         return urls
     }
 
+}
+
+// MARK: - 性能优化：仅 hover 时挂阴影；scale + animation 永久挂载以保证平滑过渡
+//
+// ⚠️ scaleEffect / animation **不能**做条件挂载：
+// 用 `@ViewBuilder if isHovered { scaleEffect(1.02) }` 会让 SwiftUI 看到"结构变化"，
+// 它只能做默认 opacity transition、不会在 1.0 ↔ 1.02 之间插值，hover 动画就生硬跳变。
+// 永久挂载 `.scaleEffect(isHovered ? 1.02 : 1.0)` 在非 hover 时是 identity transform，
+// SwiftUI 会优化掉实际矩阵运算，开销可忽略；`.animation` 永久挂载只是登记 dependency。
+//
+// `.shadow` 是真正的 GPU 离屏 compositing 大头，仍按 hover-only 条件挂载。
+private extension View {
+    @ViewBuilder
+    func mediaCardHoverShadow(isHovered: Bool) -> some View {
+        if isHovered {
+            self.shadow(color: Color.black.opacity(0.20), radius: 10, x: 0, y: 6)
+        } else {
+            self
+        }
+    }
+
+    func mediaCardHoverScale(isHovered: Bool) -> some View {
+        self
+            .scaleEffect(isHovered ? 1.02 : 1.0)
+            .animation(AppFluidMotion.hoverEase, value: isHovered)
+    }
 }

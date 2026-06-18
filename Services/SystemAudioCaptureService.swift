@@ -26,14 +26,21 @@ import AVFoundation
 public final class SystemAudioCaptureService: NSObject, ObservableObject {
     public static let shared = SystemAudioCaptureService()
 
-    // MARK: - 频谱数据
+    // MARK: - 频谱数据（高频，隔离：不走 @Published，避免 30fps objectWillChange 污染所有观察者）
 
-    /// 16 频段频谱（0~1）
-    @Published public private(set) var spectrum16: [Float] = .init(repeating: 0, count: 16)
+    /// 16 频段频谱（0~1）—— 通过 spectrum16Publisher 推送，仅音频可视化组件订阅
+    public private(set) var spectrum16: [Float] = .init(repeating: 0, count: 16)
     /// 32 频段频谱（0~1）
-    @Published public private(set) var spectrum32: [Float] = .init(repeating: 0, count: 32)
+    public private(set) var spectrum32: [Float] = .init(repeating: 0, count: 32)
     /// 64 频段频谱（0~1）
-    @Published public private(set) var spectrum64: [Float] = .init(repeating: 0, count: 64)
+    public private(set) var spectrum64: [Float] = .init(repeating: 0, count: 64)
+
+    /// 频谱 Publisher（CurrentValueSubject：新订阅者立即获得最新值）
+    public let spectrum16Publisher = CurrentValueSubject<[Float], Never>(Array(repeating: 0, count: 16))
+    public let spectrum32Publisher = CurrentValueSubject<[Float], Never>(Array(repeating: 0, count: 32))
+    public let spectrum64Publisher = CurrentValueSubject<[Float], Never>(Array(repeating: 0, count: 64))
+
+    // MARK: - 低频状态（@Published 安全：变化频率低）
 
     /// 是否正在捕获音频
     @Published public private(set) var isRunning = false
@@ -103,6 +110,9 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
         spectrum16 = .init(repeating: 0, count: 16)
         spectrum32 = .init(repeating: 0, count: 32)
         spectrum64 = .init(repeating: 0, count: 64)
+        spectrum16Publisher.send(spectrum16)
+        spectrum32Publisher.send(spectrum32)
+        spectrum64Publisher.send(spectrum64)
         averageEnergy = 0
     }
 
@@ -285,6 +295,10 @@ extension SystemAudioCaptureService {
             self.lastSpectrum16 = self.spectrum16
             self.lastSpectrum32 = self.spectrum32
             self.lastSpectrum64 = self.spectrum64
+            // 通过 Subject 推送，仅订阅了频谱的组件会收到更新
+            self.spectrum16Publisher.send(self.spectrum16)
+            self.spectrum32Publisher.send(self.spectrum32)
+            self.spectrum64Publisher.send(self.spectrum64)
             let sum = self.spectrum16.reduce(0, +)
             self.averageEnergy = sum / Float(self.spectrum16.count)
         }

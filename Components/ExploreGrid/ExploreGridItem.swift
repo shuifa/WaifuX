@@ -90,6 +90,13 @@ class ExploreGridItem: NSCollectionViewItem {
     // MARK: - 状态
 
     private var loadTask: Task<Void, Never>?
+    /// Kingfisher 当前在飞的网络下载句柄。
+    /// 仅取消外层 Swift `Task` 不能真正中断 Kingfisher 内部 `DownloadTask`，
+    /// 后者会继续把数据下载完成再丢弃。快速滚动时大量请求堆积是历史内存
+    /// 异常的主因之一。改用 callback 版 retrieveImage 拿到该句柄，
+    /// `prepareForReuse` / 重新加载时一并 cancel，让网络层真停下来。
+    /// 注意：项目内有同名 `DownloadTask` 类型，必须用 `Kingfisher.DownloadTask` 全限定。
+    private var kfDownloadTask: Kingfisher.DownloadTask?
     /// 当前正在加载（或已加载）的图片 URL，用于 tab 切回时跳过重复的 Kingfisher 请求
     private var currentLoadingURL: URL?
     private(set) var isHovered = false
@@ -120,6 +127,23 @@ class ExploreGridItem: NSCollectionViewItem {
 
     // MARK: - Lifecycle
 
+    /// **重要**：cell 被 dealloc（非复用）时也必须停下在飞的下载与定时器，
+    /// 否则 Kingfisher 内部 `DownloadTask` 会继续跑完整次下载（数据写入磁盘缓存后被丢弃），
+    /// 在窗口隐藏 / contentView 被释放等场景下导致瞬时内存压力放大。
+    /// `prepareForReuse` 只覆盖复用路径，**dealloc 必须靠 deinit 兜底**。
+    /// 注：`ExploreGridItem` 由 NSCollectionView 在主线程持有/释放，deinit 实际运行在主线程，
+    /// 这里 `MainActor.assumeIsolated` 是为了在 Swift 6 strict concurrency 下访问主 actor 隔离的属性。
+    deinit {
+        MainActor.assumeIsolated {
+            kfDownloadTask?.cancel()
+            kfDownloadTask = nil
+            loadTask?.cancel()
+            loadTask = nil
+            animationTimer?.invalidate()
+            animationTimer = nil
+        }
+    }
+
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
@@ -149,6 +173,8 @@ class ExploreGridItem: NSCollectionViewItem {
     override func prepareForReuse() {
         super.prepareForReuse()
 
+        kfDownloadTask?.cancel()
+        kfDownloadTask = nil
         loadTask?.cancel()
         loadTask = nil
         currentLoadingURL = nil
@@ -235,6 +261,9 @@ class ExploreGridItem: NSCollectionViewItem {
         let minPixelEdge = max(pixelSize.width, pixelSize.height) * 0.55
 
         currentLoadingURL = urls.first
+        // 取消上一轮的 Swift Task 与 Kingfisher 下载，避免重复下载堆积
+        kfDownloadTask?.cancel()
+        kfDownloadTask = nil
         loadTask?.cancel()
         loadTask = Task { [weak self] in
             guard let self else { return }
@@ -260,10 +289,9 @@ class ExploreGridItem: NSCollectionViewItem {
             var bestEdge: CGFloat = 0
             for url in urls {
                 guard !Task.isCancelled else { return }
-                guard let image = try? await KingfisherManager.shared.retrieveImage(
-                    with: .network(url),
-                    options: options
-                ).image else { continue }
+                guard let image = await self.retrieveImageCancellable(url: url, options: options) else {
+                    continue
+                }
                 let imageEdge = max(image.size.width, image.size.height)
                 if imageEdge >= minPixelEdge {
                     bestImage = image
@@ -274,6 +302,15 @@ class ExploreGridItem: NSCollectionViewItem {
                     bestEdge = imageEdge
                 }
             }
+
+            // 注意：不在这里 kfDownloadTask = nil。
+            // 原因：reconfigureVisibleItems 路径不会调 prepareForReuse，连续 configure
+            // 同一 cell 时可能在 Task1 走完 for-loop 之后、它的 MainActor.run 落地之前，
+            // Task2 已经把 kfDownloadTask 设为新的 task2A。Task1 此时再清 nil 会把
+            // Task2 活动的句柄抹掉，导致后续 prepareForReuse 取消时找不到目标 →
+            // 退化回老问题（下载完成才丢弃，浪费内存与流量）。
+            // Kingfisher 完成的句柄本身是死的，cancel 是 no-op；留着无害，
+            // 由下次 loadImage / prepareForReuse / deinit 自然覆盖即可。
 
             guard let finalImage = bestImage, !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
@@ -296,6 +333,33 @@ class ExploreGridItem: NSCollectionViewItem {
                     self?.startAnimatingIfAnimated(data: gifData)
                 }
             }
+        }
+    }
+
+    /// 用 Kingfisher 的 callback 版 retrieveImage 包装成 async，并把同步返回的
+    /// `DownloadTask` 句柄写到 `kfDownloadTask`，以便外层 cancel 真正中断网络下载。
+    /// 注意：`@MainActor` 是为了让 `kfDownloadTask` 写入与外层 cancel 在同一隔离域。
+    @MainActor
+    private func retrieveImageCancellable(
+        url: URL,
+        options: KingfisherOptionsInfo
+    ) async -> NSImage? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<NSImage?, Never>) in
+            let task: Kingfisher.DownloadTask? = KingfisherManager.shared.retrieveImage(
+                with: .network(url),
+                options: options,
+                progressBlock: nil,
+                downloadTaskUpdated: nil
+            ) { result in
+                switch result {
+                case .success(let value):
+                    continuation.resume(returning: value.image)
+                case .failure:
+                    continuation.resume(returning: nil)
+                }
+            }
+            // task 是同步返回值；缓存命中时 task 为 nil（已经 resume）。
+            self.kfDownloadTask = task
         }
     }
 

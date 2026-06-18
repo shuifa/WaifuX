@@ -41,6 +41,10 @@ struct MediaDetailSheet: View {
     /// 烘焙进度 0.0 ~ 1.0
     @State private var bakeProgress: Double = 0
 
+    /// Workshop 自动下载后设置壁纸的后台任务引用。
+    /// 持有它以便在重新发起设置 / 视图消失时取消，避免 sheet 关闭后仍执行壁纸应用造成竞态。
+    @State private var autoDownloadTask: Task<Void, Never>?
+
     // MARK: - 作者壁纸弹窗相关
     @State private var showAuthorSheet = false
     @State private var authorMediaItems: [MediaItem] = []
@@ -355,6 +359,10 @@ struct MediaDetailSheet: View {
             ForegroundPrefetchManager.shared.stop(namespace: prefetchNamespace)
             removeKeyboardMonitor()
             SceneOfflineBakeService.stopPreview()
+            // 兜底：sheet 消失时取消可能仍在运行的自动下载任务，
+            // 避免下载完成后对已关闭的 sheet 执行壁纸应用造成竞态
+            autoDownloadTask?.cancel()
+            autoDownloadTask = nil
         }
     }
 
@@ -1150,7 +1158,6 @@ struct MediaDetailSheet: View {
                     withAnimation(.easeInOut(duration: 0.18)) {
                         isMuted = newMuted
                     }
-                    wallpaperManager.setMuted(newMuted)
                 } label: {
                     DetailSheetCircleIconLabel(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                         .detailGlassCircleChrome()
@@ -1969,8 +1976,50 @@ struct MediaDetailSheet: View {
         }
 
         if resolvedItem.id.hasPrefix("workshop_") {
-            errorMessage = t("downloadFirstToLocal")
-            showError = true
+            // 未下载的 Workshop 内容：自动下载后再设置壁纸
+            // 取消可能正在进行的上一个自动下载任务，避免并发设置壁纸造成竞态
+            autoDownloadTask?.cancel()
+            isSettingWallpaper = true
+            errorMessage = ""
+            autoDownloadTask = Task { @MainActor in
+                do {
+                    AppLogger.info(.download, "自动下载 Workshop 内容后设置壁纸", metadata:
+                        ["id": resolvedItem.id, "title": resolvedItem.title])
+                    try await viewModel.downloadWorkshopWallpaper(resolvedItem)
+                    // 下载被取消则不再继续设置壁纸
+                    if Task.isCancelled { return }
+                    // 下载完成后，查找本地文件并设置壁纸
+                    if let localURL = findLocalWorkshopFile(for: resolvedItem) {
+                        isSettingWallpaper = false
+                        applyWorkshopWallpaperFromLocalURL(localURL)
+                    } else {
+                        isSettingWallpaper = false
+                        errorMessage = "下载完成但未找到本地文件"
+                        showError = true
+                    }
+                } catch is CancellationError {
+                    isSettingWallpaper = false
+                } catch let error as WorkshopError {
+                    isSettingWallpaper = false
+                    switch error {
+                    case .guardCodeRequired:
+                        pendingSteamGuardCode = ""
+                        showSteamGuardAlert = true
+                    case .confirmationRequired(let msg):
+                        errorMessage = msg
+                        showError = true
+                    case .sessionExpired:
+                        showSessionExpiredAlert = true
+                    default:
+                        errorMessage = Self.truncateErrorMessage(error.localizedDescription)
+                        showError = true
+                    }
+                } catch {
+                    isSettingWallpaper = false
+                    errorMessage = Self.truncateErrorMessage(error.localizedDescription)
+                    showError = true
+                }
+            }
             return
         }
 
@@ -2426,7 +2475,7 @@ struct MediaDetailSheet: View {
         }
         // Web壁纸传递背景图URL作为占位符
         let posterForPreview: URL? = isWebPreview ? preferredWorkshopPosterForVideo : nil
-        PreviewWindowManager.shared.openPreview(url: url, isMuted: isMuted, aspectRatio: aspectRatio, isWeb: isWebPreview, posterURL: posterForPreview)
+        PreviewWindowManager.shared.openPreview(url: url, aspectRatio: aspectRatio, isWeb: isWebPreview, posterURL: posterForPreview)
     }
 
     /// 从 "1920x1080" / "1920 x 1080" / "1080X1920" 这类分辨率字符串解析宽高比
@@ -3374,13 +3423,13 @@ private struct SourceLoadingPlaceholder: View {
 // MARK: - 壁纸预览 Sheet（视频/图片通用）
 struct WallpaperPreviewSheet: View {
     let url: URL
-    @Binding var isMuted: Bool
     let isWeb: Bool
     var posterURL: URL? = nil
     @Environment(\.dismiss) private var dismiss
-    @State private var isVideoReady = false
     @State private var isWebLoaded = false
     @StateObject private var previewPlayer = PreviewPlayer()
+    /// 预览弹窗独立静音状态，与详情页互不干扰
+    @State private var isPreviewMuted = true
 
     private var isVideo: Bool {
         ["mp4", "mov", "webm"].contains(url.pathExtension.lowercased())
@@ -3406,24 +3455,15 @@ struct WallpaperPreviewSheet: View {
                 WebWallpaperPreviewView(url: url, onLoaded: { isWebLoaded = true })
                     .ignoresSafeArea()
             } else if isVideo {
-                // 非循环播放器 + 底部进度条
-                ZStack {
-                    AVPlayerViewRepresentable(player: previewPlayer.player)
-                        .ignoresSafeArea()
-                        .onAppear {
-                            previewPlayer.load(url: url, isMuted: isMuted)
-                        }
-                        .onDisappear {
-                            previewPlayer.cleanup()
-                        }
-
-                    // 底部控制栏
-                    VStack {
-                        Spacer()
-                        videoPreviewControls
+                // 原生播放器悬浮控件（播放/暂停、进度条、音量、全屏）
+                AVPlayerViewRepresentable(player: previewPlayer.player, controlsStyle: .floating)
+                    .ignoresSafeArea()
+                    .onAppear {
+                        previewPlayer.load(url: url, isMuted: isPreviewMuted)
                     }
-                }
-                .ignoresSafeArea()
+                    .onDisappear {
+                        previewPlayer.cleanup()
+                    }
             } else {
                 KFImage(url)
                     .cacheMemoryOnly(false)
@@ -3436,8 +3476,8 @@ struct WallpaperPreviewSheet: View {
                     .ignoresSafeArea()
             }
 
-            // 视频/网页加载进度指示
-            if isWeb ? !isWebLoaded : (isVideo && previewPlayer.totalDuration == 0) {
+            // 网页加载进度指示（视频使用 AVPlayerView 原生缓冲指示器）
+            if isWeb && !isWebLoaded {
                 VStack(spacing: 12) {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
@@ -3470,52 +3510,6 @@ struct WallpaperPreviewSheet: View {
                 Spacer()
             }
         }
-    }
-
-    // MARK: - 视频预览控制
-
-    private var videoPreviewControls: some View {
-        VStack(spacing: 6) {
-            // 进度条
-            Slider(
-                value: Binding(
-                    get: { previewPlayer.totalDuration > 0 ? previewPlayer.currentTime / previewPlayer.totalDuration : 0 },
-                    set: { ratio in previewPlayer.seek(to: ratio * previewPlayer.totalDuration) }
-                ),
-                in: 0...1
-            )
-            .controlSize(.small)
-            .accentColor(.white)
-
-            // 时间标签 + 静音按钮
-            HStack {
-                Text(timeString(previewPlayer.currentTime))
-                    .font(.monospacedDigit(.caption2)())
-                    .foregroundColor(.white.opacity(0.8))
-                Spacer()
-                Button {
-                    isMuted.toggle()
-                    previewPlayer.player.isMuted = isMuted
-                } label: {
-                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.7))
-                }
-                .buttonStyle(.plain)
-                Text(timeString(previewPlayer.totalDuration))
-                    .font(.monospacedDigit(.caption2)())
-                    .foregroundColor(.white.opacity(0.8))
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 16)
-    }
-
-    private func timeString(_ interval: TimeInterval) -> String {
-        guard interval.isFinite, interval >= 0 else { return "0:00" }
-        let m = Int(interval) / 60
-        let s = Int(interval) % 60
-        return "\(m):\(String(format: "%02d", s))"
     }
 }
 
@@ -3575,11 +3569,12 @@ final class PreviewPlayer: ObservableObject, @unchecked Sendable {
 
 struct AVPlayerViewRepresentable: NSViewRepresentable {
     let player: AVPlayer
+    var controlsStyle: AVPlayerViewControlsStyle = .none
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.player = player
-        view.controlsStyle = .none   // 用自定义控制
+        view.controlsStyle = controlsStyle
         view.videoGravity = .resizeAspect
         return view
     }

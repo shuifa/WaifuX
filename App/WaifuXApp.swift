@@ -86,9 +86,15 @@ struct WaifuXApp {
 
     /// 配置 Kingfisher 高性能图片加载
     private static func configureKingfisher() {
-        // 内存缓存配置 - 增大到 200MB/300张，避免滚动时缓存驱逐导致的重复解码
-        ImageCache.default.memoryStorage.config.totalCostLimit = 200 * 1024 * 1024 // 200MB
+        // 内存缓存配置：256MB / 300 张 / 10 分钟过期 / 60 秒一次清理。
+        // 壁纸探索页瀑布流可能滚出几百张缩略图，仅靠 totalCostLimit 不够：
+        // 没有 expiration + cleanInterval 时，长期不访问的条目仍然驻留，
+        // RSS 会持续增长直至触发 macOS 内存压力 → 全量 clearMemoryCache()。
+        // 主动 expiration 让长尾图片自然落到磁盘缓存，缓解抖动。
+        ImageCache.default.memoryStorage.config.totalCostLimit = 256 * 1024 * 1024 // 256MB
         ImageCache.default.memoryStorage.config.countLimit = 300
+        ImageCache.default.memoryStorage.config.expiration = .seconds(10 * 60) // 10 min
+        ImageCache.default.memoryStorage.config.cleanInterval = 60             // 60s
 
         // 磁盘缓存配置
         ImageCache.default.diskStorage.config.sizeLimit = 500 * 1024 * 1024 // 500MB
@@ -191,6 +197,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// 窗口隐藏后延迟释放视图树的任务，用于回收 IOSurface / CoreAnimation 等系统图形缓存
     private var delayedReleaseTask: Task<Void, Never>?
 
+    // MARK: - 全局 ViewModel（生命周期与 App 一致）
+    /// 这 3 个 ViewModel 由 AppDelegate 持有，传入 ContentView 时用普通 let 引用而非 @StateObject。
+    /// 设计目的：避免 ContentView 因 @StateObject 响应 ViewModel 的 @Published 变化而重算 body
+    /// （会连锁导致下游 5 个 tab 子视图重建 binding/参数 → 全量重算）。
+    /// 同时让 ViewModel 不再随主窗口隐藏/重建而销毁，避免数据重新加载。
+    let wallpaperViewModel = WallpaperViewModel()
+    let mediaViewModel = MediaExploreViewModel()
+    let animeViewModel = AnimeViewModel()
+
     // MARK: - 窗口尺寸（唯一真实来源，全局统一）
     /// 最小允许的窗口大小
     private static let minimumWindowSize = NSSize(width: 1150, height: 720)
@@ -246,7 +261,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
 
         // 2. 立即创建窗口（使用 defer: false 立即渲染，不等待）
-        let contentView = ContentView()
+        let contentView = ContentView(
+            wallpaperViewModel: wallpaperViewModel,
+            mediaViewModel: mediaViewModel,
+            animeViewModel: animeViewModel
+        )
             .frame(
                 minWidth: Self.minimumWindowSize.width,
                 minHeight: Self.minimumWindowSize.height
@@ -463,7 +482,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateActivationPolicy(showDockIcon: true)
 
         if window == nil {
-            let contentView = ContentView()
+            let contentView = ContentView(
+                wallpaperViewModel: wallpaperViewModel,
+                mediaViewModel: mediaViewModel,
+                animeViewModel: animeViewModel
+            )
                 .frame(
                     minWidth: Self.minimumWindowSize.width,
                     minHeight: Self.minimumWindowSize.height
@@ -500,7 +523,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window?.delegate = self
         } else if window?.contentView == nil {
             // 视图树之前已被释放，重新挂载
-            let contentView = ContentView()
+            let contentView = ContentView(
+                wallpaperViewModel: wallpaperViewModel,
+                mediaViewModel: mediaViewModel,
+                animeViewModel: animeViewModel
+            )
                 .frame(
                     minWidth: Self.minimumWindowSize.width,
                     minHeight: Self.minimumWindowSize.height

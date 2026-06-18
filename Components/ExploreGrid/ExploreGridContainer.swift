@@ -45,6 +45,9 @@ struct ExploreGridContainer: NSViewRepresentable {
     /// 给 hover 预留在 item 内部的扩张空间。当前 hover 对齐我的库卡片，只做 1.01 中心缩放，
     /// 不再改变布局宽度，所以默认不预留，保持和媒体探索页相同的宽度/列数计算。
     var hoverExpansionAllowance: CGFloat = 0
+    /// 网格内边距。`nil` 表示沿用 `ExploreGridCollectionViewLayout` 默认值
+    /// `(top: 0, left: 2, bottom: 48, right: 2)`。壁纸探索页等需要紧贴上下边的场景显式传 `.zero`。
+    var contentInsets: NSEdgeInsets? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         context.coordinator.scrollView
@@ -56,12 +59,17 @@ struct ExploreGridContainer: NSViewRepresentable {
         let layoutWidthChanged = abs(layoutWidth - previousParent.layoutWidth) > 0.5
         let hoverAllowanceChanged = abs(hoverExpansionAllowance - previousParent.hoverExpansionAllowance) > 0.5
         let columnCountChanged = gridColumnCount != previousParent.gridColumnCount
+        let contentInsetsChanged = !insetsEqual(contentInsets, previousParent.contentInsets)
         let visibilityChanged = isVisible != previousParent.isVisible
         let cellClassChanged = previousParent.cellClass != cellClass
         let scrollingModeChanged = allowsScrolling != previousParent.allowsScrolling
         coordinator.parent = self
         let layoutRefreshChanged = layoutRefreshToken != coordinator.lastLayoutRefreshToken
         let visibilityRefreshChanged = visibilityRefreshToken != coordinator.lastVisibilityRefreshToken
+
+        if contentInsetsChanged {
+            coordinator.applyContentInsetsIfNeeded()
+        }
 
         if cellClassChanged {
             coordinator.registerCellClassIfNeeded(cellClass)
@@ -130,5 +138,18 @@ struct ExploreGridContainer: NSViewRepresentable {
 
     func makeCoordinator() -> ExploreGridCoordinator {
         ExploreGridCoordinator(self)
+    }
+
+    /// `NSEdgeInsets` 不是 `Equatable`，手动比较。
+    private func insetsEqual(_ lhs: NSEdgeInsets?, _ rhs: NSEdgeInsets?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return true
+        case let (l?, r?):
+            return abs(l.top - r.top) < 0.5
+                && abs(l.left - r.left) < 0.5
+                && abs(l.bottom - r.bottom) < 0.5
+                && abs(l.right - r.right) < 0.5
+        default: return false
+        }
     }
 }

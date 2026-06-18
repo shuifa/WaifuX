@@ -636,8 +636,13 @@ class WallpaperSchedulerService: ObservableObject {
             .attributesOfItem(atPath: fileURL.path)[.type] as? FileAttributeType) == .typeDirectory
 
         do {
-            // 优先使用烘焙 MP4 产物（WE Scene 离线烘焙）
+            // 优先使用烘焙 MP4 产物（WE Scene 离线烘焙）。
+            // 实时渲染模式下需跳过：scene 壁纸的烘焙 MP4 仅供锁屏/桌面 poster，不得反向替换
+            // 桌面实时渲染（否则会变成播放固定时长 MP4 循环而非 wallpaper-wgpu 实时渲染）。
+            // on-end 模式必须播放视频以接收播放完成通知，保留烘焙产物。
+            let preferRealtime = UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled") && !isOnEndMode
             if let bakedPath = item.bakedVideoPath,
+               !preferRealtime,
                SceneOfflineBakeService.isUsableBakedVideo(at: URL(fileURLWithPath: bakedPath)) {
                 print("\(logTag) Using baked video: \(bakedPath)")
                 let bakedURL = URL(fileURLWithPath: bakedPath)
@@ -1036,10 +1041,16 @@ class WallpaperSchedulerService: ObservableObject {
                 if isWorkshop && displayConfig.includeWallpapers && existingIDs.contains(itemID) {
                     continue
                 }
-                // Workshop 项优先使用烘焙产物
+                // Workshop 项优先使用烘焙产物。
+                // 但实时渲染模式下，scene 壁纸的烘焙 MP4 仅供锁屏/桌面 poster（见
+                // SceneOfflineBakeService.scheduleRealtimeCompanionBake 注释），
+                // 不得反向替换桌面实时渲染——否则轮播第二次起会变成播放固定时长的
+                // 烘焙视频而非 wallpaper-wgpu 实时渲染。on-end 模式仍需可播放视频，保留烘焙产物。
+                let isRealtimeRenderingEnabled = UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled")
+                let preferRealtimeForScene = isRealtimeRenderingEnabled && !onEndMode
                 var bakedVideoPath: String? = nil
                 var sceneBakeItemID: String? = nil
-                if isWorkshop, let art = record.sceneBakeArtifact {
+                if isWorkshop, !preferRealtimeForScene, let art = record.sceneBakeArtifact {
                     if SceneOfflineBakeService.isUsableBakedVideo(at: URL(fileURLWithPath: art.videoPath)) {
                         bakedVideoPath = art.videoPath
                         sceneBakeItemID = record.item.id

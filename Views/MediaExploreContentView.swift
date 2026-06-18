@@ -51,8 +51,11 @@ struct MediaExploreContentView: View {
     @StateObject private var exploreAtmosphere = ExploreAtmosphereController(wallpaperMode: false)
     @ObservedObject private var arcSettings = ArcBackgroundSettings.shared
     @ObservedObject private var workshopSourceManager = WorkshopSourceManager.shared
-    @ObservedObject private var videoWallpaperManager = VideoWallpaperManager.shared
-    @ObservedObject private var wallpaperEngineBridge = WallpaperEngineXBridge.shared
+    // 注意：VideoWallpaperManager / WallpaperEngineXBridge 不在顶层观察。
+    // 它们各有多个 @Published（isPaused/isMuted/volume 等），若顶层观察会导致
+    // 视频壁纸暂停/恢复时整个媒体探索页 body 重算。
+    // 仅 shouldUseLightweightEffects 依赖它们的播放状态，已下沉到
+    // MediaExploreAtmosphereBackground 子视图内自行观察，只重建背景。
     @StateObject private var translationBridge = SearchTranslationBridge()
     @Environment(\.mainTopBarContentPadding) private var mainTopBarContentPadding
 
@@ -79,10 +82,8 @@ struct MediaExploreContentView: View {
     @State private var measuredHeaderHeight: CGFloat = 0
     @State private var isHeaderContentMounted = true
     @StateObject private var scrollCoordinator = MediaExploreScrollCoordinator()
-    private var shouldUseLightweightEffects: Bool {
-        (videoWallpaperManager.isVideoWallpaperActive && !videoWallpaperManager.isPaused) ||
-        (wallpaperEngineBridge.isControllingExternalEngine && !wallpaperEngineBridge.isExternalPaused)
-    }
+    // shouldUseLightweightEffects 已下沉到 MediaExploreAtmosphereBackground 子视图，
+    // 该子视图自行观察 VideoWallpaperManager / WallpaperEngineXBridge 的播放状态。
 
     // Grid 控制
     @State private var showScrollToTop: Bool = false
@@ -93,7 +94,6 @@ struct MediaExploreContentView: View {
     @State private var selectedWorkshopType: WorkshopSourceManager.WorkshopTypeFilter = .all
     @State private var selectedWorkshopContentLevel: WorkshopSourceManager.WorkshopContentLevel? = .everyone
     @State private var selectedWorkshopResolution: WorkshopSourceManager.WorkshopResolution? = nil
-    @State private var workshopSearchQuery: String = ""
     @State private var selectedWorkshopSort: WorkshopSortOption = .trendWeek
     @State private var showWorkshopURLSheet = false
     @State private var workshopURLInput = ""
@@ -114,6 +114,10 @@ struct MediaExploreContentView: View {
     }
 
     var body: some View {
+        // 性能测量：开启 PERF_TRACE 编译标记后，会在控制台打印触发本 body 的属性来源
+        #if PERF_TRACE
+        let _ = Self._printChanges()
+        #endif
         GeometryReader { geometry in
             let gridContentWidth = max(0, geometry.size.width - 56)
 
@@ -122,17 +126,16 @@ struct MediaExploreContentView: View {
                     arcSettings.compactBackground
                         .ignoresSafeArea()
                 } else {
-                    ArcAtmosphereBackground(
+                    // 背景渲染下沉到独立子视图：它自行观察 VideoWallpaperManager /
+                    // WallpaperEngineXBridge 的播放状态以决定 lightweight，
+                    // 视频壁纸暂停/恢复只重建此背景，不触发整个媒体探索页 body 重算。
+                    MediaExploreAtmosphereBackground(
                         tint: exploreAtmosphere.tint,
-                        referenceImage: shouldUseLightweightEffects ? nil : exploreAtmosphere.referenceImage,
+                        referenceImage: exploreAtmosphere.referenceImage,
                         isLightMode: arcSettings.isLightMode,
                         dotGridOpacity: arcSettings.dotGridOpacity,
-                        useNoise: true,
-                        grainIntensity: arcSettings.exploreGrainMedia,
-                        lightweight: shouldUseLightweightEffects
+                        grainIntensity: arcSettings.exploreGrainMedia
                     )
-                    // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
-                    .drawingGroup(opaque: true)
                     .ignoresSafeArea()
                 }
 
@@ -255,10 +258,9 @@ struct MediaExploreContentView: View {
                 .padding(.horizontal, 28)
                 .frame(width: fullWidth, alignment: .leading)
                 .coordinateSpace(name: Self.scrollCoordinateSpaceName)
-                .background(
-                    ScrollToTopHelper(trigger: 0, onOffsetChange: handleScrollOffset)
-                        .frame(width: 0, height: 0)
-                )
+                // ⚡ macOS 15+ 路径不再使用 ScrollToTopHelper（NSScrollView KVO）。
+                // header mount state / 滚动到顶都通过下方 onScrollGeometryChange + ScrollViewReader 实现，
+                // 避免每帧 KVO 与 onScrollGeometryChange 重复触发同一个 handleScrollOffset 回调。
             }
             .onScrollGeometryChange(for: ScrollNearBottomState.self, of: { geometry in
                 let bottomOffset = geometry.contentOffset.y + geometry.containerSize.height
@@ -617,7 +619,7 @@ struct MediaExploreContentView: View {
         viewModel.clearItems()
 
         let tags = selectedWorkshopTags.map { $0.name }
-        let searchQuery = query ?? workshopSearchQuery
+        let searchQuery = query ?? viewModel.workshopSearchQuery
         await viewModel.loadWorkshopWithFilters(
             query: searchQuery,
             tags: tags,
@@ -1229,72 +1231,42 @@ struct MediaExploreContentView: View {
         let columnCount = ExploreGridLayout.columnCount(for: contentWidth)
         let totalSpacing = spacing * CGFloat(columnCount - 1)
         let cardWidth = max(1, floor((contentWidth - totalSpacing) / CGFloat(columnCount)))
-        let items = viewModel.items
-        let columnItems = ExploreGridLayout.waterfallColumns(
-            items: items,
-            columnCount: columnCount,
-            cardWidth: cardWidth,
-            spacing: spacing,
-            heightProvider: { [self] media in
-                let aspectRatio = parsedMediaAspectRatio(media)
-                return cardWidth / aspectRatio
-            }
+        let cardHeight = Self.uniformMediaCardHeight(cardWidth: cardWidth)
+        let columns = Array(
+            repeating: GridItem(.fixed(cardWidth), spacing: spacing, alignment: .topLeading),
+            count: max(1, columnCount)
         )
 
-        return HStack(alignment: .top, spacing: spacing) {
-            ForEach(0..<columnCount, id: \.self) { columnIndex in
-                LazyVStack(spacing: spacing) {
-                    ForEach(columnItems[safe: columnIndex] ?? []) { media in
-                        MediaCardView(
-                            media: media,
-                            // ✅ 直接读取 viewModel.favoriteIDSet，O(1) 判断
-                            isFavorite: viewModel.favoriteIDSet.contains(media.id),
-                            cardWidth: cardWidth
-                        ) {
-                            viewModel.preserveExploreFeedForDetailNavigation()
-                            selectedMedia = media
-                        }
-                        .equatable()
-                        // ⚡ 显式设定卡片高度，让 LazyVStack 无需创建子视图即
-                        // 可估算列总高度，确保真正的懒加载行为。
-                        .frame(height: Self.mediaCardHeight(cardWidth: cardWidth, media: media))
-                    }
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: spacing) {
+            ForEach(viewModel.items) { media in
+                MediaCardView(
+                    media: media,
+                    // ✅ 直接读取 viewModel.favoriteIDSet，O(1) 判断
+                    isFavorite: viewModel.favoriteIDSet.contains(media.id),
+                    cardWidth: cardWidth,
+                    forcedHeight: cardHeight
+                ) {
+                    viewModel.preserveExploreFeedForDetailNavigation()
+                    selectedMedia = media
                 }
-                .frame(width: cardWidth)
+                .equatable()
+                .frame(width: cardWidth, height: cardHeight)
             }
         }
     }
 
-    /// 计算 MediaCardView 的显式高度（与内部 cardHeight 保持一致）
-    private static func mediaCardHeight(cardWidth: CGFloat, media: MediaItem) -> CGFloat {
+    /// 媒体网格的统一卡片高度（LazyVGrid 模式：所有卡片同样高度，避免瀑布流的高度抖动与
+    /// 多列 LazyVStack 在 macOS 上的协调开销）。
+    private static func uniformMediaCardHeight(cardWidth: CGFloat) -> CGFloat {
         let bottomBarHeight: CGFloat = 44
-        let raw = media.exactResolution ?? media.resolutionLabel
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "X", with: "x")
-        let parts = raw.split(separator: "x")
-        let aspect: CGFloat
-        if parts.count == 2,
-           let w = Double(parts[0]), w > 0,
-           let h = Double(parts[1]), h > 0 {
-            let rawAspect = CGFloat(w / h)
-            aspect = min(max(rawAspect, 0.35), 3.6)
-        } else {
-            aspect = 1.6
-        }
-        let maxImageHeight: CGFloat = cardWidth * 1.8
-        let imageHeight = min(cardWidth / aspect, maxImageHeight)
+        // 16:10 是动态壁纸/桌面壁纸常见的视觉比例，在大多数媒体源里都是合适的中位数。
+        let imageHeight = cardWidth / (16.0 / 10.0)
         return imageHeight + bottomBarHeight
     }
 
-    private func parsedMediaAspectRatio(_ item: MediaItem) -> CGFloat {
-        let raw = (item.exactResolution ?? item.resolutionLabel)
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "X", with: "x")
-        let parts = raw.split(separator: "x")
-        guard parts.count == 2,
-              let w = Double(parts[0]), w > 0,
-              let h = Double(parts[1]), h > 0 else { return 1.6 }
-        return min(max(CGFloat(w / h), 0.35), 3.6)
+    /// 旧 API：保留以兼容外部潜在调用，内部已不再使用。
+    private static func mediaCardHeight(cardWidth: CGFloat, media: MediaItem) -> CGFloat {
+        return uniformMediaCardHeight(cardWidth: cardWidth)
     }
 
     // MARK: - UI Components
@@ -1919,6 +1891,40 @@ private enum MediaCategory: String, CaseIterable, Identifiable {
         case .japan: return ["FFB7C5", "E85D75"]
         case .helloKitty: return ["FF69B4", "FF1493"]
         }
+    }
+}
+
+// MARK: - 媒体探索页氛围背景（独立观察视频壁纸播放状态）
+/// 从 MediaExploreContentView 下沉而来：自行观察 VideoWallpaperManager / WallpaperEngineXBridge，
+/// 仅当播放状态变化时重建本背景视图，避免整个媒体探索页 body 重算。
+private struct MediaExploreAtmosphereBackground: View {
+    let tint: ExploreAtmosphereTint
+    let referenceImage: NSImage?
+    let isLightMode: Bool
+    let dotGridOpacity: Double
+    let grainIntensity: Double
+
+    @ObservedObject private var videoWallpaperManager = VideoWallpaperManager.shared
+    @ObservedObject private var wallpaperEngineBridge = WallpaperEngineXBridge.shared
+
+    /// 动态壁纸正在播放时启用轻量特效，降低 GPU/WindowServer 压力
+    private var shouldUseLightweightEffects: Bool {
+        (videoWallpaperManager.isVideoWallpaperActive && !videoWallpaperManager.isPaused) ||
+        (wallpaperEngineBridge.isControllingExternalEngine && !wallpaperEngineBridge.isExternalPaused)
+    }
+
+    var body: some View {
+        ArcAtmosphereBackground(
+            tint: tint,
+            referenceImage: shouldUseLightweightEffects ? nil : referenceImage,
+            isLightMode: isLightMode,
+            dotGridOpacity: dotGridOpacity,
+            useNoise: true,
+            grainIntensity: grainIntensity,
+            lightweight: shouldUseLightweightEffects
+        )
+        // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
+        .drawingGroup(opaque: true)
     }
 }
 

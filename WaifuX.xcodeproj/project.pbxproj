@@ -125,7 +125,7 @@
 		7D439B9CC297E0893336CDFE /* LiquidGlassWallpaperCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF7159115AD04C7CD5E4B85F /* LiquidGlassWallpaperCard.swift */; };
 		819B9105E8E85CCD720117FC /* HTMLParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC5EF18290E78CAC93FAF3FA /* HTMLParser.swift */; };
 		81AB5AA8F403A0E0FD99B5E1 /* KonachanModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E0B8FBA853691DEFB867233 /* KonachanModels.swift */; };
-		8466942F2BFA85F86B4F2FA0 /* DynamicBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACE8000798FEE18A01F02B13 /* DynamicBackground.swift */; };
+
 		84DDA015EC91D1FC45D283A9 /* DisplaySelectorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BBD359FCF0CF51002527914 /* DisplaySelectorSheet.swift */; };
 		86A3680F60118DDBC1EDE912 /* ContentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4316F2C0312F0FB5F9322E7 /* ContentService.swift */; };
 		8794AC558B108095E49F0046 /* AnimeRulesMarketView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EBC88522A42FB697047F0C4 /* AnimeRulesMarketView.swift */; };
@@ -173,6 +173,7 @@
 		B790F4E3B85754D0249F2203 /* SceneWallpaperDesignPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBB7ADD11EE352129A30930A /* SceneWallpaperDesignPanel.swift */; };
 		B79226335BF03D72EFC8F348 /* FrameChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2720DE597FBD8AD782F02D2 /* FrameChannel.swift */; };
 		B8535E89B68CC94FBB7EADE6 /* WallpaperCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C13D08E6482C8C55D97DE9E /* WallpaperCardView.swift */; };
+		316884B54E8B7BC9434F3BB7 /* WaterfallChunkLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8B67F5C49949484CA2A336C /* WaterfallChunkLayout.swift */; };
 		B900B60EB5938CB81290BB30 /* FileIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = C29FB33BEC37A4DFE4E3B207 /* FileIO.swift */; };
 		BAD8824F9969C4088BD87D87 /* LiquidGlassClockConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43498E7A9DF3A409E2F15E14 /* LiquidGlassClockConfiguration.swift */; };
 		C0C47B44449DE92E4BA1E290 /* CaptchaVerificationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26195E33C744BC75A0E7F73E /* CaptchaVerificationSheet.swift */; };
@@ -325,6 +326,7 @@
 		461FAC93DBC7FF6EACC9547A /* SteamLoginWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamLoginWebView.swift; sourceTree = "<group>"; };
 		46516D807852C39C100910A6 /* ExploreGridContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreGridContainer.swift; sourceTree = "<group>"; };
 		4C13D08E6482C8C55D97DE9E /* WallpaperCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperCardView.swift; sourceTree = "<group>"; };
+		E8B67F5C49949484CA2A336C /* WaterfallChunkLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaterfallChunkLayout.swift; sourceTree = "<group>"; };
 		4D49A7B305CF1CA62E5D9540 /* ScrollBottomSentinel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollBottomSentinel.swift; sourceTree = "<group>"; };
 		4D4DA3125A4D7C5A87ABC9BF /* WaifuXWallpaperExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaifuXWallpaperExtension.swift; sourceTree = "<group>"; };
 		4FBE371602391BF36A8714FE /* WallpaperState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperState.swift; sourceTree = "<group>"; };
@@ -404,7 +406,7 @@
 		AB8B239A357D0A8869892193 /* LiquidGlassModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiquidGlassModifier.swift; sourceTree = "<group>"; };
 		AC15DF5976DAADAFA1145BC7 /* LiquidGlassComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiquidGlassComponents.swift; sourceTree = "<group>"; };
 		AC6136D9FACBC166FFE1B697 /* MediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaItem.swift; sourceTree = "<group>"; };
-		ACE8000798FEE18A01F02B13 /* DynamicBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DynamicBackground.swift; sourceTree = "<group>"; };
+
 		AE72EA3D3C60701569EEF7C9 /* SnapshotCreation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotCreation.swift; sourceTree = "<group>"; };
 		B15A8B186373E1E4F65348F7 /* SearchTranslationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchTranslationService.swift; sourceTree = "<group>"; };
 		B4386E83412A24DCFF565BFC /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
@@ -579,7 +581,7 @@
 				B62335BD95ED53CAC70F686E /* CustomProgressView.swift */,
 				BDB6DD5A499E7BFC1DB6DB1B /* DanmakuView.swift */,
 				5BBD359FCF0CF51002527914 /* DisplaySelectorSheet.swift */,
-				ACE8000798FEE18A01F02B13 /* DynamicBackground.swift */,
+
 				39D6BA8E5F4378581C163E29 /* ErrorStateView.swift */,
 				5A8076D3C2048852A8982D7E /* ExploreChips.swift */,
 				88C460F3033A25320800D73A /* ExploreComponents.swift */,
@@ -607,6 +609,7 @@
 				822E5DF14D2A26714C4EA62C /* TabSearchField.swift */,
 				05A871A337E95110230471F2 /* TopNavigationBar.swift */,
 				4C13D08E6482C8C55D97DE9E /* WallpaperCardView.swift */,
+				E8B67F5C49949484CA2A336C /* WaterfallChunkLayout.swift */,
 				66A188D7112EBBB2816A7B76 /* WallpaperPlayerBar.swift */,
 				B86979B068A250B27A96E8C5 /* ExploreGrid */,
 			);
@@ -1070,7 +1073,7 @@
 				438583888A0BC621F4B6C456 /* DownloadTask.swift in Sources */,
 				6422E68D0610118EA047E860 /* DownloadTaskService.swift in Sources */,
 				9479E46D5ADC2991CFA13194 /* DownloadTaskViewModel.swift in Sources */,
-				8466942F2BFA85F86B4F2FA0 /* DynamicBackground.swift in Sources */,
+
 				281CA7998F293F98820088A6 /* DynamicWallpaperAutoPauseManager.swift in Sources */,
 				962166D6810D9DBABAE8C167 /* DynamicWallpaperItem.swift in Sources */,
 				F0448F711A615AC3653D7D60 /* DynamicWallpaperService.swift in Sources */,
@@ -1191,6 +1194,7 @@
 				0F6B71021B5B8B1BBFE853C4 /* WallhavenAPI.swift in Sources */,
 				1FB9475DD4151BE801BED2FA /* Wallpaper.swift in Sources */,
 				B8535E89B68CC94FBB7EADE6 /* WallpaperCardView.swift in Sources */,
+				316884B54E8B7BC9434F3BB7 /* WaterfallChunkLayout.swift in Sources */,
 				A3232F4E31A4E64C6122925B /* WallpaperCategory.swift in Sources */,
 				1AA52BEA773EF36FC63764F9 /* WallpaperDetailSheet.swift in Sources */,
 				9E7BE88EEDE0EF0FDDCE0574 /* WallpaperDynamicTextParser.swift in Sources */,
@@ -1438,34 +1442,35 @@
 			name = Release;
 		};
 		F682FDBF9A3BFA6523DF1973 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = WaifuX.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 38;
-				DEVELOPMENT_TEAM = SRHKTRJ83W;
-				ENABLE_HARDENED_RUNTIME = YES;
-				INFOPLIST_FILE = App/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 38.0.116;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"$(SRCROOT)/Resources/zip_data.o",
-					"$(SRCROOT)/Resources/zip_accessor.o",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.waifux.app;
-				PRODUCT_NAME = WaifuX;
-				SDKROOT = macosx;
-				SWIFT_VERSION = 6.0;
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+					CODE_SIGN_ENTITLEMENTS = WaifuX.entitlements;
+					CODE_SIGN_STYLE = Automatic;
+					COMBINE_HIDPI_IMAGES = YES;
+					CURRENT_PROJECT_VERSION = 38;
+					DEVELOPMENT_TEAM = SRHKTRJ83W;
+					ENABLE_HARDENED_RUNTIME = YES;
+					INFOPLIST_FILE = App/Info.plist;
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/../Frameworks",
+					);
+					MACOSX_DEPLOYMENT_TARGET = 14.0;
+					MARKETING_VERSION = 38.0.116;
+					OTHER_LDFLAGS = (
+						"$(inherited)",
+						"$(SRCROOT)/Resources/zip_data.o",
+						"$(SRCROOT)/Resources/zip_accessor.o",
+					);
+					OTHER_SWIFT_FLAGS = "-DPERF_TRACE";
+					PRODUCT_BUNDLE_IDENTIFIER = com.waifux.app;
+					PRODUCT_NAME = WaifuX;
+					SDKROOT = macosx;
+					SWIFT_VERSION = 6.0;
+				};
+				name = Debug;
 			};
-			name = Debug;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */

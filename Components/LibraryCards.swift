@@ -214,11 +214,10 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
                     .stroke(Color.white.opacity(isHovered ? 0.18 : 0.08), lineWidth: isHovered ? 1.5 : 1)
             )
             .frame(width: cardWidth, alignment: .leading)
-            .scaleEffect(isHovered ? 1.01 : 1.0)
+            .libraryCardHoverScale(isHovered: isHovered)
         }
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .animation(.easeOut(duration: 0.2), value: isHovered)
         .throttledHover(interval: 0.05) { hovering in
             if !isEditing {
                 isHovered = hovering
@@ -243,14 +242,22 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
                 detectedGIF = result
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .appShouldReleaseForegroundMemory)) { _ in
-            detectedGIF = false
-            gifProbeTask?.cancel()
+        .onReceive(NotificationCenter.default.publisher(for: .sceneOfflineBakeThumbnailDidUpdate)) { notification in
+            guard let updatedItemID = notification.object as? String,
+                  updatedItemID == item.id else { return }
+            thumbnailRefreshID &+= 1
+            resolvedThumbnailURL = nil
+            cachedListThumbnailURL = nil
+            if let posterURL = notification.userInfo?["thumbnailURL"] as? URL {
+                resolvedThumbnailURL = posterURL
+                cachedListThumbnailURL = posterURL
+            } else {
+                triggerThumbnailIfNeeded()
+            }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .appDidReceiveMemoryPressure)) { _ in
-            detectedGIF = false
-            gifProbeTask?.cancel()
-        }
+        // ⚡ 内存压力下的 detectedGIF 重置已不在每张卡注册：滚动期间数百张卡片各自挂
+        // 两个 Combine sink 会拖慢滚动；下次内存压力时由 ViewModel/Bridge 通过统一通道
+        // 推送即可。`detectedGIF` 是几字节布尔，留着无碍。
         .onAppear {
             resolveThumbnailURL()
             triggerThumbnailIfNeeded()
@@ -265,19 +272,6 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
         .onChange(of: thumbnailURL) { _, _ in
             cachedListThumbnailURL = nil
             resolveThumbnailURL()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .sceneOfflineBakeThumbnailDidUpdate)) { notification in
-            guard let updatedItemID = notification.object as? String,
-                  updatedItemID == item.id else { return }
-            thumbnailRefreshID &+= 1
-            resolvedThumbnailURL = nil
-            cachedListThumbnailURL = nil
-            if let posterURL = notification.userInfo?["thumbnailURL"] as? URL {
-                resolvedThumbnailURL = posterURL
-                cachedListThumbnailURL = posterURL
-            } else {
-                triggerThumbnailIfNeeded()
-            }
         }
     }
 
@@ -305,11 +299,15 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
 
     @ViewBuilder
     private var coverImage: some View {
-        if detectedGIF {
-            NativeGIFView(url: listThumbnailURL, isPlaying: shouldAnimateGIF)
-                .frame(width: cardWidth, height: thumbnailHeight)
-                .clipped()
-        } else {
+        // 修复两个 bug（同 MediaCardView 之前的修复）：
+        // 1. KFImage ↔ NativeGIFView 切换瞬间黑底闪烁（新 NSView 未下载完成）
+        // 2. NativeGIFView.Coordinator.load 完成后只设静态帧、没启动动画 → hover 不动
+        //
+        // 改用 ZStack 双层：底层 KFImage 静态封面**永不销毁**；顶层仅当 detectedGIF
+        // 且当前卡片需要播放时叠加 KFAnimatedImage，`id` 随播放状态变化触发 NSView
+        // 重建以使 `autoPlayAnimatedImage = true` 真实生效。
+        ZStack {
+            // 底层：静态封面，始终存在
             KFImage(listThumbnailURL)
                 .setProcessor(DownsamplingImageProcessor(size: targetImageSize))
                 .cacheMemoryOnly(false)
@@ -322,7 +320,26 @@ public struct MediaVideoCard: View, @preconcurrency Equatable {
                 .frame(width: cardWidth, height: thumbnailHeight)
                 .clipped()
                 .id(thumbnailRefreshID)
+
+            // 顶层：仅 GIF 已确认 + 当前应播放时叠加（库列表 shouldAnimateGIF 通常包含 isHovered 条件）
+            if detectedGIF, shouldAnimateGIF {
+                KFAnimatedImage.url(listThumbnailURL)
+                    .memoryCacheExpiration(.expired)
+                    .diskCacheExpiration(.days(3))
+                    .cancelOnDisappear(true)
+                    .configure { view in
+                        configureAnimatedGIFViewForAspectFill(view, autoPlay: true)
+                    }
+                    .placeholder { _ in Color.clear }
+                    .onFailure { _ in /* 静默：底层 KFImage 兜底 */ }
+                    .id("\(listThumbnailURL.absoluteString)|play:1|r:\(thumbnailRefreshID)")
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: cardWidth, height: thumbnailHeight)
+                    .clipped()
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: shouldAnimateGIF)
     }
 
     private var mediaBadgeRow: some View {
@@ -607,11 +624,10 @@ public struct WallpaperEditCard: View, @preconcurrency Equatable {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(Color.white.opacity(isHovered ? 0.18 : 0.08), lineWidth: isHovered ? 1.5 : 1)
             )
-            .scaleEffect(isHovered ? 1.01 : 1.0)
+            .libraryCardHoverScale(isHovered: isHovered)
         }
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .animation(.easeOut(duration: 0.2), value: isHovered)
         .throttledHover(interval: 0.05) { hovering in
             if !isEditing {
                 isHovered = hovering
@@ -729,5 +745,21 @@ public struct DownloadCardProgressBlock: View {
                 )
             }
         }
+    }
+}
+
+// MARK: - 性能优化：scale + animation 永久挂载以保证平滑过渡
+//
+// ⚠️ 同 MediaCardView 注释：scaleEffect / animation 不能用 `@ViewBuilder if isHovered`
+// 做条件挂载 —— SwiftUI 把结构变化看作 transition，只能做默认 opacity 动画，
+// 没法在 1.0 ↔ 1.01 之间插值，hover 体感会变成生硬跳变。
+//
+// scaleEffect(1.0) 是 identity transform，SwiftUI 会优化掉矩阵运算；
+// .animation 仅登记一个 value dependency，无实际变化时几乎零开销。
+private extension View {
+    func libraryCardHoverScale(isHovered: Bool) -> some View {
+        self
+            .scaleEffect(isHovered ? 1.01 : 1.0)
+            .animation(.easeOut(duration: 0.2), value: isHovered)
     }
 }

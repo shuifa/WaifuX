@@ -22,20 +22,18 @@ enum PlaybackState: Equatable {
     }
 }
 
-// MARK: - 时间模型
-final class PlayerTimeModel: ObservableObject {
-    @Published var currentTime: TimeInterval = 0
-    @Published var totalTime: TimeInterval = 0
-    @Published var bufferedTime: TimeInterval = 0
-}
-
 // MARK: - 原生视频播放器控制器
 final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
-    // MARK: - Published 状态
+    // MARK: - Published 状态（低频变化，触发 objectWillChange 安全）
     @Published var state: PlaybackState = .idle
-    @Published var currentTime: TimeInterval = 0
     @Published var totalDuration: TimeInterval = 0
     @Published var bufferedDuration: TimeInterval = 0
+
+    // MARK: - 高频数据（隔离：不走 @Published，避免 objectWillChange 污染所有观察者）
+    /// 当前播放时间 —— 每 0.5s 更新一次，仅通过 currentTimePublisher 推送给需要的视图
+    private(set) var currentTime: TimeInterval = 0
+    /// 时间更新 Publisher（Combine），供视图 .onReceive 精确订阅
+    let currentTimePublisher = PassthroughSubject<TimeInterval, Never>()
     @Published var playbackRate: Double = 1.0 {
         didSet {
             avPlayer.rate = Float(playbackRate)
@@ -55,12 +53,10 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
     @Published var isSeeking: Bool = false
 
     // 保持与 KSPlayer Coordinator 兼容的属性名
-    var timemodel: PlayerTimeModel { timeModel }
     var playerLayer: NativeVideoPlayer? { self }
 
     // MARK: - 内部
     let avPlayer = AVPlayer()
-    private let timeModel = PlayerTimeModel()
     private var timeObserver: Any?
     private var itemObservers: [NSKeyValueObservation] = []
     private var rateObserver: NSKeyValueObservation?
@@ -108,7 +104,6 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
                 case .readyToPlay:
                     self.state = .readyToPlay
                     self.totalDuration = item.duration.seconds.isFinite ? item.duration.seconds : 0
-                    self.timeModel.totalTime = self.totalDuration
                     self.isLoading = false
                     self.onStateChanged?(.readyToPlay)
                     self.onReady?()
@@ -166,13 +161,12 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
         // 观察 loadedTimeRanges
         itemObservers.append(item.observe(\.loadedTimeRanges, options: [.new]) { [weak self] item, _ in
             guard let self else { return }
-            if let range = item.loadedTimeRanges.first?.timeRangeValue {
-                let buffered = CMTimeGetSeconds(range.start) + CMTimeGetSeconds(range.duration)
-                DispatchQueue.main.async {
-                    self.bufferedDuration = buffered
-                    self.timeModel.bufferedTime = buffered
+                if let range = item.loadedTimeRanges.first?.timeRangeValue {
+                    let buffered = CMTimeGetSeconds(range.start) + CMTimeGetSeconds(range.duration)
+                    DispatchQueue.main.async {
+                        self.bufferedDuration = buffered
+                    }
                 }
-            }
         })
 
         avPlayer.replaceCurrentItem(with: item)
@@ -226,7 +220,7 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
             }
             let actualTime = self.avPlayer.currentTime().seconds.isFinite ? self.avPlayer.currentTime().seconds : time
             self.currentTime = actualTime
-            self.timeModel.currentTime = actualTime
+            self.currentTimePublisher.send(actualTime)
             self.isSeeking = false
             if resumeAfterSeek && self.state != .playing {
                 self.avPlayer.play()
@@ -283,13 +277,11 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
     private func resetPlaybackState() {
         state = .idle
         currentTime = 0
+        currentTimePublisher.send(0)
         totalDuration = 0
         bufferedDuration = 0
         isLoading = false
         isSeeking = false
-        timeModel.currentTime = 0
-        timeModel.totalTime = 0
-        timeModel.bufferedTime = 0
     }
 
     // MARK: - 内部方法
@@ -319,14 +311,13 @@ final class NativeVideoPlayer: ObservableObject, @unchecked Sendable {
             guard let self else { return }
             let seconds = CMTimeGetSeconds(time)
             self.currentTime = seconds
-            self.timeModel.currentTime = seconds
+            self.currentTimePublisher.send(seconds)
 
             // 报告缓冲变化
             if let item = self.avPlayer.currentItem,
                let range = item.loadedTimeRanges.first?.timeRangeValue {
                 let buffered = CMTimeGetSeconds(range.start) + CMTimeGetSeconds(range.duration)
                 self.bufferedDuration = buffered
-                self.timeModel.bufferedTime = buffered
             }
         }
     }

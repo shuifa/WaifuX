@@ -237,14 +237,56 @@ struct WebWallpaperDesignDocument {
 final class WebWallpaperDesignService {
     static let shared = WebWallpaperDesignService()
 
+    /// 缓存 hasEditableProperties 结果，避免每次菜单刷新都读取 project.json
+    private var editablePropertiesCache: [String: Bool] = [:]
+    /// 缓存的时间戳，用于一定时间后自动失效
+    private var cacheTimestamps: [String: Date] = [:]
+    private let cacheValidityDuration: TimeInterval = 30 // 缓存 30 秒
+
     private init() {}
 
-    func loadDocument(for wallpaperPath: String) throws -> WebWallpaperDesignDocument {
-        let projectURL = try projectURL(for: wallpaperPath)
-        let wallpaperTitle = loadWallpaperTitle(from: projectURL)
-        let properties = try loadProperties(from: projectURL)
-        let defaults = defaultValueMap(for: properties)
-        let overrides = loadOverrides(for: wallpaperPath)
+    /// 使指定壁纸的属性缓存失效（壁纸切换时调用）
+    func invalidateCache(for wallpaperPath: String) {
+        editablePropertiesCache.removeValue(forKey: wallpaperPath)
+        cacheTimestamps.removeValue(forKey: wallpaperPath)
+    }
+
+    /// 使所有缓存失效
+    func invalidateAllCaches() {
+        editablePropertiesCache.removeAll()
+        cacheTimestamps.removeAll()
+    }
+
+    /// 解析 project.json 路径并验证类型（单次读取 JSON）
+    private func resolveProjectAndLoadJSON(for wallpaperPath: String) throws -> (projectURL: URL, json: [String: Any]) {
+        try Self.resolveProjectAndLoadJSONFromDisk(for: wallpaperPath)
+    }
+
+    /// 磁盘 I/O：解析 project.json（可从后台线程调用）
+    private nonisolated static func resolveProjectAndLoadJSONFromDisk(for wallpaperPath: String) throws -> (projectURL: URL, json: [String: Any]) {
+        let rootURL = Self.resolveWallpaperEngineProjectRootFromDisk(startingAt: URL(fileURLWithPath: wallpaperPath))
+        let projectURL = rootURL.appendingPathComponent("project.json")
+        guard FileManager.default.fileExists(atPath: projectURL.path) else {
+            throw WebWallpaperDesignError.projectNotFound
+        }
+        let projectData = try Data(contentsOf: projectURL)
+        guard let json = try JSONSerialization.jsonObject(with: projectData) as? [String: Any] else {
+            throw WebWallpaperDesignError.invalidPropertyData
+        }
+        let type = (json["type"] as? String)?.lowercased()
+        if type != nil, type != "web" {
+            throw WebWallpaperDesignError.unsupportedWallpaperType
+        }
+        return (projectURL, json)
+    }
+
+    /// 从后台线程加载完整文档（不含 @MainActor 隔离）
+    nonisolated static func loadDocumentFromDisk(for wallpaperPath: String) throws -> WebWallpaperDesignDocument {
+        let (projectURL, json) = try resolveProjectAndLoadJSONFromDisk(for: wallpaperPath)
+        let wallpaperTitle = Self.extractTitle(from: json, fallback: projectURL)
+        let properties = try Self.parseProperties(from: json)
+        let defaults = Self.defaultValueMapStatic(for: properties)
+        let overrides = Self.loadOverridesFromDisk(for: wallpaperPath)
         let merged = defaults.merging(overrides) { _, override in override }
         return WebWallpaperDesignDocument(
             wallpaperPath: wallpaperPath,
@@ -255,9 +297,13 @@ final class WebWallpaperDesignService {
         )
     }
 
+    func loadDocument(for wallpaperPath: String) throws -> WebWallpaperDesignDocument {
+        try Self.loadDocumentFromDisk(for: wallpaperPath)
+    }
+
     func effectivePropertiesJSON(for wallpaperPath: String) throws -> String? {
-        let projectURL = try projectURL(for: wallpaperPath)
-        let properties = try loadProperties(from: projectURL)
+        let (_, json) = try Self.resolveProjectAndLoadJSONFromDisk(for: wallpaperPath)
+        let properties = try Self.parseProperties(from: json)
         let defaults = defaultValueMap(for: properties)
         let overrides = loadOverrides(for: wallpaperPath)
         let merged = defaults.merging(overrides) { _, override in override }
@@ -265,11 +311,27 @@ final class WebWallpaperDesignService {
     }
 
     func hasEditableProperties(for wallpaperPath: String) -> Bool {
-        guard let projectURL = try? projectURL(for: wallpaperPath),
-              let properties = try? loadProperties(from: projectURL) else {
+        // 检查缓存
+        if let cached = editablePropertiesCache[wallpaperPath],
+           let timestamp = cacheTimestamps[wallpaperPath],
+           Date().timeIntervalSince(timestamp) < cacheValidityDuration {
+            return cached
+        }
+        // 未缓存或已过期，重新计算
+        guard let (_, json) = try? resolveProjectAndLoadJSON(for: wallpaperPath) else {
+            editablePropertiesCache[wallpaperPath] = false
+            cacheTimestamps[wallpaperPath] = Date()
             return false
         }
-        return properties.contains(where: { $0.isEditable })
+        guard let properties = try? Self.parseProperties(from: json) else {
+            editablePropertiesCache[wallpaperPath] = false
+            cacheTimestamps[wallpaperPath] = Date()
+            return false
+        }
+        let result = properties.contains(where: { $0.isEditable })
+        editablePropertiesCache[wallpaperPath] = result
+        cacheTimestamps[wallpaperPath] = Date()
+        return result
     }
 
     func saveOverrides(
@@ -355,23 +417,7 @@ final class WebWallpaperDesignService {
         return stripped.isEmpty ? property.key : stripped
     }
 
-    private func projectURL(for wallpaperPath: String) throws -> URL {
-        let rootURL = resolveWallpaperEngineProjectRoot(startingAt: URL(fileURLWithPath: wallpaperPath))
-        let projectURL = rootURL.appendingPathComponent("project.json")
-        guard FileManager.default.fileExists(atPath: projectURL.path) else {
-            throw WebWallpaperDesignError.projectNotFound
-        }
-
-        let projectData = try Data(contentsOf: projectURL)
-        let json = try JSONSerialization.jsonObject(with: projectData) as? [String: Any]
-        let type = ((json ?? [:])["type"] as? String)?.lowercased()
-        if type != nil, type != "web" {
-            throw WebWallpaperDesignError.unsupportedWallpaperType
-        }
-        return projectURL
-    }
-
-    private func defaultValueMap(for properties: [WebWallpaperProperty]) -> [String: WebWallpaperPropertyValue] {
+    private nonisolated static func defaultValueMapStatic(for properties: [WebWallpaperProperty]) -> [String: WebWallpaperPropertyValue] {
         var output: [String: WebWallpaperPropertyValue] = [:]
         for property in properties {
             if let defaultValue = property.defaultValue {
@@ -381,20 +427,22 @@ final class WebWallpaperDesignService {
         return output
     }
 
-    private func loadWallpaperTitle(from projectURL: URL) -> String {
-        guard let data = try? Data(contentsOf: projectURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let title = json["title"] as? String,
+    private func defaultValueMap(for properties: [WebWallpaperProperty]) -> [String: WebWallpaperPropertyValue] {
+        Self.defaultValueMapStatic(for: properties)
+    }
+
+    /// 从已解析的 JSON 中提取壁纸标题，不重新读取文件
+    private nonisolated static func extractTitle(from json: [String: Any], fallback projectURL: URL) -> String {
+        guard let title = json["title"] as? String,
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return projectURL.deletingLastPathComponent().lastPathComponent
         }
         return title.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func loadProperties(from projectURL: URL) throws -> [WebWallpaperProperty] {
-        let data = try Data(contentsOf: projectURL)
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let general = json["general"] as? [String: Any],
+    /// 从已解析的 JSON 中解析属性列表，不重新读取文件
+    private nonisolated static func parseProperties(from json: [String: Any]) throws -> [WebWallpaperProperty] {
+        guard let general = json["general"] as? [String: Any],
               let rawProperties = general["properties"] as? [String: Any],
               !rawProperties.isEmpty else {
             throw WebWallpaperDesignError.missingProperties
@@ -430,14 +478,18 @@ final class WebWallpaperDesignService {
         return properties
     }
 
-    private func loadOverrides(for wallpaperPath: String) -> [String: WebWallpaperPropertyValue] {
-        guard let fileURL = try? designDirectory(for: wallpaperPath).appendingPathComponent("design.json"),
+    private nonisolated static func loadOverridesFromDisk(for wallpaperPath: String) -> [String: WebWallpaperPropertyValue] {
+        guard let fileURL = try? designDirectoryOnDisk(for: wallpaperPath).appendingPathComponent("design.json"),
               FileManager.default.fileExists(atPath: fileURL.path),
               let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([String: WebWallpaperPropertyValue].self, from: data) else {
             return [:]
         }
         return decoded
+    }
+
+    private func loadOverrides(for wallpaperPath: String) -> [String: WebWallpaperPropertyValue] {
+        Self.loadOverridesFromDisk(for: wallpaperPath)
     }
 
     private func makeOverrideValues(
@@ -468,7 +520,7 @@ final class WebWallpaperDesignService {
         }
     }
 
-    private func designDirectory(for wallpaperPath: String) throws -> URL {
+    private nonisolated static func designDirectoryOnDisk(for wallpaperPath: String) throws -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         let baseURL = (appSupport ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support"))
             .appendingPathComponent("WaifuX")
@@ -478,13 +530,17 @@ final class WebWallpaperDesignService {
         return baseURL
     }
 
-    private static func wallpaperHash(for wallpaperPath: String) -> String {
+    private func designDirectory(for wallpaperPath: String) throws -> URL {
+        try Self.designDirectoryOnDisk(for: wallpaperPath)
+    }
+
+    private nonisolated static func wallpaperHash(for wallpaperPath: String) -> String {
         let canonicalPath = URL(fileURLWithPath: wallpaperPath).standardizedFileURL.path
         let digest = SHA256.hash(data: Data(canonicalPath.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func parseOptions(_ rawValue: Any?) -> [WebWallpaperPropertyOption] {
+    private nonisolated static func parseOptions(_ rawValue: Any?) -> [WebWallpaperPropertyOption] {
         guard let array = rawValue as? [Any] else { return [] }
         return array.compactMap { element in
             guard let option = element as? [String: Any],
@@ -496,7 +552,7 @@ final class WebWallpaperDesignService {
         }
     }
 
-    private static func stripHTML(_ raw: String) -> String {
+    private nonisolated static func stripHTML(_ raw: String) -> String {
         var text = raw
             .replacingOccurrences(of: "<br>", with: "\n")
             .replacingOccurrences(of: "<br/>", with: "\n")
@@ -511,7 +567,7 @@ final class WebWallpaperDesignService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func doubleValue(_ rawValue: Any?) -> Double? {
+    private nonisolated static func doubleValue(_ rawValue: Any?) -> Double? {
         switch rawValue {
         case let value as Double:
             return value
@@ -526,7 +582,7 @@ final class WebWallpaperDesignService {
         }
     }
 
-    private static func intValue(_ rawValue: Any?) -> Int? {
+    private nonisolated static func intValue(_ rawValue: Any?) -> Int? {
         switch rawValue {
         case let value as Int:
             return value
@@ -539,7 +595,7 @@ final class WebWallpaperDesignService {
         }
     }
 
-    private static func normalizedWallpaperEngineFileValue(_ rawPath: String) -> String {
+    private nonisolated static func normalizedWallpaperEngineFileValue(_ rawPath: String) -> String {
         let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         if trimmed.hasPrefix("/") {
@@ -548,7 +604,7 @@ final class WebWallpaperDesignService {
         return trimmed
     }
 
-    private static func valuesEqual(_ lhs: WebWallpaperPropertyValue, _ rhs: WebWallpaperPropertyValue) -> Bool {
+    private nonisolated static func valuesEqual(_ lhs: WebWallpaperPropertyValue, _ rhs: WebWallpaperPropertyValue) -> Bool {
         let normalizedLeft = normalizeComparable(lhs)
         let normalizedRight = normalizeComparable(rhs)
         switch (normalizedLeft, normalizedRight) {
@@ -563,7 +619,7 @@ final class WebWallpaperDesignService {
         }
     }
 
-    private static func normalizeComparable(_ value: WebWallpaperPropertyValue) -> WebWallpaperPropertyValue {
+    private nonisolated static func normalizeComparable(_ value: WebWallpaperPropertyValue) -> WebWallpaperPropertyValue {
         switch value {
         case .string(let raw):
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -779,7 +835,7 @@ final class WebWallpaperDesignService {
         return tokens
     }
 
-    private func resolveWallpaperEngineProjectRoot(startingAt url: URL) -> URL {
+    private nonisolated static func resolveWallpaperEngineProjectRootFromDisk(startingAt url: URL) -> URL {
         let fm = FileManager.default
         var current = url
         var isDirectory: ObjCBool = false
@@ -810,6 +866,10 @@ final class WebWallpaperDesignService {
             return current
         }
         return current
+    }
+
+    private func resolveWallpaperEngineProjectRoot(startingAt url: URL) -> URL {
+        Self.resolveWallpaperEngineProjectRootFromDisk(startingAt: url)
     }
 }
 

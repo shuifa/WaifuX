@@ -50,24 +50,30 @@ final class VideoRenderer: @unchecked Sendable {
             ])
         }
 
-        let bounds = rootLayer.bounds
         let videoSize = await Self.displaySize(for: track)
-        let layout = Self.aspectFillLayout(videoSize: videoSize, in: bounds)
 
-        extLog("[VideoRenderer] video=\(Int(videoSize.width))x\(Int(videoSize.height)) display=\(Int(bounds.width))x\(Int(bounds.height)) fillScale=\(layout.scale)")
+        // CALayer / AVSampleBufferDisplayLayer 创建与 addSublayer 必须在主线程：
+        // 历史上整个 init 在 acquire 的非主线程 Task 上执行，会触发 Quartz thread-checker
+        // 警告，且远程 CAContext 下偶发渲染管线无帧输出。
+        return await MainActor.run {
+            let bounds = rootLayer.bounds
+            let layout = Self.aspectFillLayout(videoSize: videoSize, in: bounds)
 
-        let displayLayer = AVSampleBufferDisplayLayer()
-        displayLayer.videoGravity = .resizeAspectFill
-        displayLayer.frame = layout.frame
-        displayLayer.contentsScale = rootLayer.contentsScale
+            extLog("[VideoRenderer] video=\(Int(videoSize.width))x\(Int(videoSize.height)) display=\(Int(bounds.width))x\(Int(bounds.height)) fillScale=\(layout.scale)")
 
-        return VideoRenderer(
-            rootLayer: rootLayer,
-            displayLayer: displayLayer,
-            asset: asset,
-            videoTrack: track,
-            fillFrame: layout.frame
-        )
+            let displayLayer = AVSampleBufferDisplayLayer()
+            displayLayer.videoGravity = .resizeAspectFill
+            displayLayer.frame = layout.frame
+            displayLayer.contentsScale = rootLayer.contentsScale
+
+            return VideoRenderer(
+                rootLayer: rootLayer,
+                displayLayer: displayLayer,
+                asset: asset,
+                videoTrack: track,
+                fillFrame: layout.frame
+            )
+        }
     }
 
     private init(rootLayer: CALayer, displayLayer: AVSampleBufferDisplayLayer, asset: AVURLAsset, videoTrack: AVAssetTrack, fillFrame: CGRect) {
@@ -85,7 +91,18 @@ final class VideoRenderer: @unchecked Sendable {
         backgroundFrameLayer.frame = rootLayer.bounds
         backgroundFrameLayer.contentsGravity = .resizeAspectFill
         backgroundFrameLayer.contentsScale = rootLayer.contentsScale
-        backgroundFrameLayer.opacity = 0
+        // 即时占位底图：generateBackgroundFrame 是异步的（AVAssetImageGenerator），
+        // 期间如果 acquire 后立即被 recomputeAndApplyPolicy() 拉到 .paused（锁屏 /
+        // alwaysPauseDesktop / userPaused 等），displayLayer 还没机会渲染第一帧 →
+        // backgroundFrameLayer.opacity=0 → 桌面看到的是黑屏，没有底图可见。
+        // 用 BMP 缓存（上次会话写入的当前视频快照）做即时兜底，避免暂停态启动黑屏。
+        // 异步 generateBackgroundFrame 完成后会用更高质量的视频封面覆盖 contents。
+        if let cachedBMP = loadCachedSnapshotImage() {
+            backgroundFrameLayer.contents = cachedBMP
+            backgroundFrameLayer.opacity = 1
+        } else {
+            backgroundFrameLayer.opacity = 0
+        }
         rootLayer.addSublayer(backgroundFrameLayer)
 
         displayLayer.backgroundColor = CGColor(gray: 0, alpha: 0)

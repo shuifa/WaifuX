@@ -115,14 +115,21 @@ private struct LibraryScrollObserver: NSViewRepresentable {
 }
 
 struct MyLibraryContentView: View {
-    @StateObject private var viewModel = WallpaperViewModel()
-    @StateObject private var mediaViewModel = MediaExploreViewModel()
+    // 共享 AppDelegate 持有的全局 ViewModel 实例（与首页/壁纸探索/媒体探索共用）。
+    // 之前是 @StateObject 创建独立实例，导致两份 WallpaperViewModel/MediaExploreViewModel
+    // 同时订阅 LocalWallpaperScanner 通知 → 双倍内存 + 双倍响应。
+    // 改为 @ObservedObject 接收外部实例，仍能响应数据变化（body 内读 favorites/allLocalWallpapers
+    // 等需要响应式），但不再有冗余实例。
+    @ObservedObject var viewModel: WallpaperViewModel
+    @ObservedObject var mediaViewModel: MediaExploreViewModel
     @StateObject private var downloadTaskViewModel = DownloadTaskViewModel()
     @ObservedObject private var animeFavoriteStore = AnimeFavoriteStore.shared
     @ObservedObject private var folderStore = LibraryFolderStore.shared
     @ObservedObject private var gridOrderStore = LibraryGridOrderStore.shared
     @ObservedObject private var folderLockService = FolderLockService.shared
-    @ObservedObject private var arcSettings = ArcBackgroundSettings.shared
+    // 注意：ArcBackgroundSettings 不在顶层观察。它有多个 @Published（dotGridOpacity /
+    // useNoiseTexture / grainIntensity 等），顶层观察会导致任意外观设置变化触发整个库视图
+    // body 重算。背景渲染已下沉到 LibraryAtmosphereBackground 子视图自行观察。
     @ObservedObject private var workshopSourceManager = WorkshopSourceManager.shared
     @Environment(\.mainTopBarContentPadding) private var mainTopBarContentPadding
 
@@ -166,6 +173,10 @@ struct MyLibraryContentView: View {
     @State private var mediaItems: [AnyMediaItem] = []
     @State private var wallpaperFolderDisplay: [String: FolderDisplayInfo] = [:]
     @State private var mediaFolderDisplay: [String: FolderDisplayInfo] = [:]
+    // ⚡ 滚动 prefetch 用的 ID→Index 字典缓存（O(1) 查找替代 firstIndex(where:) O(N)）。
+    @State private var wallpaperIDIndexCache: [String: Int] = [:]
+    @State private var mediaIDIndexCache: [String: Int] = [:]
+    @State private var animeIDIndexCache: [String: Int] = [:]
     @State private var lastWallpaperPrefetchBucket: Int?
     @State private var lastMediaPrefetchBucket: Int?
     @State private var lastAnimePrefetchBucket: Int?
@@ -257,6 +268,10 @@ struct MyLibraryContentView: View {
     }
 
     var body: some View {
+        // 性能测量：开启 PERF_TRACE 编译标记后，会在控制台打印触发本 body 的属性来源
+        #if PERF_TRACE
+        let _ = Self._printChanges()
+        #endif
         ZStack(alignment: .topLeading) {
             if isEditing {
                 Color.black.opacity(0.3)
@@ -270,19 +285,13 @@ struct MyLibraryContentView: View {
                     .allowsHitTesting(true)
             }
 
-            ArcAtmosphereBackground(
-                tint: libraryAtmosphereTint,
-                referenceImage: nil,
-                isLightMode: false,
-                dotGridOpacity: arcSettings.dotGridOpacity,
-                useNoise: arcSettings.useNoiseTexture,
-                grainIntensity: arcSettings.grainIntensity,
-                lightweight: true
-            )
-            // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
-            .drawingGroup(opaque: true)
-            // 滚动时暂停背景重绘（背景是静态的，不需要每帧更新）
-            .allowsHitTesting(false)
+            // 背景渲染下沉到独立子视图：自行观察 ArcBackgroundSettings，
+            // 外观设置变化只重建本背景，不触发整个库视图 body 重算。
+            LibraryAtmosphereBackground(tint: libraryAtmosphereTint)
+                // 把多层渐变+点阵+噪点合并成一个 Metal 纹理，减少 WindowServer 合成层数
+                .drawingGroup(opaque: true)
+                // 滚动时暂停背景重绘（背景是静态的，不需要每帧更新）
+                .allowsHitTesting(false)
 
             GeometryReader { geometry in
                 let contentWidth = max(0, geometry.size.width - 56)
@@ -504,6 +513,11 @@ struct MyLibraryContentView: View {
                 originalName: nil
             )
         }
+        // ⚡ prefetch 用的 ID→Index 缓存与 animeFavorites 同步刷新
+        var idMap: [String: Int] = [:]
+        idMap.reserveCapacity(animeFavorites.count)
+        for (idx, anime) in animeFavorites.enumerated() { idMap[anime.id] = idx }
+        animeIDIndexCache = idMap
         syncSelectionWithVisibleItems()
     }
 
@@ -523,6 +537,9 @@ struct MyLibraryContentView: View {
         mediaItems.removeAll()
         wallpaperFolderDisplay.removeAll()
         mediaFolderDisplay.removeAll()
+        wallpaperIDIndexCache.removeAll()
+        mediaIDIndexCache.removeAll()
+        animeIDIndexCache.removeAll()
         currentWallpaperFolderID = nil
         currentMediaFolderID = nil
         wallpaperFolderStack.removeAll()
@@ -819,6 +836,11 @@ struct MyLibraryContentView: View {
             let query = trimmedLibrarySearchQuery
             wallpaperItems = wallpaperItems.filter { matchesLibrarySearch(for: $0, query: query) }
         }
+        // ⚡ prefetch 用的 ID→Index 缓存与 wallpaperItems 同步刷新
+        var idMap: [String: Int] = [:]
+        idMap.reserveCapacity(wallpaperItems.count)
+        for (idx, item) in wallpaperItems.enumerated() { idMap[item.id] = idx }
+        wallpaperIDIndexCache = idMap
         refreshWallpaperFolderDisplay()
         syncSelectionWithVisibleItems()
     }
@@ -880,6 +902,11 @@ struct MyLibraryContentView: View {
             let query = trimmedLibrarySearchQuery
             mediaItems = mediaItems.filter { matchesLibrarySearch(for: $0, query: query) }
         }
+        // ⚡ prefetch 用的 ID→Index 缓存与 mediaItems 同步刷新
+        var idMap: [String: Int] = [:]
+        idMap.reserveCapacity(mediaItems.count)
+        for (idx, item) in mediaItems.enumerated() { idMap[item.id] = idx }
+        mediaIDIndexCache = idMap
         refreshMediaFolderDisplay()
         syncSelectionWithVisibleItems()
     }
@@ -1125,8 +1152,13 @@ struct MyLibraryContentView: View {
     }
 
     // MARK: - Image Preloading
+    //
+    // ⚡ 滚动时每个 grid item 的 .onAppear 都会调 preloadNearbyXxx；旧实现内部走
+    // `firstIndex(where:)` 是 O(N)，大库（数千项）时每次滚动 mount 几十张就会做几十次
+    // 全表扫描。改用 ID→Index 字典做 O(1) 查找。
+
     private func preloadNearbyWallpapers(around item: AnyWallpaperItem, config: LibraryGridConfig) {
-        guard let index = wallpaperItems.firstIndex(where: { $0.id == item.id }) else { return }
+        guard let index = wallpaperIDIndexCache[item.id] else { return }
         let bucket = prefetchBucket(for: index)
         guard lastWallpaperPrefetchBucket != bucket else { return }
         lastWallpaperPrefetchBucket = bucket
@@ -1146,7 +1178,7 @@ struct MyLibraryContentView: View {
     }
 
     private func preloadNearbyMedia(around item: AnyMediaItem, config: LibraryGridConfig) {
-        guard let index = currentMediaItems.firstIndex(where: { $0.id == item.id }) else { return }
+        guard let index = mediaIDIndexCache[item.id] else { return }
         let bucket = prefetchBucket(for: index)
         guard lastMediaPrefetchBucket != bucket else { return }
         lastMediaPrefetchBucket = bucket
@@ -1167,7 +1199,7 @@ struct MyLibraryContentView: View {
     }
 
     private func preloadNearbyAnime(around anime: AnimeSearchResult, config: AnimeGridConfig) {
-        guard let index = currentAnimeItems.firstIndex(where: { $0.id == anime.id }) else { return }
+        guard let index = animeIDIndexCache[anime.id] else { return }
         let bucket = prefetchBucket(for: index)
         guard lastAnimePrefetchBucket != bucket else { return }
         lastAnimePrefetchBucket = bucket
@@ -1314,30 +1346,22 @@ struct MyLibraryContentView: View {
                 batchDeleteToolbar(count: currentAnimeItems.count)
 
                 let animeCardHeight = config.cardWidth * 1.4 + 52
-                let columnItems = ExploreGridLayout.stableColumns(
-                    items: currentAnimeItems,
-                    columnCount: config.columnCount
-                )
 
-                HStack(alignment: .top, spacing: config.spacing) {
-                    ForEach(0..<config.columnCount, id: \.self) { columnIndex in
-                        LazyVStack(spacing: config.spacing) {
-                            ForEach(columnItems[safe: columnIndex] ?? []) { anime in
-                                AnimeLibraryCard(
-                                    anime: anime,
-                                    isEditing: isEditing,
-                                    isSelected: selectedItems.contains(anime.id),
-                                    cardWidth: config.cardWidth
-                                ) {
-                                    handleAnimeTap(anime)
-                                }
-                                .onAppear {
-                                    preloadNearbyAnime(around: anime, config: config)
-                                }
-                                .frame(height: animeCardHeight)
-                            }
+                // ⚡ 改用 LazyVGrid：动漫卡片高度统一，不需要瀑布流多列对齐。
+                LazyVGrid(columns: config.gridItems, alignment: .leading, spacing: config.spacing) {
+                    ForEach(currentAnimeItems) { anime in
+                        AnimeLibraryCard(
+                            anime: anime,
+                            isEditing: isEditing,
+                            isSelected: selectedItems.contains(anime.id),
+                            cardWidth: config.cardWidth
+                        ) {
+                            handleAnimeTap(anime)
                         }
-                        .frame(width: config.cardWidth)
+                        .onAppear {
+                            preloadNearbyAnime(around: anime, config: config)
+                        }
+                        .frame(height: animeCardHeight)
                     }
                 }
             }
@@ -2347,19 +2371,12 @@ struct MyLibraryContentView: View {
         estimatedHeight: CGFloat,
         @ViewBuilder content: @escaping (Item) -> Content
     ) -> some View {
-        let columnItems = ExploreGridLayout.stableColumns(
-            items: entries,
-            columnCount: config.columnCount
-        )
-
-        HStack(alignment: .top, spacing: config.spacing) {
-            ForEach(0..<config.columnCount, id: \.self) { columnIndex in
-                LazyVStack(spacing: config.spacing) {
-                    ForEach(columnItems[safe: columnIndex] ?? []) { item in
-                        content(item)
-                    }
-                }
-                .frame(width: config.cardWidth)
+        // ⚡ 库卡片高度是统一的（LibraryCardMetrics.thumbnailHeight = 180 + 元数据栏），
+        // 不需要瀑布流。改用 LazyVGrid 替代 `HStack { LazyVStack × N }` 的多列模式
+        // ——后者在 macOS 上会让所有列在每帧滚动期间反复同步对齐，是已知 hitch 来源。
+        LazyVGrid(columns: config.gridItems, alignment: .leading, spacing: config.spacing) {
+            ForEach(entries) { item in
+                content(item)
             }
         }
     }
@@ -2530,6 +2547,26 @@ struct MyLibraryContentView: View {
         showSteamLoginSheet = true
     }
 
+}
+
+// MARK: - 库视图氛围背景（独立观察 ArcBackgroundSettings）
+/// 从 MyLibraryContentView 下沉而来：自行观察 ArcBackgroundSettings，
+/// 外观设置（点阵/噪点/颗粒度）变化时只重建本背景，不触发整个库视图 body 重算。
+private struct LibraryAtmosphereBackground: View {
+    let tint: ExploreAtmosphereTint
+    @ObservedObject private var arcSettings = ArcBackgroundSettings.shared
+
+    var body: some View {
+        ArcAtmosphereBackground(
+            tint: tint,
+            referenceImage: nil,
+            isLightMode: false,
+            dotGridOpacity: arcSettings.dotGridOpacity,
+            useNoise: arcSettings.useNoiseTexture,
+            grainIntensity: arcSettings.grainIntensity,
+            lightweight: true
+        )
+    }
 }
 
 // MARK: - Content Type Picker

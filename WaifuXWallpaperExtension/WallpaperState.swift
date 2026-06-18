@@ -16,6 +16,11 @@ struct ActiveWallpaper: @unchecked Sendable {
     let displayID: UInt32?
     let videoID: String?
     let contextId: UInt32
+    /// 系统 WallpaperAgent 通过 XPC 传给 acquire 的 id（已 normalize 成 "uuid:..." 或 "raw:..."）。
+    /// 同一 wallpaperID 可对应多个 contextId（桌面 + 锁屏两 instance 共享 wallpaperID）。
+    /// 注意：videoID 存的是 instanceID（"display-<n>"），与 wallpaperID 是两个命名空间，
+    /// 历史代码混用导致 invalidate/几何更新等路径全部 mismatch — 见 commit b74db8a 后的修复。
+    let wallpaperID: String?
 }
 
 final class WallpaperState: Sendable {
@@ -45,7 +50,6 @@ final class WallpaperState: Sendable {
         var isScreenLocked: Bool = false
         /// IOSurface 帧渲染器（每显示器），用于帧通道回调
         var ioSurfaceRenderers: [UInt32: IOSurfaceFrameRenderer] = [:]
-        var ioSurfaceRendererGenerations: [UInt32: UUID] = [:]
         /// 待处理的视频切换：当 switch_video 到达但无活跃上下文时缓存，上下文创建后自动应用
         var pendingVideoSwitches: [UInt32: URL] = [:]
     }
@@ -71,6 +75,7 @@ final class WallpaperState: Sendable {
     }
 
     /// 清除缓存的 URL，使下次查找重新评估当前库。
+    /// 同时清理 pendingVideoSwitches，避免 App 库变化后 pending URL 指向已删除/重命名的视频。
     func clearCaches() {
         lock.withLock { state in
             state.cachedVideoURL = nil
@@ -78,6 +83,7 @@ final class WallpaperState: Sendable {
             state.cachedThumbnailURL = nil
             state.cachedVideoURLs.removeAll()
             state.cachedImageURLs.removeAll()
+            state.pendingVideoSwitches.removeAll()
         }
     }
 
@@ -88,7 +94,9 @@ final class WallpaperState: Sendable {
     /// 历史上此处按 wallpaperID 去重，会把先 acquire 的 instance（通常是桌面）的 renderer stop 掉，
     /// 导致该 instance 的 rootLayer layers 全部拆除 → 黑屏，且永远无法被 alwaysPauseDesktop policy 命中。
     /// 现改为只按 contextId 存储/去重，同一 wallpaperID 多 instance 共存。
-    func storeContext(_ context: ActiveWallpaper, id: UInt32, wallpaperID: String?) -> ActiveWallpaper? {
+    /// `wallpaperID` 形参会被持久化到 ActiveWallpaper.wallpaperID，供 invalidate / 几何更新等
+    /// 按真 wallpaperID 路由的路径使用（不要再用 videoID 比 wallpaperID — 两者属不同命名空间）。
+    func storeContext(_ context: ActiveWallpaper, id: UInt32, wallpaperID _: String?) -> ActiveWallpaper? {
         lock.withLock { state in
             let existing = state.activeContexts[id]
             state.activeContexts[id] = context
@@ -97,13 +105,18 @@ final class WallpaperState: Sendable {
     }
 
     /// 移除所有匹配 wallpaperID 的 context（桌面 + 锁屏均可能被系统一次性 invalidate）。
-    /// 返回最后一个被移除的 context（调用方只关心 stop renderer，多实例一并 stop）。
-    func removeContext(wallpaperID: String) -> ActiveWallpaper? {
+    /// 返回所有被移除的 context，调用方负责对每个 renderer 调用 stop()。
+    /// 历史实现按 videoID 比较 wallpaperID（命名空间不同，永远 mismatch），且循环里 `removed = ...`
+    /// 会覆盖只剩最后一个，导致前面的 renderer 永久泄漏 — 现已修正。
+    func removeContext(wallpaperID: String) -> [ActiveWallpaper] {
         lock.withLock { state in
-            var removed: ActiveWallpaper?
-            let matching = state.activeContexts.filter { $0.value.videoID == wallpaperID }.map { $0.key }
+            let matching = state.activeContexts.filter { $0.value.wallpaperID == wallpaperID }.map { $0.key }
+            var removed: [ActiveWallpaper] = []
+            removed.reserveCapacity(matching.count)
             for id in matching {
-                removed = state.activeContexts.removeValue(forKey: id)
+                if let ctx = state.activeContexts.removeValue(forKey: id) {
+                    removed.append(ctx)
+                }
             }
             return removed
         }
@@ -115,7 +128,6 @@ final class WallpaperState: Sendable {
             let ioRenderers = Array(state.ioSurfaceRenderers.values)
             state.activeContexts.removeAll()
             state.ioSurfaceRenderers.removeAll()
-            state.ioSurfaceRendererGenerations.removeAll()
             return (all, ioRenderers)
         }
         for ctx in removed.0 { ctx.renderer?.stop() }
@@ -185,13 +197,13 @@ final class WallpaperState: Sendable {
 
     func activeContext(wallpaperID: String) -> ActiveWallpaper? {
         lock.withLock { state in
-            state.activeContexts.values.first { $0.videoID == wallpaperID }
+            state.activeContexts.values.first { $0.wallpaperID == wallpaperID }
         }
     }
 
     func updateContextDisplayID(wallpaperID: String, displayID: UInt32) {
         lock.withLock { state in
-            guard let pair = state.activeContexts.first(where: { $0.value.videoID == wallpaperID }),
+            guard let pair = state.activeContexts.first(where: { $0.value.wallpaperID == wallpaperID }),
                   pair.value.displayID != displayID else {
                 return
             }
@@ -202,7 +214,8 @@ final class WallpaperState: Sendable {
                 renderer: old.renderer,
                 displayID: displayID,
                 videoID: old.videoID,
-                contextId: pair.key
+                contextId: pair.key,
+                wallpaperID: old.wallpaperID
             )
         }
     }
@@ -220,7 +233,8 @@ final class WallpaperState: Sendable {
                 renderer: old.renderer,
                 displayID: displayID,
                 videoID: old.videoID,
-                contextId: pair.key
+                contextId: pair.key,
+                wallpaperID: old.wallpaperID
             )
         }
     }
@@ -241,7 +255,8 @@ final class WallpaperState: Sendable {
                 renderer: renderer,
                 displayID: old.displayID,
                 videoID: videoID ?? old.videoID,
-                contextId: pair.key
+                contextId: pair.key,
+                wallpaperID: old.wallpaperID
             )
             return old.renderer
         }
@@ -262,7 +277,8 @@ final class WallpaperState: Sendable {
                 renderer: renderer,
                 displayID: old.displayID,
                 videoID: videoID ?? old.videoID,
-                contextId: contextId
+                contextId: contextId,
+                wallpaperID: old.wallpaperID
             )
             return old.renderer
         }
@@ -300,11 +316,10 @@ final class WallpaperState: Sendable {
     // MARK: - IOSurfaceFrameRenderer Registry
 
     /// 存储 IOSurfaceFrameRenderer 供帧通道回调使用
-    func storeIOSurfaceRenderer(_ renderer: IOSurfaceFrameRenderer, generation: UUID, for displayID: UInt32) {
+    func storeIOSurfaceRenderer(_ renderer: IOSurfaceFrameRenderer, for displayID: UInt32) {
         let previous = lock.withLock { state -> IOSurfaceFrameRenderer? in
             let old = state.ioSurfaceRenderers[displayID]
             state.ioSurfaceRenderers[displayID] = renderer
-            state.ioSurfaceRendererGenerations[displayID] = generation
             return old
         }
         previous?.stop()
@@ -315,7 +330,6 @@ final class WallpaperState: Sendable {
         let previous = lock.withLock { state -> IOSurfaceFrameRenderer? in
             let old = state.ioSurfaceRenderers[displayID]
             state.ioSurfaceRenderers[displayID] = nil
-            state.ioSurfaceRendererGenerations[displayID] = nil
             return old
         }
         previous?.stop()
@@ -324,10 +338,6 @@ final class WallpaperState: Sendable {
     /// 获取指定显示器的 IOSurfaceFrameRenderer
     func ioSurfaceRenderer(for displayID: UInt32) -> IOSurfaceFrameRenderer? {
         lock.withLock { $0.ioSurfaceRenderers[displayID] }
-    }
-
-    func isCurrentIOSurfaceRendererGeneration(_ generation: UUID, for displayID: UInt32) -> Bool {
-        lock.withLock { $0.ioSurfaceRendererGenerations[displayID] == generation }
     }
 
     /// 获取任意一个活跃的 IOSurfaceFrameRenderer（用于 snapshot 回退）。

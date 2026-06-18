@@ -22,7 +22,7 @@ Packages/
 
 # CocoaPods
 Pods/
-
+Docs/superpowers
 # App
 *.app
 *.dSYM

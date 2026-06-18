@@ -271,6 +271,9 @@ final class WallpaperEngineXBridge: ObservableObject {
             print("[WallpaperEngineXBridge] <<< setWallpaper END")
         }
 
+        // 壁纸切换时使设计面板的缓存失效
+        WebWallpaperDesignService.shared.invalidateAllCaches()
+
         // 更新批次号，避免旧的终止事件污染新状态
         launchGeneration &+= 1
 

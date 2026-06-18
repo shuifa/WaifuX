@@ -694,7 +694,7 @@ private struct SchedulerSettingsTab: View {
         MacSettingsForm {
             // 每屏配置
             MacSettingsSection(header: t("scheduleConfig")) {
-                ForEach(Array(screens.enumerated()), id: \.offset) { index, screen in
+                ForEach(Array(screens.enumerated()), id: \.element.wallpaperScreenIdentifier) { index, screen in
                     let screenID = screen.wallpaperScreenIdentifier
                     let displayConfig = viewModel.schedulerViewModel.displayConfig(for: screenID)
 
@@ -1433,7 +1433,7 @@ private struct WorkshopSettingsTab: View {
 
                 // 超分辨率模式
                 MacSettingsSection {
-                    MacSettingsRow(title: t("workshop.upscalingMode"), subtitle: t("workshop.upscalingModeDesc"), showDivider: false) {
+                    MacSettingsRow(title: t("workshop.upscalingMode"), subtitle: t("workshop.upscalingModeDesc"), showDivider: true) {
                         MacToggle(isOn: Binding(
                             get: { viewModel.upscalingEnabled },
                             set: { viewModel.upscalingEnabled = $0 }
@@ -1478,7 +1478,7 @@ private struct WorkshopSettingsTab: View {
 
                 // 烘焙帧率
                 MacSettingsSection {
-                    MacSettingsRow(title: t("workshop.bakeFps"), subtitle: t("workshop.bakeFpsDesc"), showDivider: false) {
+                    MacSettingsRow(title: t("workshop.bakeFps"), subtitle: t("workshop.bakeFpsDesc"), showDivider: true) {
                         HStack(spacing: 8) {
                             Text("\(Int(viewModel.sceneBakeFPS)) FPS")
                                 .font(.system(size: 12, weight: .medium))
@@ -1490,7 +1490,7 @@ private struct WorkshopSettingsTab: View {
                         }
                     }
 
-                    MacSettingsRow(title: t("workshop.bakeDuration"), subtitle: t("workshop.bakeDurationDesc"), showDivider: false) {
+                    MacSettingsRow(title: t("workshop.bakeDuration"), subtitle: t("workshop.bakeDurationDesc"), showDivider: true) {
                         HStack(spacing: 8) {
                             Text("\(Int(viewModel.sceneBakeDuration))s")
                                 .font(.system(size: 12, weight: .medium))
@@ -1500,6 +1500,10 @@ private struct WorkshopSettingsTab: View {
                                 .frame(width: 120)
                                 .tint(Color(hex: "30D158"))
                         }
+                    }
+
+                    MacSettingsRow(title: t("workshop.autoBakeScene"), subtitle: t("workshop.autoBakeSceneDesc"), showDivider: false) {
+                        MacToggle(isOn: $viewModel.autoBakeScene)
                     }
                 }
 

@@ -52,8 +52,13 @@ final class WallpaperGridCell: ExploreGridItem {
     private var cachedViewsViewSize: CGSize = .zero
     private var cachedFavoritesViewSize: CGSize = .zero
 
-    override var hoverScaleFactor: CGFloat { 1.01 }
-    override var hoverOverlayMaxOpacity: Float { 0 }
+    // Hover 参数对齐 anime 卡（比 1.01 + overlay=0 的旧值更明显）：
+    // - 1.02 缩放：肉眼可感受到的"卡片往前推一下"
+    // - overlay flash：基类默认 0.02 的微亮提示，是 anime hover 主要的"动起来"感受
+    // - 边框动画：保留（边框宽 1.0 → 1.5、alpha 0.08 → 0.18）
+    override var hoverScaleFactor: CGFloat { 1.02 }
+    // hoverOverlayMaxOpacity 不再覆写，使用基类默认 0.02；之前显式设 0 关掉了 overlay
+    // 是"hover 像没动画"的主要原因。
     override var shouldAnimateBorderOnHover: Bool { true }
 
     override func setupContentLayout() {
