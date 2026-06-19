@@ -477,10 +477,22 @@ final class DynamicWallpaperAutoPauseManager {
     }
 
     @objc private func handleActiveSpaceChange() {
-        guard pauseWhenFullscreenCovers else { return }
         guard !VideoWallpaperManager.shared.isScreenLocked else { return }
+
+        // Space 切换时 frontmostApplication 可能不变（同一 app 在多个 Space 都有窗口），
+        // 因此 NSWorkspace.didActivateApplicationNotification 不会触发；
+        // 但每个 Space 可见的窗口集合不同，必须显式重跑前台覆盖检测，
+        // 否则 Space 1 上"被前台 app 覆盖→暂停"的屏幕状态会一直挂着，
+        // 切到 Space 2（无覆盖）也不恢复；反向也一样：Space 1 在播，
+        // 切到 Space 2 有覆盖也不暂停。
+        if pauseWhenOtherAppForeground {
+            handleAppActivationChange()
+        }
+
         // Space 切换（进出全屏）时立即重新检测，不等 3s 轮询
-        checkAndApply()
+        if pauseWhenFullscreenCovers {
+            checkAndApply()
+        }
     }
 
     /// 检查前台是否是非本应用且非 Finder 的其他应用（全局判断，供旧逻辑兼容）
