@@ -24,7 +24,7 @@ final class SceneConfigOverridePanelController {
         let viewModel = SceneConfigOverrideViewModel(wallpaperPath: wallpaperPath) { [weak self] in
             self?.closePanel()
         }
-        let window = NSWindow(
+        let window = KeyableBorderlessWindow(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 580),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,

@@ -279,11 +279,28 @@ enum SceneOfflineBakeService {
                     .imageScaling: NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue),
                     .allowClipping: true
                 ]
-                for screen in NSScreen.screens {
+                // 只把 poster 推给目标显示器，绝不能写回 NSScreen.screens 全集 ——
+                // 否则用户只在屏幕 N 上启用场景实时渲染时，烘焙完成会把静帧 poster
+                // 顺手贴到其它屏的桌面（其它屏没有 wallpaper-wgpu 叠层挡着，直接可见）。
+                // 入参 displayIDs 已由调用方按 targetScreens 精确指定，这里照单全收。
+                let targetScreens: [NSScreen]
+                if displayIDs.isEmpty {
+                    // 调用方未指定 → 退回历史行为（兼容无显示器信息的路径）
+                    targetScreens = NSScreen.screens
+                } else {
+                    let idSet = Set(displayIDs)
+                    targetScreens = NSScreen.screens.filter { screen in
+                        guard let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                            return false
+                        }
+                        return idSet.contains(n.uint32Value)
+                    }
+                }
+                for screen in targetScreens {
                     try? NSWorkspace.shared.setDesktopImageURLForAllSpaces(posterURL, for: screen, options: fillOptions)
                     DesktopWallpaperSyncManager.shared.registerWallpaperSet(posterURL, for: screen, options: fillOptions)
                 }
-                print("[SceneOfflineBake] realtime companion bake set desktop poster (\(reason)): \(posterURL.path)")
+                print("[SceneOfflineBake] realtime companion bake set desktop poster (\(reason)) on \(targetScreens.count) screen(s) display=\(displayIDs): \(posterURL.path)")
             }
         }
     }

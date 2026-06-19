@@ -1088,6 +1088,11 @@ final class PreviewWindowManager: ObservableObject {
     func closePreview() {
         guard isPresented else { return }
         removeCloseObserver()
+        if let window = windowController?.window {
+            // 主动断开 hosting view，确保 SwiftUI 视图树立即销毁
+            // (PreviewPlayer @StateObject 走 deinit → AVPlayer 停播)
+            window.contentView = nil
+        }
         windowController?.close()
         windowController = nil
         isPresented = false
@@ -1160,8 +1165,15 @@ final class PreviewWindowManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.isPresented = false
-                self?.closeObserver = nil
+                guard let self else { return }
+                self.removeCloseObserver()
+                // 主动断开 hosting view，触发 SwiftUI .onDisappear /
+                // PreviewPlayer.deinit，避免 AVPlayer 在窗口隐藏后继续播放音频
+                if let win = self.windowController?.window {
+                    win.contentView = nil
+                }
+                self.windowController = nil
+                self.isPresented = false
             }
         }
     }

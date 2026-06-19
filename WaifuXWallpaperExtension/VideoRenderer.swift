@@ -279,6 +279,19 @@ final class VideoRenderer: @unchecked Sendable {
                 CMTimebaseSetTime(timebase, time: .zero)
                 recreatePlayback()
                 CMTimebaseSetRate(timebase, rate: isPaused ? 0.0 : 1.0)
+
+                // 暂停态（如 alwaysPauseDesktop）下 stillFrameLayer 仍贴着上一个视频的
+                // 静帧 —— pause() 抓的是当时的 asset。如果不主动刷新，桌面会一直看见
+                // 老壁纸的画面，直到下次 pause/resume（锁屏 ↔ 解锁）才被冲掉。
+                // 这正是 "切换壁纸后必须锁一下屏才生效 / 退出 App 也能恢复" 的根因。
+                // 立即把老静帧藏掉露出新视频第一帧，并用新 asset 异步重生静帧。
+                if isPaused {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.stillFrameLayer.opacity = 0
+                    }
+                    generateStillFrame()
+                }
+
                 extLog("[Renderer] ✅ 热切换视频: \(newAsset.url.lastPathComponent)")
             }
         }

@@ -3430,7 +3430,6 @@ struct WallpaperPreviewSheet: View {
     @StateObject private var previewPlayer = PreviewPlayer()
     /// 预览弹窗独立静音状态，与详情页互不干扰
     @State private var isPreviewMuted = true
-
     private var isVideo: Bool {
         ["mp4", "mov", "webm"].contains(url.pathExtension.lowercased())
     }
@@ -3495,6 +3494,10 @@ struct WallpaperPreviewSheet: View {
                 HStack {
                     Spacer()
                     Button {
+                        // NSHostingView 装载在独立 NSWindow 时 dismiss() 不生效，
+                        // 必须显式走 PreviewWindowManager.closePreview()，
+                        // 否则视图不会被释放，AVPlayer 会继续播放音频
+                        PreviewWindowManager.shared.closePreview()
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")

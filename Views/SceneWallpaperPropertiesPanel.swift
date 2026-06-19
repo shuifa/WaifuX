@@ -21,7 +21,7 @@ final class SceneWallpaperPropertiesPanelController {
         let viewModel = SceneWallpaperPropertiesViewModel(wallpaperPath: wallpaperPath) { [weak self] in
             self?.closePanel()
         }
-        let window = NSWindow(
+        let window = KeyableBorderlessWindow(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 600),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,

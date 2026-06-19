@@ -1,6 +1,18 @@
 import SwiftUI
 import AppKit
 
+/// 浮动设计/属性面板共用的 NSWindow 子类。
+///
+/// 纯 `.borderless` 窗口默认 `canBecomeKey == false`，导致：
+/// 1. SwiftUI `ColorPicker` 找不到 key window，无法弹出 NSColorPanel；
+/// 2. 点击控件时 AppKit 把 activation 转交给应用里其它候选窗口，
+///    会把用户已经关闭（隐藏）的主窗口重新拉回前台。
+/// 这里显式开放 key/main 资格，让面板自身接管输入与 panel 子窗口宿主。
+final class KeyableBorderlessWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 @MainActor
 final class SceneWallpaperDesignPanelController {
     static let shared = SceneWallpaperDesignPanelController()
@@ -19,7 +31,7 @@ final class SceneWallpaperDesignPanelController {
         let viewModel = SceneWallpaperDesignViewModel(wallpaperPath: wallpaperPath) { [weak self] in
             self?.closePanel()
         }
-        let window = NSWindow(
+        let window = KeyableBorderlessWindow(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 600),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
