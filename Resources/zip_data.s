@@ -1,5 +1,5 @@
 	.globl _zip_data_start
 	.globl _zip_data_end
 _zip_data_start:
-	.incbin "/tmp/waifux-we-assets-50078.zip"
+	.incbin "/tmp/waifux-we-assets-74178.zip"
 _zip_data_end:

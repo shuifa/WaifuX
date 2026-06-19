@@ -10,9 +10,10 @@ SRC_MAIN="$ROOT/wallpaperengine-cli.swift"
 SRC_EMBED="$ROOT/WallpaperEngineEmbeddedAssets.swift"
 OUT_CLI="$ROOT/Resources/wallpaperengine-cli"
 TMP_ZIP="/tmp/waifux-we-assets-$$.zip"
+TMP_DIR="$(mktemp -d -t waifux-we-build-XXXXXX)"
 rm -f "$TMP_ZIP"
 
-cleanup() { rm -f "$TMP_ZIP"; }
+cleanup() { rm -rf "$TMP_ZIP" "$TMP_DIR"; }
 # 注意：Resources/{zip_data.s,zip_data.o,zip_accessor.c,zip_accessor.o} 是仓库 committed
 # 文件，App 主程序也会通过 OTHER_LDFLAGS 链接 zip_data.o + zip_accessor.o（见
 # WaifuX.xcodeproj/project.pbxproj 与 WallpaperEngineEmbeddedAssets.swift）。
@@ -47,7 +48,11 @@ _zip_data_start:
 _zip_data_end:
 EOF
 
-as -arch arm64 -mmacosx-version-min=14.0 "$ROOT/Resources/zip_data.s" -o "$ROOT/Resources/zip_data.o"
+as -arch arm64  -mmacosx-version-min=14.0 "$ROOT/Resources/zip_data.s" -o "$TMP_DIR/zip_data_arm64.o"
+as -arch x86_64 -mmacosx-version-min=14.0 "$ROOT/Resources/zip_data.s" -o "$TMP_DIR/zip_data_x86_64.o"
+# 主 App 是 universal (arm64 + x86_64)，链接时两份切片都需要；
+# 早先只产 arm64 单切片会让 x86_64 archive 阶段报 "Undefined symbols _get_zip_data_ptr"。
+lipo -create "$TMP_DIR/zip_data_arm64.o" "$TMP_DIR/zip_data_x86_64.o" -output "$ROOT/Resources/zip_data.o"
 
 echo "[build-wallpaperengine-cli] 生成 C bridge..."
 cat > "$ROOT/Resources/zip_accessor.c" << 'EOF'
@@ -61,7 +66,7 @@ uint8_t* get_zip_data_ptr(void) { return zip_data_start; }
 size_t get_zip_data_size(void) { return (size_t)(zip_data_end - zip_data_start); }
 EOF
 
-clang -c -mmacosx-version-min=14.0 "$ROOT/Resources/zip_accessor.c" -o "$ROOT/Resources/zip_accessor.o"
+clang -c -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 "$ROOT/Resources/zip_accessor.c" -o "$ROOT/Resources/zip_accessor.o"
 
 echo "[build-wallpaperengine-cli] swiftc..."
 swiftc -parse-as-library \
