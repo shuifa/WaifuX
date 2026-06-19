@@ -1102,6 +1102,108 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         forMainFrameOnly: false
     )
 
+    /// documentStart 注入：包装 AudioContext / webkitAudioContext，把 ctx.destination 路由到一个
+    /// master GainNode；同时维护 window.__waifuxAudioMuted / __waifuxAudioVolume 状态，
+    /// 暴露 window.__waifuxSetAudio({muted?, volume?}) 供 native 通过 evaluateJavaScript 调用。
+    /// 静音也走这里——有效输出 = muted ? 0 : volume。绕开 WKWebView 私有 SPI _setPageMuted
+    /// （KVC 不兼容 setter=_setPageMuted: 的命名约定，setValue:forKey: 会抛 NSUnknownKeyException）。
+    private static let audioWrapperScript = WKUserScript(
+        source: """
+        (function() {
+            'use strict';
+            var ACtor = window.AudioContext || window.webkitAudioContext;
+            if (!ACtor) return;
+
+            if (typeof window.__waifuxAudioVolume !== 'number') {
+                window.__waifuxAudioVolume = 1.0;
+            }
+            if (typeof window.__waifuxAudioMuted !== 'boolean') {
+                window.__waifuxAudioMuted = false;
+            }
+            var wrappedRefs = [];
+
+            function effectiveVolume() {
+                return window.__waifuxAudioMuted ? 0 : window.__waifuxAudioVolume;
+            }
+
+            function applyAudio() {
+                var v = effectiveVolume();
+                for (var i = 0; i < wrappedRefs.length; i++) {
+                    try {
+                        var g = wrappedRefs[i].__waifuxGain;
+                        if (g && g.gain) g.gain.value = v;
+                    } catch (_) {}
+                }
+                try {
+                    document.querySelectorAll('video,audio').forEach(function(e) {
+                        e.volume = v;
+                    });
+                } catch (_) {}
+            }
+
+            function wrapContext(ctx) {
+                try {
+                    var origDest = ctx.destination;
+                    var gain = ctx.createGain();
+                    gain.connect(origDest);
+                    gain.gain.value = effectiveVolume();
+                    Object.defineProperty(ctx, '__waifuxGain', {
+                        value: gain, writable: false, configurable: false
+                    });
+                    Object.defineProperty(ctx, '__waifuxOrigDestination', {
+                        value: origDest, writable: false, configurable: false
+                    });
+                    Object.defineProperty(ctx, 'destination', {
+                        get: function() { return gain; },
+                        configurable: true
+                    });
+                    wrappedRefs.push(ctx);
+                } catch (e) {
+                    try { console.warn('[waifux] wrap AudioContext failed:', e); } catch (_) {}
+                }
+            }
+
+            function makeWrapped(Original) {
+                var Wrapped = function() {
+                    var inst;
+                    switch (arguments.length) {
+                        case 0: inst = new Original(); break;
+                        case 1: inst = new Original(arguments[0]); break;
+                        default: inst = new (Function.prototype.bind.apply(
+                            Original, [null].concat(Array.prototype.slice.call(arguments))
+                        ))();
+                    }
+                    wrapContext(inst);
+                    return inst;
+                };
+                Wrapped.prototype = Original.prototype;
+                try { Object.setPrototypeOf(Wrapped, Original); } catch (_) {}
+                return Wrapped;
+            }
+
+            if (window.AudioContext) {
+                window.AudioContext = makeWrapped(window.AudioContext);
+            }
+            if (window.webkitAudioContext) {
+                window.webkitAudioContext = makeWrapped(window.webkitAudioContext);
+            }
+
+            window.__waifuxSetAudio = function(opts) {
+                if (!opts) return;
+                if (typeof opts.muted === 'boolean') {
+                    window.__waifuxAudioMuted = opts.muted;
+                }
+                if (typeof opts.volume === 'number') {
+                    window.__waifuxAudioVolume = Math.max(0, Math.min(1, opts.volume));
+                }
+                applyAudio();
+            };
+        })();
+        """,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: false
+    )
+
     private var window: NSWindow?
     private var webView: WKWebView?
     private var pendingCompletion: ((Bool) -> Void)?
@@ -1192,6 +1294,7 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         ucc.addUserScript(Self.wallpaperEngineWebAPIShim)
         ucc.addUserScript(Self.localFileCompatScript)
         ucc.addUserScript(Self.mouseEventBridgeScript)
+        ucc.addUserScript(Self.audioWrapperScript)
         config.userContentController = ucc
         if #available(macOS 14.0, *) {
             config.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -1336,14 +1439,68 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         NSApp.setActivationPolicy(.prohibited)
     }
 
-    /// 设置音频控制（静音/音量），通过 JS 注入作用于所有 <video>/<audio> 元素
+    /// 设置音频控制（静音/音量），由 daemon IPC 触发。
+    ///
+    /// - 静音走 WKWebView 私有 SPI `_setPageMuted:`（直接发 selector，不走 KVC）。
+    ///   这是 page-level 静音，作用到整个 WKWebView 的 WebContent 进程，覆盖 Web Audio /
+    ///   <audio> / <video> / WebRTC / 跨域 iframe，几乎等价于"对进程做音量操作"。
+    ///   不能用 setValue:forKey:"_pageMuted"——WebKit 把 setter 名声明为 `setter=_setPageMuted:`，
+    ///   KVC 的 setValue:forKey: 按 `set<Key>:` 约定找 `set_PageMuted:` 找不到，会抛
+    ///   NSUnknownKeyException 把 daemon 弄崩（之前被踩过）。所以这里走 method_getImplementation
+    ///   + 类型化函数指针直接调 setter。
+    ///
+    /// - 音量走 documentStart 注入的 audioWrapperScript（见同文件 Self.audioWrapperScript），
+    ///   通过 master GainNode 控 Web Audio + 给 <video>/<audio>.volume 兜底。
+    ///   completion 加 dlog 错误，方便诊断壁纸侧 wrapper 失效。
     func setAudioControl(muted: Bool?, volume: Double?) {
         guard isLoaded, let webView else { return }
-        var js = "document.querySelectorAll('video,audio').forEach(e=>{"
-        if let muted { js += "e.muted=\(muted);" }
-        if let volume { js += "e.volume=\(max(0,min(1,volume)));" }
-        js += "})"
-        webView.evaluateJavaScript(js) { _, _ in }
+
+        if let muted {
+            let sel = NSSelectorFromString("_setPageMuted:")
+            if let method = class_getInstanceMethod(type(of: webView), sel) {
+                typealias SetPageMutedFn = @convention(c) (NSObject, Selector, UInt) -> Void
+                let imp = method_getImplementation(method)
+                let fn = unsafeBitCast(imp, to: SetPageMutedFn.self)
+                // WKMediaMutedState 位掩码：noneMuted=0, audioMuted=1<<0, captureMuted=1<<1
+                fn(webView, sel, muted ? UInt(1) : UInt(0))
+                dlog("[WebRendererBridge] setAudioControl muted=\(muted) via SPI _setPageMuted:")
+            } else {
+                // SPI 在新 macOS 失效 → 退到 wrapper
+                let js = "if(window.__waifuxSetAudio)window.__waifuxSetAudio({muted: \(muted)});"
+                webView.evaluateJavaScript(js) { _, error in
+                    if let error {
+                        dlog("[WebRendererBridge] setAudioControl muted fallback JS error: \(error)")
+                    }
+                }
+                dlog("[WebRendererBridge] setAudioControl muted=\(muted) via wrapper fallback (SPI not found)")
+            }
+        }
+
+        if let volume {
+            let v = max(0.0, min(1.0, volume))
+            let js = """
+            (function(){
+                var v = \(v);
+                if (window.__waifuxSetAudio) {
+                    window.__waifuxSetAudio({volume: v});
+                    return '__waifuxSetAudio';
+                } else {
+                    try {
+                        var n = document.querySelectorAll('video,audio').length;
+                        document.querySelectorAll('video,audio').forEach(function(e){ e.volume = v; });
+                        return 'fallback:' + n;
+                    } catch (e) { return 'error:' + (e && e.message); }
+                }
+            })();
+            """
+            webView.evaluateJavaScript(js) { result, error in
+                if let error {
+                    dlog("[WebRendererBridge] setAudioControl volume=\(v) JS error: \(error)")
+                } else {
+                    dlog("[WebRendererBridge] setAudioControl volume=\(v) result=\(result ?? "nil")")
+                }
+            }
+        }
     }
 
     @discardableResult
@@ -2361,6 +2518,11 @@ private final class Daemon: NSObject, NSApplicationDelegate {
     /// 收到信号后直接 `_exit(0)`，避免走 NSApp.terminate 触发 C++ 静态析构（glslang/SDL 与 AppKit
     /// 子线程交叉收尾时会在 libc++ 里 abort，触发系统"意外退出"弹窗。bake 那边也是同款处理）。
     private func installDaemonSignalHandlers() {
+        // 忽略 SIGPIPE：daemon 的 IPC server 在 sendResponse 时若对端已 close（例如 fire-and-forget
+        // 的 audioControl 调用），写入会触发 EPIPE → SIGPIPE。默认动作是终止进程，会把整个 daemon
+        // 连同正在渲染的 Web 壁纸窗口一起带走。App 一侧已经 signal(SIGPIPE, SIG_IGN)，daemon 这边
+        // 是独立子进程，必须独立设置一次。
+        signal(SIGPIPE, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
         signal(SIGINT, SIG_IGN)
         for sig in [SIGTERM, SIGINT] {

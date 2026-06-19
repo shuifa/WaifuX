@@ -12,7 +12,12 @@ OUT_CLI="$ROOT/Resources/wallpaperengine-cli"
 TMP_ZIP="/tmp/waifux-we-assets-$$.zip"
 rm -f "$TMP_ZIP"
 
-cleanup() { rm -f "$TMP_ZIP" "$ROOT/Resources/zip_data.s" "$ROOT/Resources/zip_data.o" "$ROOT/Resources/zip_accessor.c" "$ROOT/Resources/zip_accessor.o"; }
+cleanup() { rm -f "$TMP_ZIP"; }
+# 注意：Resources/{zip_data.s,zip_data.o,zip_accessor.c,zip_accessor.o} 是仓库 committed
+# 文件，App 主程序也会通过 OTHER_LDFLAGS 链接 zip_data.o + zip_accessor.o（见
+# WaifuX.xcodeproj/project.pbxproj 与 WallpaperEngineEmbeddedAssets.swift）。
+# 早期版本会在脚本结束时一并删除它们，但这样会让随后的 xcodebuild 因缺 .o 链接失败。
+# 这里只清理临时 zip，保留生成的 .s/.c/.o 留作 App 构建输入。
 trap cleanup EXIT
 
 if [[ ! -f "$SRC_MAIN" || ! -f "$SRC_EMBED" ]]; then

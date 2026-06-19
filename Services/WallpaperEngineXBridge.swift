@@ -605,25 +605,43 @@ final class WallpaperEngineXBridge: ObservableObject {
         let msg = WebDaemonAudioMessage(command: "audioControl", muted: muted, volume: volume)
         guard let data = try? JSONEncoder().encode(msg) else { return }
 
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        strncpy(&addr.sun_path, socketPath, MemoryLayout.size(ofValue: addr.sun_path) - 1)
+        // 整段 socket I/O 丢到后台队列：
+        // 1) 必须 recv "OK" 再 close（否则 daemon sendResponse 会触发 SIGPIPE 干掉整个 daemon），
+        // 2) 但 @MainActor 上调用 recv 会阻塞 UI（最坏 2s），所以离开主线程执行。
+        // 静音/音量切换的 IPC 是 fire-and-forget 语义，调用方不需要立即知道结果。
+        DispatchQueue.global(qos: .userInitiated).async {
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            strncpy(&addr.sun_path, socketPath, MemoryLayout.size(ofValue: addr.sun_path) - 1)
 
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return }
-        defer { close(fd) }
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else { return }
+            defer { close(fd) }
 
-        let size = MemoryLayout<sockaddr_un>.size
-        let connected = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(size))
+            // 给 recv 设短超时，daemon 正常会立即回 "OK"（<1ms）；2s 兜底防止后台队列长期占用线程
+            var rcvTimeout = timeval(tv_sec: 2, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcvTimeout, socklen_t(MemoryLayout<timeval>.size))
+
+            let size = MemoryLayout<sockaddr_un>.size
+            let connected = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(fd, $0, socklen_t(size))
+                }
             }
-        }
-        guard connected == 0 else { return }
+            guard connected == 0 else { return }
 
-        var length = UInt32(data.count)
-        let payload = Data(bytes: &length, count: MemoryLayout<UInt32>.size) + data
-        _ = payload.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, payload.count, 0) }
+            var length = UInt32(data.count)
+            let payload = Data(bytes: &length, count: MemoryLayout<UInt32>.size) + data
+            let sent = payload.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, payload.count, 0) }
+            guard sent == payload.count else { return }
+
+            // 必须读完 daemon 的 "OK" 再 close，否则对端 sendResponse 会写到已关闭的 socket：
+            // 触发 EPIPE → SIGPIPE → 干掉整个 wallpaperengine-cli daemon（连带 Web 壁纸窗口消失）。
+            // 即使 daemon 已加 signal(SIGPIPE, SIG_IGN) 兜底，App 这边也保持"半双工读完再关"的礼貌行为，
+            // 防止旧版本 daemon 二进制（无 SIGPIPE 防护）的用户升级 App 后继续踩坑。
+            var responseBuf = Data(repeating: 0, count: 64)
+            _ = responseBuf.withUnsafeMutableBytes { recv(fd, $0.baseAddress, 64, 0) }
+        }
     }
 
     /// 切换暂停/恢复
