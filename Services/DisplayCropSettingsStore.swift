@@ -17,7 +17,7 @@ final class DisplayCropSettingsStore: ObservableObject {
     private var fingerprints: [String: String] = [:]   // screenID → fingerprint
 
     private let defaults: UserDefaults
-    private let stateKey = "display_crop_settings_v1"
+    private let stateKey = "display_crop_settings_v2"
     private let fingerprintKey = "display_crop_fingerprints_v1"
 
     /// 共享给扩展端的 App Group identifier（与 LockScreenWallpaperService 一致）。
@@ -112,6 +112,20 @@ final class DisplayCropSettingsStore: ObservableObject {
     // MARK: - Persistence (App 端)
 
     private func load() {
+        // v1 → v2 迁移：pan 从 [-1,1]/0=居中 改为 [0,1]/0.5=居中，公式 newPan = oldPan/2 + 0.5。
+        let legacyKey = "display_crop_settings_v1"
+        if let legacyData = defaults.data(forKey: legacyKey),
+           let decoded = try? JSONDecoder().decode([String: DisplayCropSettings].self, from: legacyData) {
+            var migrated: [String: DisplayCropSettings] = [:]
+            for (k, var s) in decoded {
+                // 仅迁移旧语义的 pan（[-1,1] → [0,1]）；zoom/isEnabled 等不变。
+                s.pan = CGPoint(x: s.pan.x / 2 + 0.5, y: s.pan.y / 2 + 0.5)
+                migrated[k] = s
+            }
+            settingsByScreen = migrated
+            defaults.removeObject(forKey: legacyKey)
+            persist()
+        }
         if let data = defaults.data(forKey: stateKey),
            let decoded = try? JSONDecoder().decode([String: DisplayCropSettings].self, from: data) {
             settingsByScreen = decoded
