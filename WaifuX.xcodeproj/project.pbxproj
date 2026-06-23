@@ -47,6 +47,7 @@
 		2D39DC04D432125CF0084687 /* WorkshopSourceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F9A4187FED2F381BE10E4B5 /* WorkshopSourceManager.swift */; };
 		2F8FAC5827D126A92C65B483 /* LiquidGlassNextItemToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = D52E421AB7EE59F2ADC29ACA /* LiquidGlassNextItemToast.swift */; };
 		3024FC211183045D592C08B4 /* StaticWallpaperGrainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FF8A1F8B7C857E9D5DE0A6B /* StaticWallpaperGrainManager.swift */; };
+		2DD3388617DA4226ADDD40D1 /* StaticImageWallpaperOverlayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD9EC74BB6564C10AF9F0300 /* StaticImageWallpaperOverlayManager.swift */; };
 		3218761D771152C681976CA7 /* AnimeVideoExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C03424DD49B5B7369F81671 /* AnimeVideoExtractor.swift */; };
 		3245726014C5A7F6F90732EA /* KazumiRuleLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25E12659F1FE1871F19A9D9E /* KazumiRuleLoader.swift */; };
 		32A7778356DFFEE56F124B2A /* GuessYouLikeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D76A3BD851784176F4F4F6D5 /* GuessYouLikeService.swift */; };
@@ -55,6 +56,9 @@
 		3695929AAE5E4DBD62681D6D /* PlaybackProgressCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AC7AB66938ECBF5BAEB6C50 /* PlaybackProgressCache.swift */; };
 		378F8D6878222C1121DCE84F /* ArcBackgroundSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CE736888A84E23833953C49 /* ArcBackgroundSettings.swift */; };
 		3AB9CA4DC78C3EE5C05B81F2 /* VideoWallpaperManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9269D131C8EB8763B1E9471C /* VideoWallpaperManager.swift */; };
+		C0FFEE00112233445566AACC /* CropLayoutEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11223344556677889900AACC /* CropLayoutEngine.swift */; };
+		C0FFEE00112233445566AADD /* DisplayCropSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11223344556677889900AADD /* DisplayCropSettingsStore.swift */; };
+		C0FFEE00112233445566AAEE /* CropAdjustOverlayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11223344556677889900AAEE /* CropAdjustOverlayController.swift */; };
 		3BCAAE449E23F411D5BCFEB7 /* Danmaku.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1909660C314E363CB12A5857 /* Danmaku.swift */; };
 		3C167FEA842C4C6D02F8CE64 /* WallpaperViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F0420F76E4897B34782FAF6 /* WallpaperViewModel.swift */; };
 		3C3D1D709E6DD0518BC81253 /* WallpaperGridCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B4DF44A83DE72A33A8BE3F /* WallpaperGridCell.swift */; };
@@ -148,6 +152,8 @@
 		9E7BE88EEDE0EF0FDDCE0574 /* WallpaperDynamicTextParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EB00ACA846F3DBC547A2F3A /* WallpaperDynamicTextParser.swift */; };
 		9FA8D3A6E830E708050ED3CB /* Cache in Frameworks */ = {isa = PBXBuildFile; productRef = 5A5A76A196D13FBE51BF760B /* Cache */; };
 		9FB45B726F57AC3384F94CF0 /* SnapshotCreation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE72EA3D3C60701569EEF7C9 /* SnapshotCreation.swift */; };
+		E8086C874DE34A51BF536B68 /* AppRelauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D987035543E458596439DBE /* AppRelauncher.swift */; };
+		852183A499534DD3AE817913 /* ModuleAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = D97D48437FC24EE6AB459FC2 /* ModuleAvailability.swift */; };
 		A02484214150398B99B2C811 /* SystemAudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3780096BAEA3E2C4E58765 /* SystemAudioCaptureService.swift */; };
 		A2403F224543E373E85B56D9 /* SceneConfigOverridePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E91EC5868CC234A0FC3F8FD /* SceneConfigOverridePanel.swift */; };
 		A3232F4E31A4E64C6122925B /* WallpaperCategory.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE9C4EA78094E6C55FED9BED /* WallpaperCategory.swift */; };
@@ -170,6 +176,7 @@
 		B5BDE544995243CB176BD9F8 /* VideoLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5B3CC39DD8C2D69D3443D4 /* VideoLibrary.swift */; };
 		B6587E454CD823DE101CB3DF /* MediaExploreViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDD6C2D290470B8843A1A157 /* MediaExploreViewModel.swift */; };
 		B6DE4FC5F0D5A362A10A956F /* SchedulerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B9354C3BCC163C2A6FECE0E /* SchedulerConfig.swift */; };
+		C0FFEE00112233445566AABB /* DisplayCropSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11223344556677889900AABB /* DisplayCropSettings.swift */; };
 		B790F4E3B85754D0249F2203 /* SceneWallpaperDesignPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBB7ADD11EE352129A30930A /* SceneWallpaperDesignPanel.swift */; };
 		B79226335BF03D72EFC8F348 /* FrameChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2720DE597FBD8AD782F02D2 /* FrameChannel.swift */; };
 		B8535E89B68CC94FBB7EADE6 /* WallpaperCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C13D08E6482C8C55D97DE9E /* WallpaperCardView.swift */; };
@@ -181,6 +188,7 @@
 		C25AF48C853514D4A59D0721 /* BangumiService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C56B73C79CB82BC7DB1862 /* BangumiService.swift */; };
 		C2D92D7D81345EBF5BD435E2 /* LockScreenWallpaperService.swift.bak in Resources */ = {isa = PBXBuildFile; fileRef = 18D6AC9201B325C7879D3E50 /* LockScreenWallpaperService.swift.bak */; };
 		C3581DD1D5C17736A99466B7 /* WallpaperXPCHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3B3CEB9BFC214EF8703AB3 /* WallpaperXPCHandler.swift */; };
+		C0FFEE00112233445566AAFF /* ExtensionCropSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11223344556677889900AAFF /* ExtensionCropSupport.swift */; };
 		C4F71891E2CB85DEC9BA6263 /* HomeContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14FCC7E2B2D2C043F74B4102 /* HomeContentView.swift */; };
 		C7C8004EDFCB24089A4D6E47 /* LockScreenWallpaperService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06A7D355D1916B1DB52A531C /* LockScreenWallpaperService.swift */; };
 		C7D1207E42F6526D28004C0A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C38AB81E85D322815D6995A0 /* Assets.xcassets */; };
@@ -302,6 +310,7 @@
 		2D9714C3DBCF062B148341C8 /* VideoToolboxProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoToolboxProcessor.swift; sourceTree = "<group>"; };
 		2F6054F72B5D7FC378FF8A39 /* LockScreenFramePusher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockScreenFramePusher.swift; sourceTree = "<group>"; };
 		2FF8A1F8B7C857E9D5DE0A6B /* StaticWallpaperGrainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StaticWallpaperGrainManager.swift; sourceTree = "<group>"; };
+		AD9EC74BB6564C10AF9F0300 /* StaticImageWallpaperOverlayManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StaticImageWallpaperOverlayManager.swift; sourceTree = "<group>"; };
 		304B848F37E8916539F5D7C0 /* SceneBakeEligibilityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneBakeEligibilityService.swift; sourceTree = "<group>"; };
 		312F30F6DDE4F7699F2591F3 /* PowerMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerMonitor.swift; sourceTree = "<group>"; };
 		321D10F7AC7FE5D9813FA58C /* AnimeDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeDetailView.swift; sourceTree = "<group>"; };
@@ -312,6 +321,7 @@
 		381BDA64B85EAA9CD2AB59E1 /* SkeuomorphicStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkeuomorphicStyles.swift; sourceTree = "<group>"; };
 		39D6BA8E5F4378581C163E29 /* ErrorStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorStateView.swift; sourceTree = "<group>"; };
 		3B9354C3BCC163C2A6FECE0E /* SchedulerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulerConfig.swift; sourceTree = "<group>"; };
+		11223344556677889900AABB /* DisplayCropSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayCropSettings.swift; sourceTree = "<group>"; };
 		3C03424DD49B5B7369F81671 /* AnimeVideoExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeVideoExtractor.swift; sourceTree = "<group>"; };
 		3DD677130566473309944B56 /* SourceSwitchTooltip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSwitchTooltip.swift; sourceTree = "<group>"; };
 		3E0B8FBA853691DEFB867233 /* KonachanModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KonachanModels.swift; sourceTree = "<group>"; };
@@ -344,6 +354,7 @@
 		5B5B3CC39DD8C2D69D3443D4 /* VideoLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoLibrary.swift; sourceTree = "<group>"; };
 		5BBD359FCF0CF51002527914 /* DisplaySelectorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplaySelectorSheet.swift; sourceTree = "<group>"; };
 		5E3B3CEB9BFC214EF8703AB3 /* WallpaperXPCHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperXPCHandler.swift; sourceTree = "<group>"; };
+		11223344556677889900AAFF /* ExtensionCropSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionCropSupport.swift; sourceTree = "<group>"; };
 		5E59748FA75E24603AC8DF96 /* ExploreGridLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreGridLayout.swift; sourceTree = "<group>"; };
 		5E91EC5868CC234A0FC3F8FD /* SceneConfigOverridePanel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SceneConfigOverridePanel.swift; sourceTree = "<group>"; };
 		6153F969E14544894B925D32 /* CacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheService.swift; sourceTree = "<group>"; };
@@ -390,6 +401,9 @@
 		91E6D95488469530050E4E91 /* GuessYouLikeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuessYouLikeViewModel.swift; sourceTree = "<group>"; };
 		92360DB7D61D511F712E8CC6 /* DownloadError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadError.swift; sourceTree = "<group>"; };
 		9269D131C8EB8763B1E9471C /* VideoWallpaperManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoWallpaperManager.swift; sourceTree = "<group>"; };
+		11223344556677889900AACC /* CropLayoutEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CropLayoutEngine.swift; sourceTree = "<group>"; };
+		11223344556677889900AADD /* DisplayCropSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayCropSettingsStore.swift; sourceTree = "<group>"; };
+		11223344556677889900AAEE /* CropAdjustOverlayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CropAdjustOverlayController.swift; sourceTree = "<group>"; };
 		92926695BBCFC62936A5FADE /* WorkshopViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkshopViewModel.swift; sourceTree = "<group>"; };
 		93B2EB16B350D0A586479BD5 /* NetworkState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkState.swift; sourceTree = "<group>"; };
 		94A1E8E7D55E0BF7960198BE /* FourKWallpapersService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FourKWallpapersService.swift; sourceTree = "<group>"; };
@@ -464,6 +478,8 @@
 		EAFBE638C95E9FD01F7DCA2F /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		EBB7ADD11EE352129A30930A /* SceneWallpaperDesignPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperDesignPanel.swift; sourceTree = "<group>"; };
 		ED321504BADDC0FCBA8515DB /* LibraryFolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryFolder.swift; sourceTree = "<group>"; };
+		4D987035543E458596439DBE /* AppRelauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRelauncher.swift; sourceTree = "<group>"; };
+		D97D48437FC24EE6AB459FC2 /* ModuleAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleAvailability.swift; sourceTree = "<group>"; };
 		EE9C4EA78094E6C55FED9BED /* WallpaperCategory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperCategory.swift; sourceTree = "<group>"; };
 		EF3780096BAEA3E2C4E58765 /* SystemAudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioCaptureService.swift; sourceTree = "<group>"; };
 		F0C58CFDFB69A95820165F4F /* WorkshopService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkshopService.swift; sourceTree = "<group>"; };
@@ -642,6 +658,7 @@
 				21A497376B55EB752EAE4F33 /* AnimeVideoEnhancer.swift */,
 				3C03424DD49B5B7369F81671 /* AnimeVideoExtractor.swift */,
 				767CAF3A84C77A18E7DED0F0 /* AnimeWindowManager.swift */,
+				4D987035543E458596439DBE /* AppRelauncher.swift */,
 				A469DAE57B338D9BC55EAD6B /* BakeService.swift */,
 				E3C56B73C79CB82BC7DB1862 /* BangumiService.swift */,
 				FE1F79382529DE877D6E372A /* CachePersistenceService.swift */,
@@ -672,6 +689,7 @@
 				18D6AC9201B325C7879D3E50 /* LockScreenWallpaperService.swift.bak */,
 				2D02D76F3DC7DB2F623B5A75 /* MediaLibraryService.swift */,
 				4327334BCEFE99F8F0378880 /* MediaService.swift */,
+				D97D48437FC24EE6AB459FC2 /* ModuleAvailability.swift */,
 				83707A763B2805C336790529 /* NetworkMonitor.swift */,
 				F8A1F069303042F1C890A63B /* NetworkService.swift */,
 				F0DB54C5C7E45559BC73B07D /* NotchOverlayManager.swift */,
@@ -686,6 +704,7 @@
 				B15A8B186373E1E4F65348F7 /* SearchTranslationService.swift */,
 				0536692A0BF2778A553D8E82 /* SleepPreventer.swift */,
 				2FF8A1F8B7C857E9D5DE0A6B /* StaticWallpaperGrainManager.swift */,
+				AD9EC74BB6564C10AF9F0300 /* StaticImageWallpaperOverlayManager.swift */,
 				C9FBFD203D24AC295FEDADA9 /* StatusBarController.swift */,
 				69E901FF6D205414875FD5F4 /* SuperResolutionService.swift */,
 				EF3780096BAEA3E2C4E58765 /* SystemAudioCaptureService.swift */,
@@ -696,6 +715,9 @@
 				45A0C1ABDB171C326129A73E /* VideoThumbnailCache.swift */,
 				2D9714C3DBCF062B148341C8 /* VideoToolboxProcessor.swift */,
 				9269D131C8EB8763B1E9471C /* VideoWallpaperManager.swift */,
+				11223344556677889900AACC /* CropLayoutEngine.swift */,
+				11223344556677889900AADD /* DisplayCropSettingsStore.swift */,
+				11223344556677889900AAEE /* CropAdjustOverlayController.swift */,
 				9EB00ACA846F3DBC547A2F3A /* WallpaperDynamicTextParser.swift */,
 				2934909A6169304E41884812 /* WallpaperEngineXBridge.swift */,
 				E13861C6C9277D5A73C9DCF3 /* WallpaperExtensionSocketServer.swift */,
@@ -731,6 +753,7 @@
 				C50A2C1E05CEFE851FCCE28B /* WallpaperPrefs.swift */,
 				4FBE371602391BF36A8714FE /* WallpaperState.swift */,
 				5E3B3CEB9BFC214EF8703AB3 /* WallpaperXPCHandler.swift */,
+				11223344556677889900AAFF /* ExtensionCropSupport.swift */,
 			);
 			path = WaifuXWallpaperExtension;
 			sourceTree = "<group>";
@@ -842,6 +865,7 @@
 				B8ABAC235052098531A787A3 /* NetworkError.swift */,
 				93B2EB16B350D0A586479BD5 /* NetworkState.swift */,
 				3B9354C3BCC163C2A6FECE0E /* SchedulerConfig.swift */,
+				11223344556677889900AABB /* DisplayCropSettings.swift */,
 				C032EE3A524D475D6E4136D7 /* WallhavenAPI.swift */,
 				220B0056F95AF393DBFDDEBC /* Wallpaper.swift */,
 				EE9C4EA78094E6C55FED9BED /* WallpaperCategory.swift */,
@@ -1014,6 +1038,7 @@
 				717F2D69DE35DAF815D0AF7A /* WallpaperPrefs.swift in Sources */,
 				60ADE3AFD8D5F4682A5EC9E8 /* WallpaperState.swift in Sources */,
 				C3581DD1D5C17736A99466B7 /* WallpaperXPCHandler.swift in Sources */,
+				C0FFEE00112233445566AAFF /* ExtensionCropSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1044,6 +1069,7 @@
 				186AA69369A725B48BBB9F70 /* AppFluidMotion.swift in Sources */,
 				2A22211725F696E5A70F0874 /* AppLogger.swift in Sources */,
 				3DD89BB65FFA167D9DD45A63 /* AppResponsivenessMonitor.swift in Sources */,
+				E8086C874DE34A51BF536B68 /* AppRelauncher.swift in Sources */,
 				8D578500A676505D3EC9AB41 /* ArcBackgroundPanel.swift in Sources */,
 				378F8D6878222C1121DCE84F /* ArcBackgroundSettings.swift in Sources */,
 				CE62D2EEA6061BA7DED59BF3 /* ArcFrostedGlass.swift in Sources */,
@@ -1140,6 +1166,7 @@
 				7A599DE765CF1CC79C17B9FA /* MediaItem.swift in Sources */,
 				D54F3D91342ED2263D52F8E7 /* MediaLibraryService.swift in Sources */,
 				35A192A50C85395F3510784E /* MediaService.swift in Sources */,
+				852183A499534DD3AE817913 /* ModuleAvailability.swift in Sources */,
 				2B3DCCC8D22D833DC8EA4E02 /* MessagesContentView.swift in Sources */,
 				9C99399DC5F0B0993EC7DE28 /* MyLibraryContentView.swift in Sources */,
 				5D061DCB0B36E5F24F9E19D5 /* NSScreen+Wallpaper.swift in Sources */,
@@ -1163,6 +1190,7 @@
 				7A8B9C0D1E2F3A4B5C6D7E8F /* SceneWallpaperPropertiesService.swift in Sources */,
 				7B9C0D1E2F3A4B5C6D7E8F91 /* SceneWallpaperPropertiesPanel.swift in Sources */,
 				B6DE4FC5F0D5A362A10A956F /* SchedulerConfig.swift in Sources */,
+				C0FFEE00112233445566AABB /* DisplayCropSettings.swift in Sources */,
 				125C55DCCB210DEEC2C877E3 /* ScrollBottomSentinel.swift in Sources */,
 				F8DEFE14F4E15588CBE6DA3D /* SearchOverlay.swift in Sources */,
 				18A4D3D665501491CB6A0F14 /* SearchTranslationService.swift in Sources */,
@@ -1175,6 +1203,7 @@
 				AB445001F49939ECC2B82259 /* SourceRulesSettingsView.swift in Sources */,
 				3CE4244D02FFAFEA3BA52943 /* SourceSwitchTooltip.swift in Sources */,
 				3024FC211183045D592C08B4 /* StaticWallpaperGrainManager.swift in Sources */,
+				2DD3388617DA4226ADDD40D1 /* StaticImageWallpaperOverlayManager.swift in Sources */,
 				DB8871BEB9E5BFA5DF65AA40 /* StatusBarController.swift in Sources */,
 				76DFAF3ABE568DDD785DC8F0 /* SteamLoginWebView.swift in Sources */,
 				E14C8D6FB374C89B70996BEC /* SuperResolutionService.swift in Sources */,
@@ -1189,6 +1218,9 @@
 				DB540D9F6379FDAEFB285F76 /* VideoThumbnailCache.swift in Sources */,
 				E721812719872412E439B046 /* VideoToolboxProcessor.swift in Sources */,
 				3AB9CA4DC78C3EE5C05B81F2 /* VideoWallpaperManager.swift in Sources */,
+				C0FFEE00112233445566AACC /* CropLayoutEngine.swift in Sources */,
+				C0FFEE00112233445566AADD /* DisplayCropSettingsStore.swift in Sources */,
+				C0FFEE00112233445566AAEE /* CropAdjustOverlayController.swift in Sources */,
 				71CA95FCFE98D1F5968921DE /* ViewExtensions.swift in Sources */,
 				1A9632409BCF492AB4FDA6E2 /* WaifuXApp.swift in Sources */,
 				0F6B71021B5B8B1BBFE853C4 /* WallhavenAPI.swift in Sources */,
