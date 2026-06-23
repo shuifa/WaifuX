@@ -21,6 +21,7 @@ private struct VisualEffectView: NSViewRepresentable {
 // MARK: - 设置标签
 private enum SettingsTab: String, CaseIterable, Identifiable {
     case general
+    case modules
     case download
     case workshop
     case scheduler
@@ -31,6 +32,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return t("general")
+        case .modules: return t("settings.modules")
         case .download: return t("download")
         case .workshop: return t("wallpaperEngine")
         case .scheduler: return t("scheduler")
@@ -41,6 +43,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
+        case .modules: return "square.grid.2x2"
         case .download: return "arrow.down.circle"
         case .workshop: return "gearshape.2" // Steam/Workshop 风格
         case .scheduler: return "clock.arrow.circlepath"
@@ -140,6 +143,8 @@ struct SettingsView: View {
                     switch selectedTab {
                     case .general:
                         GeneralSettingsTab(viewModel: viewModel)
+                    case .modules:
+                        ModulesSettingsTab(viewModel: viewModel)
                     case .download:
                         DownloadSettingsTab(viewModel: viewModel)
                     case .workshop:
@@ -185,6 +190,72 @@ struct SettingsView: View {
                     .allowsHitTesting(false)
             }
         )
+    }
+}
+
+// MARK: - 功能模块设置标签
+private struct ModulesSettingsTab: View {
+    @ObservedObject var viewModel: SettingsViewModel
+
+    var body: some View {
+        MacSettingsForm {
+            // 功能模块开关组
+            MacSettingsSection(header: t("settings.modules.title")) {
+                MacSettingsRow(
+                    title: t("settings.modules.wallpaper"),
+                    subtitle: t("settings.modules.wallpaper.subtitle"),
+                    showDivider: true
+                ) {
+                    MacToggle(isOn: $viewModel.wallpaperModuleEnabled)
+                }
+
+                MacSettingsRow(
+                    title: t("settings.modules.media"),
+                    subtitle: t("settings.modules.media.subtitle"),
+                    showDivider: true
+                ) {
+                    MacToggle(isOn: $viewModel.mediaModuleEnabled)
+                }
+
+                MacSettingsRow(
+                    title: t("settings.modules.anime"),
+                    subtitle: t("settings.modules.anime.subtitle"),
+                    showDivider: false
+                ) {
+                    MacToggle(isOn: $viewModel.animeModuleEnabled)
+                }
+            }
+
+            // 待应用改动区块（仅当有改动时显示）
+            if viewModel.hasPendingModuleChanges {
+                MacSettingsSection(header: t("settings.modules.apply")) {
+                    MacSettingsRow(
+                        title: t("settings.modules.pending"),
+                        subtitle: viewModel.pendingModulesDescription,
+                        showDivider: false
+                    ) {
+                        Button(t("settings.modules.restartNow")) {
+                            confirmRestart()
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color(hex: "0A84FF"))
+                    }
+                }
+            }
+        }
+    }
+
+    /// 重启确认弹窗
+    private func confirmRestart() {
+        let alert = NSAlert()
+        alert.messageText = t("settings.modules.restartConfirm.title")
+        alert.informativeText = t("settings.modules.restartConfirm.message")
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: t("settings.modules.restartNow"))
+        alert.addButton(withTitle: t("cancel"))
+        if alert.runModal() == .alertFirstButtonReturn {
+            AppRelauncher.relaunch()
+        }
     }
 }
 
@@ -292,6 +363,16 @@ private struct GeneralSettingsTab: View {
 
             // 动态壁纸设置组
             MacSettingsSection(header: t("videoWallpaper")) {
+                // 系统壁纸同步总开关（默认开启）：关闭后冻结 setDesktopImageURL 链路，
+                // 仅 App 内 mp4/场景/web 动态壁纸引擎继续工作。
+                MacSettingsRow(
+                    title: t("systemWallpaperSync"),
+                    subtitle: t("systemWallpaperSyncDesc"),
+                    showDivider: true
+                ) {
+                    MacToggle(isOn: $viewModel.systemWallpaperSyncEnabled)
+                }
+
                 MacSettingsRow(
                     title: t("pauseWhenOtherAppForeground"),
                     subtitle: t("pauseWhenOtherAppForegroundDesc"),
@@ -332,6 +413,44 @@ private struct GeneralSettingsTab: View {
                             viewModel.syncAutoPauseSettings()
                         }
                     ))
+                }
+
+                MacSettingsRow(
+                    title: t("pauseWhenWindowCoverage"),
+                    subtitle: t("pauseWhenWindowCoverageDesc"),
+                    showDivider: !viewModel.pauseWhenWindowCoverage
+                ) {
+                    MacToggle(isOn: Binding(
+                        get: { viewModel.pauseWhenWindowCoverage },
+                        set: { newValue in
+                            viewModel.pauseWhenWindowCoverage = newValue
+                            viewModel.syncAutoPauseSettings()
+                        }
+                    ))
+                }
+
+                if viewModel.pauseWhenWindowCoverage {
+                    MacSettingsRow(
+                        title: t("windowCoverageThreshold"),
+                        showDivider: true
+                    ) {
+                        HStack(spacing: 8) {
+                            Text("\(Int(viewModel.windowCoveragePauseThreshold))%")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 36, alignment: .trailing)
+                            Slider(
+                                value: $viewModel.windowCoveragePauseThreshold,
+                                in: 30...100,
+                                step: 5,
+                                onEditingChanged: { editing in
+                                    if !editing { viewModel.syncAutoPauseSettings() }
+                                }
+                            )
+                            .frame(width: 120)
+                            .tint(Color(hex: "30D158"))
+                        }
+                    }
                 }
 
                 MacSettingsRow(
@@ -828,6 +947,8 @@ private struct SchedulerSettingsTab: View {
                             // 文件夹选择
                             FolderPickerRow(
                                 folderIDs: displayConfig.folderIDs,
+                                includeWallpapers: displayConfig.includeWallpapers && !displayConfig.isOnEndMode,
+                                includeMedia: displayConfig.includeMedia,
                                 screenID: screenID,
                                 viewModel: viewModel
                             )
@@ -847,6 +968,8 @@ private struct SchedulerSettingsTab: View {
     // MARK: - 文件夹选择组件
     private struct FolderPickerRow: View {
         let folderIDs: [String]?
+        let includeWallpapers: Bool
+        let includeMedia: Bool
         let screenID: String
         @ObservedObject var viewModel: SettingsViewModel
 
@@ -904,7 +1027,10 @@ private struct SchedulerSettingsTab: View {
         }
 
         private var allFolders: [LibraryFolder] {
-            (wallpaperFolders + mediaFolders).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            var combined: [LibraryFolder] = []
+            if includeWallpapers { combined.append(contentsOf: wallpaperFolders) }
+            if includeMedia { combined.append(contentsOf: mediaFolders) }
+            return combined.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }
 
         private var folderIDsLabel: String {
@@ -1170,7 +1296,7 @@ private struct AboutSettingsTab: View {
                 Text(message)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         default:
             EmptyView()
@@ -1313,7 +1439,7 @@ struct SettingsUpdateSection: View {
                 Text(message)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         default:
             EmptyView()

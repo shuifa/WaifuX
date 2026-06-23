@@ -44,6 +44,8 @@ class SettingsViewModel: ObservableObject {
     @Published var pauseWhenOtherAppForeground = false { didSet { UserDefaults.standard.set(pauseWhenOtherAppForeground, forKey: "pause_when_other_app_foreground") } }
     @Published var pauseWhenFullscreenCovers = false { didSet { UserDefaults.standard.set(pauseWhenFullscreenCovers, forKey: "pause_when_fullscreen_covers") } }
     @Published var pauseOnBatteryPower = false { didSet { UserDefaults.standard.set(pauseOnBatteryPower, forKey: "pause_on_battery_power") } }
+    @Published var pauseWhenWindowCoverage = false { didSet { UserDefaults.standard.set(pauseWhenWindowCoverage, forKey: "pause_when_window_coverage") } }
+    @Published var windowCoveragePauseThreshold: Double = 50 { didSet { UserDefaults.standard.set(windowCoveragePauseThreshold, forKey: "window_coverage_pause_threshold") } }
     @Published var hdrEnabled = true { didSet { UserDefaults.standard.set(hdrEnabled, forKey: "hdr_enabled") } }
     @Published var showAllWorkshopContent = false { didSet { UserDefaults.standard.set(showAllWorkshopContent, forKey: "show_all_workshop_content") } }
     /// 场景壁纸实时渲染模式开关
@@ -103,6 +105,46 @@ class SettingsViewModel: ObservableObject {
             }
             UserDefaults.standard.set(dynamicLockScreenEnabled, forKey: "dynamic_lock_screen_enabled")
         }
+    }
+
+    /// 系统壁纸同步开关（默认开启）。
+    /// 关闭后冻结「系统壁纸」链路：App 不再调用 setDesktopImageURL 写入桌面/锁屏静态壁纸，
+    /// 但 mp4/场景渲染器/web 壁纸等动态壁纸引擎不受影响（它们通过 overlay 窗口或 CLI 进程覆盖桌面）。
+    /// 单向联动：关闭时强制关闭动态锁屏并清理锁屏实例，避免锁屏也被设置。
+    @Published var systemWallpaperSyncEnabled = true {
+        didSet {
+            // 批量恢复期间抑制联动副作用，避免启动时误清实例
+            guard !isBatchUpdating else { return }
+            UserDefaults.standard.set(systemWallpaperSyncEnabled, forKey: "system_wallpaper_sync_enabled")
+            // 单向联动：关闭系统壁纸同步时，强制关闭动态锁屏并清理锁屏实例
+            if !systemWallpaperSyncEnabled && dynamicLockScreenEnabled {
+                dynamicLockScreenEnabled = false
+                Task { @MainActor in
+                    if #available(macOS 26.0, *) {
+                        LockScreenWallpaperService.shared.clearLockScreenInstances()
+                    }
+                }
+            }
+            // 重新开启系统壁纸同步时，关闭并清除静态图 overlay（下次设壁纸走系统壁纸路径）
+            if systemWallpaperSyncEnabled {
+                StaticImageWallpaperOverlayManager.shared.clearState()
+            }
+        }
+    }
+
+    // MARK: - 功能模块开关（壁纸页 / 媒体页 / 动漫页）
+    //
+    // 三个开关默认开启。关闭后需重启生效：运行时门控读 `ModuleAvailability.shared` 启动快照，
+    // 而非这三个标志——这样切换开关在当前会话不立即生效（避免 tab 树重建 / 管线半加载）。
+    // `hasPendingModuleChanges` 对比快照判定"待应用"，UI 据此显示"立即重启"。
+    @Published var wallpaperModuleEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(wallpaperModuleEnabled, forKey: "module_wallpaper_enabled") }
+    }
+    @Published var mediaModuleEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(mediaModuleEnabled, forKey: "module_media_enabled") }
+    }
+    @Published var animeModuleEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(animeModuleEnabled, forKey: "module_anime_enabled") }
     }
 
     @Published var proxyEnabled = false {
@@ -179,6 +221,7 @@ class SettingsViewModel: ObservableObject {
 
         // 纯 UserDefaults 属性（批量期间 didSet 被跳过，统一补写）
         UserDefaults.standard.set(autoBakeScene, forKey: "auto_bake_scene")
+        UserDefaults.standard.set(systemWallpaperSyncEnabled, forKey: "system_wallpaper_sync_enabled")
     }
 
     // MARK: - 调度器相关（延迟初始化，避免启动时阻塞）
@@ -253,6 +296,9 @@ class SettingsViewModel: ObservableObject {
             pauseWhenOtherAppForeground = defaults.bool(forKey: "pause_when_other_app_foreground")
             pauseWhenFullscreenCovers = defaults.bool(forKey: "pause_when_fullscreen_covers")
             pauseOnBatteryPower = defaults.bool(forKey: "pause_on_battery_power")
+            pauseWhenWindowCoverage = defaults.bool(forKey: "pause_when_window_coverage")
+            let savedThreshold = defaults.double(forKey: "window_coverage_pause_threshold")
+            windowCoveragePauseThreshold = savedThreshold > 0 ? savedThreshold : 50
             hdrEnabled = defaults.object(forKey: "hdr_enabled") as? Bool ?? true
             showAllWorkshopContent = defaults.bool(forKey: "show_all_workshop_content")
             sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
@@ -267,6 +313,13 @@ class SettingsViewModel: ObservableObject {
             if #available(macOS 26.0, *) { } else {
                 dynamicLockScreenEnabled = false
             }
+            // 系统壁纸同步默认开启（未设值时 true）
+            systemWallpaperSyncEnabled = defaults.object(forKey: "system_wallpaper_sync_enabled") as? Bool ?? true
+
+            // 功能模块开关恢复（默认 true）
+            wallpaperModuleEnabled = defaults.object(forKey: "module_wallpaper_enabled") as? Bool ?? true
+            mediaModuleEnabled = defaults.object(forKey: "module_media_enabled") as? Bool ?? true
+            animeModuleEnabled = defaults.object(forKey: "module_anime_enabled") as? Bool ?? true
 
             proxyEnabled = defaults.bool(forKey: "proxy_enabled")
             proxyHost = defaults.string(forKey: "proxy_host") ?? ""
@@ -294,6 +347,8 @@ class SettingsViewModel: ObservableObject {
         DynamicWallpaperAutoPauseManager.shared.pauseWhenOtherAppForeground = pauseWhenOtherAppForeground
         DynamicWallpaperAutoPauseManager.shared.pauseWhenFullscreenCovers = pauseWhenFullscreenCovers
         DynamicWallpaperAutoPauseManager.shared.pauseOnBatteryPower = pauseOnBatteryPower
+        DynamicWallpaperAutoPauseManager.shared.pauseWhenWindowCoverage = pauseWhenWindowCoverage
+        DynamicWallpaperAutoPauseManager.shared.windowCoveragePauseThreshold = windowCoveragePauseThreshold
     }
 
     /// 清理所有锁屏实例：清空视频缓存、显示器实例列表、推送管线
@@ -312,6 +367,38 @@ class SettingsViewModel: ObservableObject {
                 port: proxyPort
             )
         }
+    }
+
+    // MARK: - 功能模块待应用状态
+
+    /// 是否有待应用的模块开关改动（当前标志值 ≠ 启动快照值）。
+    /// UI 据此显示"立即重启"区块。
+    var hasPendingModuleChanges: Bool {
+        wallpaperModuleEnabled != ModuleAvailability.shared.wallpaperEnabled
+        || mediaModuleEnabled != ModuleAvailability.shared.mediaEnabled
+        || animeModuleEnabled != ModuleAvailability.shared.animeEnabled
+    }
+
+    /// 列出将被开启/关闭的模块，如 "+壁纸页, -媒体页"。UI 据此展示待应用详情。
+    var pendingModulesDescription: String {
+        var parts: [String] = []
+        if wallpaperModuleEnabled != ModuleAvailability.shared.wallpaperEnabled {
+            parts.append(wallpaperModuleEnabled ? "+\(t("settings.modules.wallpaper"))" : "-\(t("settings.modules.wallpaper"))")
+        }
+        if mediaModuleEnabled != ModuleAvailability.shared.mediaEnabled {
+            parts.append(mediaModuleEnabled ? "+\(t("settings.modules.media"))" : "-\(t("settings.modules.media"))")
+        }
+        if animeModuleEnabled != ModuleAvailability.shared.animeEnabled {
+            parts.append(animeModuleEnabled ? "+\(t("settings.modules.anime"))" : "-\(t("settings.modules.anime"))")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    /// 关闭设置窗口"放弃更改"时回滚到启动快照值。
+    func discardPendingModuleChanges() {
+        wallpaperModuleEnabled = ModuleAvailability.shared.wallpaperEnabled
+        mediaModuleEnabled = ModuleAvailability.shared.mediaEnabled
+        animeModuleEnabled = ModuleAvailability.shared.animeEnabled
     }
 
     // MARK: - 更新检测

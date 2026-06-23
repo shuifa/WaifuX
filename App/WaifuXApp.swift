@@ -260,6 +260,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         )
 
+        // ⚠️ 在创建 ContentView 之前刷新功能模块启动快照。
+        // ContentView 的 MainTabViewController.configure 在 makeNSViewController（视图设置）即跑，
+        // 依赖 ModuleAvailability.shared 决定 addPage 哪些 tab。必须在此之前同步读 UserDefaults。
+        // 直接读 UserDefaults 是安全的（非 @AppStorage、非 init 读取，与已存在的 line 316/399 一致）。
+        ModuleAvailability.shared.refreshFromUserDefaults()
+
         // 2. 立即创建窗口（使用 defer: false 立即渲染，不等待）
         let contentView = ContentView(
             wallpaperViewModel: wallpaperViewModel,
@@ -410,6 +416,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                     Task { await WallpaperEngineXBridge.shared.restoreIfNeeded() }
                                 }
                             }
+
+                            // 恢复静态壁纸 overlay（系统壁纸同步关闭时，用 overlay 重新显示上次静态图）
+                            StaticImageWallpaperOverlayManager.shared.restoreIfNeeded()
 
                             // 恢复动态壁纸自动暂停设置
                             DynamicWallpaperAutoPauseManager.shared.restoreSettings()
@@ -1117,6 +1126,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsWindow.isReleasedWhenClosed = false
         centerWindow(settingsWindow, relativeTo: window)
         settingsWindow.tabbingMode = .disallowed
+        // 设置窗口复用 AppDelegate 作为 delegate，windowShouldClose 据此区分处理
+        settingsWindow.delegate = self
 
         settingsWindow.contentView = EdgeToEdgeHostingView(
             rootView: SettingsView(viewModel: settingsViewModel!)
@@ -1149,10 +1160,50 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 // MARK: - NSWindowDelegate
 extension AppDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        // 点击关闭按钮时锁定所有加密文件夹并隐藏窗口
+        // 设置窗口：有待应用的模块改动时弹三选项确认（立即重启/稍后/放弃更改）
+        if sender === settingsWindowController?.window {
+            return handleSettingsWindowClose(sender)
+        }
+        // 主窗口：点击关闭按钮时锁定所有加密文件夹并隐藏窗口
         FolderLockService.shared.lockAllFolders()
         hideMainWindow()
         return false
+    }
+
+    /// 处理设置窗口关闭：若有待应用的模块开关改动，弹三选项确认。
+    /// - 立即重启 → AppRelauncher.relaunch()
+    /// - 稍后 → 允许关闭，保留 UserDefaults 改动（下次启动生效）
+    /// - 放弃更改 → 回滚三标志到启动快照值后关闭
+    @MainActor
+    private func handleSettingsWindowClose(_ window: NSWindow) -> Bool {
+        guard let vm = settingsViewModel, vm.hasPendingModuleChanges else {
+            // 无待应用改动，正常关闭
+            settingsWindowController = nil
+            return true
+        }
+        let alert = NSAlert()
+        alert.messageText = t("settings.modules.closePending.title")
+        alert.informativeText = t("settings.modules.closePending.message")
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: t("settings.modules.restartNow"))
+        alert.addButton(withTitle: t("settings.modules.closePending.later"))
+        alert.addButton(withTitle: t("settings.modules.closePending.discard"))
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            // 立即重启
+            AppRelauncher.relaunch()
+            return false // 不关闭，等 terminate
+        case .alertSecondButtonReturn:
+            // 稍后：保留改动，关闭窗口
+            settingsWindowController = nil
+            return true
+        default:
+            // 放弃更改：回滚后关闭
+            vm.discardPendingModuleChanges()
+            settingsWindowController = nil
+            return true
+        }
     }
 }
 
@@ -1190,6 +1241,19 @@ struct AutoUpdateSheet: View {
     let release: GitHubRelease
     let commit: GitHubCommit?
     let onClose: () -> Void
+
+    // release.body 为空时按需加载 commit 作为更新说明 fallback
+    @State private var loadedCommit: GitHubCommit?
+    @State private var isLoadingCommit: Bool = false
+
+    private var needsCommitFallback: Bool {
+        guard let body = release.body, !body.isEmpty else { return true }
+        return false
+    }
+
+    private var displayCommit: GitHubCommit? {
+        commit ?? loadedCommit
+    }
 
     var body: some View {
         // 半透明遮罩
@@ -1259,7 +1323,7 @@ struct AutoUpdateSheet: View {
                             VStack(alignment: .leading, spacing: 0) {
                                 if let body = release.body, !body.isEmpty {
                                     formattedReleaseNotes(body)
-                                } else if let commit = commit {
+                                } else if let commit = displayCommit {
                                     Text(commit.fullMessage)
                                         .font(.system(size: 12, weight: .regular))
                                         .foregroundStyle(.white.opacity(0.85))
@@ -1269,6 +1333,14 @@ struct AutoUpdateSheet: View {
                                         .font(.system(size: 10, design: .monospaced))
                                         .foregroundStyle(.white.opacity(0.35))
                                         .padding(.top, 4)
+                                } else if isLoadingCommit {
+                                    HStack(spacing: 6) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text(t("loading"))
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.white.opacity(0.5))
+                                    }
                                 } else {
                                     Text(t("noReleaseNotes"))
                                         .font(.system(size: 12, weight: .medium))
@@ -1278,6 +1350,13 @@ struct AutoUpdateSheet: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .frame(maxHeight: 280)
+                        .task {
+                            // release.body 为空且无可用 commit 时，按需拉取（避免每次检查更新都消耗配额）
+                            guard needsCommitFallback, displayCommit == nil, !isLoadingCommit else { return }
+                            isLoadingCommit = true
+                            loadedCommit = await updateChecker.fetchCommitIfNeeded(for: release)
+                            isLoadingCommit = false
+                        }
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .topLeading)

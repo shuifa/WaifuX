@@ -274,6 +274,8 @@ struct HomeContentView: View {
             initialLoadTask = Task {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard !Task.isCancelled else { return }
+                // 媒体模块关闭时，不加载媒体管线与首页媒体数据
+                guard ModuleAvailability.shared.mediaEnabled else { return }
                 await mediaViewModel.initialLoadIfNeeded()
                 guard !Task.isCancelled else { return }
                 await mediaViewModel.refreshHomeItems()
@@ -289,6 +291,8 @@ struct HomeContentView: View {
             ForegroundPrefetchManager.shared.stop(namespace: HomePrefetchNamespace.mediaShelf)
         }
         .onReceive(NotificationCenter.default.publisher(for: .wallpaperDataSourceChanged)) { _ in
+            // 壁纸模块关闭时不响应数据源变更，避免触发 viewModel.refresh() 全量加载
+            guard ModuleAvailability.shared.wallpaperEnabled else { return }
             Task { @MainActor in
                 await viewModel.refresh()
             }
@@ -416,29 +420,35 @@ struct HomeContentView: View {
         )
     }
 
+    @ViewBuilder
     private var contentSections: some View {
         VStack(alignment: .leading, spacing: 38) {
-            // 最新静态壁纸
-            HomeShelfSection(
-                title: t("latestWallpaper"),
-                wallpapers: recentWallpapers,
-                atmospherePrimary: atmosphereController.primary,
-                atmosphereSecondary: atmosphereController.secondary,
-                onSelect: { wallpaper in
-                    selectedWallpaper = wallpaper
-                }
-            )
+            // 最新静态壁纸（仅当壁纸模块启用时显示）
+            if ModuleAvailability.shared.wallpaperEnabled {
+                HomeShelfSection(
+                    title: t("latestWallpaper"),
+                    wallpapers: recentWallpapers,
+                    atmospherePrimary: atmosphereController.primary,
+                    atmosphereSecondary: atmosphereController.secondary,
+                    onSelect: { wallpaper in
+                        selectedWallpaper = wallpaper
+                    }
+                )
+            }
 
             // 热门动态壁纸（使用独立的首页数据，不跟随 Explore 列表变化）
-            HomeMediaSection(
-                title: t("hotDynamic"),
-                mediaItems: mediaViewModel.homeItems,
-                atmospherePrimary: atmosphereController.primary,
-                atmosphereSecondary: atmosphereController.secondary,
-                onSelect: { item in
-                    selectedMedia = item
-                }
-            )
+            // 仅当媒体模块启用时显示
+            if ModuleAvailability.shared.mediaEnabled {
+                HomeMediaSection(
+                    title: t("hotDynamic"),
+                    mediaItems: mediaViewModel.homeItems,
+                    atmospherePrimary: atmosphereController.primary,
+                    atmosphereSecondary: atmosphereController.secondary,
+                    onSelect: { item in
+                        selectedMedia = item
+                    }
+                )
+            }
         }
         .padding(.top, 18)
     }
@@ -458,8 +468,11 @@ struct HomeContentView: View {
     }
 
     private var heroItems: [HeroItem] {
-        let wallpapers = viewModel.featuredWallpapers.filter { $0.dimensionX > $0.dimensionY }
-        let mediaItems = heroMediaItems
+        // 关闭对应模块时，该模块不进 Hero 轮播（空数组自然不进合并循环，不出现空块）
+        let wallpapers = ModuleAvailability.shared.wallpaperEnabled
+            ? viewModel.featuredWallpapers.filter { $0.dimensionX > $0.dimensionY }
+            : []
+        let mediaItems = ModuleAvailability.shared.mediaEnabled ? heroMediaItems : []
 
         var result: [HeroItem] = []
         let maxCount = max(wallpapers.count, mediaItems.count)

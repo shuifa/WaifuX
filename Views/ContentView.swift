@@ -51,18 +51,6 @@ private final class MainContentNavigationState: ObservableObject {
     }
 }
 
-private extension MainTab {
-    var controllerIndex: Int {
-        switch self {
-        case .home: return 0
-        case .wallpaperExplore: return 1
-        case .animeExplore: return 2
-        case .mediaExplore: return 3
-        case .myMedia: return 4
-        }
-    }
-}
-
 private struct MainTabContainerView: NSViewControllerRepresentable {
     @ObservedObject var navigationState: MainContentNavigationState
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
@@ -94,6 +82,9 @@ private enum MainDetailRoute: Hashable {
 @MainActor
 private final class MainTabViewController: NSTabViewController {
     private var isConfigured = false
+    /// 实际添加的 tab 顺序（仅含启动快照启用的 tab），用于 select(tab:) 查找真实 index。
+    /// 在 configure 一次性构建（快照不变），禁用的 tab 不加入，避免位置 Int 错位。
+    private var addedTabs: [MainTab] = []
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -112,35 +103,56 @@ private final class MainTabViewController: NSTabViewController {
             return
         }
 
-        addPage(title: MainTab.home.title, view: HomeTabPage(
-            navigationState: navigationState,
-            wallpaperViewModel: wallpaperViewModel,
-            mediaViewModel: mediaViewModel
-        ))
-        addPage(title: MainTab.wallpaperExplore.title, view: WallpaperExploreTabPage(
-            navigationState: navigationState,
-            wallpaperViewModel: wallpaperViewModel
-        ))
-        addPage(title: MainTab.animeExplore.title, view: AnimeExploreTabPage(
-            navigationState: navigationState,
-            animeViewModel: animeViewModel
-        ))
-        addPage(title: MainTab.mediaExplore.title, view: MediaExploreTabPage(
-            navigationState: navigationState,
-            mediaViewModel: mediaViewModel
-        ))
-        addPage(title: MainTab.myMedia.title, view: MyLibraryTabPage(
-            navigationState: navigationState,
-            wallpaperViewModel: wallpaperViewModel,
-            mediaViewModel: mediaViewModel
-        ))
+        // 按 MainTab.allCases 顺序（home → wallpaperExplore → animeExplore → mediaExplore → myMedia）
+        // 仅添加启动快照启用的 tab。home/myMedia 永远启用；三个 Explore 受 ModuleAvailability 门控。
+        for tab in MainTab.allCases where ModuleAvailability.shared.isTabEnabled(tab) {
+            switch tab {
+            case .home:
+                addPage(title: tab.title, view: HomeTabPage(
+                    navigationState: navigationState,
+                    wallpaperViewModel: wallpaperViewModel,
+                    mediaViewModel: mediaViewModel
+                ))
+            case .wallpaperExplore:
+                addPage(title: tab.title, view: WallpaperExploreTabPage(
+                    navigationState: navigationState,
+                    wallpaperViewModel: wallpaperViewModel
+                ))
+            case .animeExplore:
+                addPage(title: tab.title, view: AnimeExploreTabPage(
+                    navigationState: navigationState,
+                    animeViewModel: animeViewModel
+                ))
+            case .mediaExplore:
+                addPage(title: tab.title, view: MediaExploreTabPage(
+                    navigationState: navigationState,
+                    mediaViewModel: mediaViewModel
+                ))
+            case .myMedia:
+                addPage(title: tab.title, view: MyLibraryTabPage(
+                    navigationState: navigationState,
+                    wallpaperViewModel: wallpaperViewModel,
+                    mediaViewModel: mediaViewModel
+                ))
+            }
+            addedTabs.append(tab)
+        }
 
         isConfigured = true
         select(tab: navigationState.selectedTab)
     }
 
     func select(tab: MainTab) {
-        let targetIndex = tab.controllerIndex
+        // 用 addedTabs 的真实位置查找，不依赖固定 controllerIndex（禁用 tab 后会错位）。
+        guard let targetIndex = addedTabs.firstIndex(of: tab) else {
+            // tab 被禁用（不在 addedTabs 中），回退到 home
+            if let homeIndex = addedTabs.firstIndex(of: .home) {
+                if selectedTabViewItemIndex != homeIndex {
+                    selectedTabViewItemIndex = homeIndex
+                }
+            }
+            return
+        }
         guard selectedTabViewItemIndex != targetIndex else { return }
         selectedTabViewItemIndex = targetIndex
     }
@@ -336,22 +348,32 @@ struct ContentView: View {
                 }
             }
 
-            // 数据源确定后再加载首页数据
+            // 数据源确定后再加载首页数据（各管线按功能模块开关门控）
             try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
-            await viewModel.initialLoad()
+            if ModuleAvailability.shared.wallpaperEnabled {
+                await viewModel.initialLoad()
+            }
 
-            Task(priority: .utility) {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                await mediaViewModel.initialLoadIfNeeded()
+            if ModuleAvailability.shared.mediaEnabled {
+                Task(priority: .utility) {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    await mediaViewModel.initialLoadIfNeeded()
+                }
             }
 
             // 预加载猜你喜欢数据（后台静默加载，确保点击弹窗时数据已就绪）
-            guessYouLikeVM.preload()
+            // 猜你喜欢依赖壁纸数据，壁纸模块关闭时跳过
+            if ModuleAvailability.shared.wallpaperEnabled {
+                guessYouLikeVM.preload()
+            }
 
-            // 延迟2秒后检查更新（自动检查，非强制，避免频繁触发）
+            // 延迟2秒后检查更新（自动检查，一天一次，避免每次启动都消耗 GitHub 配额）
             try? await Task.sleep(nanoseconds: 2 * 1_000_000_000)
             let checker = UpdateChecker.shared
+            // 距上次自动检查不足 24h 则跳过（手动检查不受此限制）
+            guard checker.shouldAutoCheck() else { return }
             let result = await checker.checkForUpdates(force: false)
+            checker.markAutoCheckDone()
             // 只在有更新时显示弹窗，错误或频率限制时静默处理
             if case .updateAvailable(current: _, latest: let release, commit: let commit) = result {
                 updateRelease = release
