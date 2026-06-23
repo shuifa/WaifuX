@@ -1,0 +1,124 @@
+import Foundation
+import CoreGraphics
+
+// 扩展端可视区域调节支持。
+// App 端 (DisplayCropSettingsStore) 把每屏 crop 配置写入 App Group JSON
+// (waifux-crop-prefs.json, key = "display-<displayID>")；扩展端在此读取并计算。
+// 类型与 App 端 Models/DisplayCropSettings.swift + Services/CropLayoutEngine.swift 保持一致。
+
+/// 归一化矩形（原点左上，y 向下）。
+struct ExtUnitRect {
+    var x: Double
+    var y: Double
+    var w: Double
+    var h: Double
+    static let full = ExtUnitRect(x: 0, y: 0, w: 1, h: 1)
+}
+
+enum ExtAspectPreset: String, Codable, CaseIterable {
+    case autoFill, ratio16x9, ratio16x10, ratio21x9, ratio32x9, ratio4x3, ratio1x1, custom
+    var aspectRatio: Double? {
+        switch self {
+        case .autoFill, .custom: return nil
+        case .ratio16x9:  return 16.0 / 9.0
+        case .ratio16x10: return 16.0 / 10.0
+        case .ratio21x9:  return 21.0 / 9.0
+        case .ratio32x9:  return 32.0 / 9.0
+        case .ratio4x3:   return 4.0 / 3.0
+        case .ratio1x1:   return 1.0
+        }
+    }
+}
+
+struct ExtCropSettings: Codable {
+    var aspectPreset: ExtAspectPreset = .autoFill
+    var customAspect: Double? = nil
+    /// 与 App 端 DisplayCropSettings.pan 同名同型（CGPoint → JSON [x,y]），保证跨进程解码一致。
+    var pan: CGPoint = .zero
+    var zoom: Double = 1.0
+    var letterboxColorHex: String = "000000"
+    var isEnabled: Bool = true
+
+    var effectiveAspect: Double? {
+        switch aspectPreset {
+        case .autoFill: return nil
+        case .custom: return customAspect
+        default: return aspectPreset.aspectRatio
+        }
+    }
+    var shouldApplyCrop: Bool { isEnabled && effectiveAspect != nil }
+
+    static let `default` = ExtCropSettings()
+}
+
+struct ExtCropLayout {
+    var wallpaperCropRect: ExtUnitRect
+    var viewportRect: ExtUnitRect
+    var letterboxColor: CGColor
+}
+
+enum ExtCropEngine {
+    static func compute(
+        wallpaperSize: CGSize,
+        screenSize: CGSize,
+        settings: ExtCropSettings
+    ) -> ExtCropLayout {
+        let letterboxColor = parseColorHex(settings.letterboxColorHex)
+        guard settings.shouldApplyCrop else {
+            return ExtCropLayout(wallpaperCropRect: .full, viewportRect: .full, letterboxColor: letterboxColor)
+        }
+        let targetAspect = settings.effectiveAspect ?? 1.0
+        let screenAspect = screenSize.height > 0 ? screenSize.width / screenSize.height : 1.0
+        let viewport: ExtUnitRect
+        if targetAspect > screenAspect {
+            let h = screenAspect / targetAspect
+            viewport = ExtUnitRect(x: 0, y: (1 - h) / 2, w: 1, h: h)
+        } else {
+            let w = targetAspect / screenAspect
+            viewport = ExtUnitRect(x: (1 - w) / 2, y: 0, w: w, h: 1)
+        }
+        let zoom = max(1.0, min(4.0, settings.zoom))
+        let cropSize = 1.0 / zoom
+        let panX = max(-1, min(1, settings.pan.x))
+        let panY = max(-1, min(1, settings.pan.y))
+        var originX = (0.5 - cropSize / 2) + panX * (cropSize / 2)
+        var originY = (0.5 - cropSize / 2) + panY * (cropSize / 2)
+        let maxOrigin = 1.0 - cropSize
+        originX = max(0, min(maxOrigin, originX))
+        originY = max(0, min(maxOrigin, originY))
+        return ExtCropLayout(
+            wallpaperCropRect: ExtUnitRect(x: originX, y: originY, w: cropSize, h: cropSize),
+            viewportRect: viewport,
+            letterboxColor: letterboxColor)
+    }
+
+    static func parseColorHex(_ hex: String) -> CGColor {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else {
+            return CGColor(red: 0, green: 0, blue: 0, alpha: 1)
+        }
+        return CGColor(red: CGFloat((v >> 16) & 0xFF) / 255.0,
+                       green: CGFloat((v >> 8) & 0xFF) / 255.0,
+                       blue: CGFloat(v & 0xFF) / 255.0, alpha: 1)
+    }
+}
+
+/// 扩展端从 App Group JSON 读取指定 displayID 的 crop 配置。
+enum ExtCropPrefs {
+    private static let appGroupID = "group.com.waifux.app"
+    private static let jsonName = "waifux-crop-prefs.json"
+
+    static func settings(forDisplayID displayID: UInt32) -> ExtCropSettings {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else {
+            return .default
+        }
+        let url = container.appendingPathComponent(jsonName)
+        guard let data = try? Data(contentsOf: url),
+              let dict = try? JSONDecoder().decode([String: ExtCropSettings].self, from: data) else {
+            return .default
+        }
+        return dict["display-\(displayID)"] ?? .default
+    }
+}

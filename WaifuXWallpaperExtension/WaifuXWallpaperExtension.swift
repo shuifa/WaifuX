@@ -475,7 +475,7 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                         Task { @MainActor in
                             do {
                                 rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-                                let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: url)
+                                let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: url, displayID: displayID)
                                 // 更新这个特定 context 的 renderer（通过 contextId 精确匹配）
                                 _ = WallpaperState.shared.replaceContextRendererByContextId(
                                     contextId: active.contextId,

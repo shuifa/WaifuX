@@ -33,6 +33,9 @@ final class VideoRenderer: @unchecked Sendable {
     private var nextReader: AVAssetReader?
     private var nextOutput: AVAssetReaderTrackOutput?
 
+    /// 该渲染器所属的 displayID，用于读取 App Group 里的可视区域 crop 配置。
+    private let displayID: UInt32
+
     // 无缝循环状态
     private var ptsOffset: CMTime = .zero
     private var lastEnqueuedEnd: CMTime = .zero
@@ -41,7 +44,7 @@ final class VideoRenderer: @unchecked Sendable {
     /// 用于自适应播放（根据策略切换 FPS 变体）。
     var variantSelector: (() -> URL)?
 
-    static func create(rootLayer: CALayer, videoURL: URL) async throws -> VideoRenderer {
+    static func create(rootLayer: CALayer, videoURL: URL, displayID: UInt32) async throws -> VideoRenderer {
         let asset = AVURLAsset(url: videoURL)
         let tracks = try await asset.loadTracks(withMediaType: .video)
         guard let track = tracks.first else {
@@ -71,17 +74,19 @@ final class VideoRenderer: @unchecked Sendable {
                 displayLayer: displayLayer,
                 asset: asset,
                 videoTrack: track,
-                fillFrame: layout.frame
+                fillFrame: layout.frame,
+                displayID: displayID
             )
         }
     }
 
-    private init(rootLayer: CALayer, displayLayer: AVSampleBufferDisplayLayer, asset: AVURLAsset, videoTrack: AVAssetTrack, fillFrame: CGRect) {
+    private init(rootLayer: CALayer, displayLayer: AVSampleBufferDisplayLayer, asset: AVURLAsset, videoTrack: AVAssetTrack, fillFrame: CGRect, displayID: UInt32) {
         self.displayLayer = displayLayer
         self.renderer = displayLayer.sampleBufferRenderer
         self.rootLayer = rootLayer
         self.asset = asset
         self.videoTrack = videoTrack
+        self.displayID = displayID
         self.backgroundFrameLayer = CALayer()
         self.stillFrameLayer = CALayer()
 
@@ -177,14 +182,49 @@ final class VideoRenderer: @unchecked Sendable {
 
     private func applyAspectFillLayout(videoSize: CGSize) {
         let bounds = rootLayer.bounds
-        let layout = Self.aspectFillLayout(videoSize: videoSize, in: bounds)
         rootLayer.masksToBounds = true
-        backgroundFrameLayer.frame = bounds
-        displayLayer.frame = layout.frame
-        displayLayer.contentsScale = rootLayer.contentsScale
-        stillFrameLayer.frame = bounds
-        stillFrameLayer.contentsScale = rootLayer.contentsScale
-        extLog("[VideoRenderer] layout updated video=\(Int(videoSize.width))x\(Int(videoSize.height)) display=\(Int(bounds.width))x\(Int(bounds.height)) fillScale=\(layout.scale)")
+        let settings = ExtCropPrefs.settings(forDisplayID: displayID)
+
+        if settings.shouldApplyCrop {
+            let layout = ExtCropEngine.compute(
+                wallpaperSize: videoSize, screenSize: bounds.size, settings: settings)
+            rootLayer.backgroundColor = layout.letterboxColor
+            let vp = CGRect(
+                x: layout.viewportRect.x * bounds.width,
+                y: layout.viewportRect.y * bounds.height,
+                width: layout.viewportRect.w * bounds.width,
+                height: layout.viewportRect.h * bounds.height)
+            displayLayer.frame = vp
+            displayLayer.videoGravity = .resize
+            displayLayer.contentsRect = CGRect(
+                x: layout.wallpaperCropRect.x, y: layout.wallpaperCropRect.y,
+                width: layout.wallpaperCropRect.w, height: layout.wallpaperCropRect.h)
+            displayLayer.contentsScale = rootLayer.contentsScale
+            backgroundFrameLayer.frame = vp
+            backgroundFrameLayer.contentsGravity = .resize
+            backgroundFrameLayer.contentsRect = displayLayer.contentsRect
+            stillFrameLayer.frame = vp
+            stillFrameLayer.contentsGravity = .resize
+            stillFrameLayer.contentsRect = displayLayer.contentsRect
+            stillFrameLayer.contentsScale = rootLayer.contentsScale
+            extLog("[VideoRenderer] layout crop video=\(Int(videoSize.width))x\(Int(videoSize.height)) display=\(Int(bounds.width))x\(Int(bounds.height))")
+        } else {
+            // 现状 aspect-fill
+            rootLayer.backgroundColor = nil
+            let fill = Self.aspectFillLayout(videoSize: videoSize, in: bounds)
+            backgroundFrameLayer.frame = bounds
+            displayLayer.frame = fill.frame
+            displayLayer.videoGravity = .resizeAspectFill
+            displayLayer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            displayLayer.contentsScale = rootLayer.contentsScale
+            backgroundFrameLayer.contentsGravity = .resizeAspectFill
+            backgroundFrameLayer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            stillFrameLayer.frame = bounds
+            stillFrameLayer.contentsGravity = .resizeAspectFill
+            stillFrameLayer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            stillFrameLayer.contentsScale = rootLayer.contentsScale
+            extLog("[VideoRenderer] layout updated video=\(Int(videoSize.width))x\(Int(videoSize.height)) display=\(Int(bounds.width))x\(Int(bounds.height)) fillScale=\(fill.scale)")
+        }
     }
 
     // MARK: - Playback Control

@@ -69,12 +69,24 @@ private struct ScreenProcessInfo {
     let screenID: String
     let logFile: FileHandle?
     let audioControlURL: URL?
+    /// `--crop-control` JSON 文件路径（wgpu 每 200ms 轮询，热更新 self.crop）。
+    /// 拖拽 / 提交时 Bridge 重写此文件，进程无需重启即可应用新裁切。
+    let cropControlURL: URL?
 }
 
 private struct RendererAudioControlState: Codable {
     let muted: Bool
     let paused: Bool
     let volume: Double
+}
+
+/// `--crop-control` JSON 体：与 wgpu 端 `CropControlFileState` 对应。
+/// crop = nil 等价于全图（移除裁切），viewport = nil/全屏 等价于无 letterbox。
+private struct RendererCropControlState: Codable {
+    /// 归一化裁切框 [x, y, w, h]，原点左上，y 向下。
+    let crop: [Float]?
+    /// 屏幕可视框（surface 空间归一化），框外为黑色 letterbox。
+    let viewport: [Float]?
 }
 
 /// 负责与 wallpaper-wgpu 渲染器通信的桥接层
@@ -206,6 +218,17 @@ final class WallpaperEngineXBridge: ObservableObject {
             self.handleScreenParametersChanged()
         }
         .store(in: &self.cancellables)
+
+        // 监听可视区域 crop 变更（菜单调节 / overlay 拖拽）→ 重启该屏 wallpaper-wgpu 进程
+        NotificationCenter.default.publisher(
+            for: DisplayCropSettingsStore.cropDidChangeNotification
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { @MainActor [weak self] note in
+            guard let self = self else { return }
+            self.handleCropDidChange(note)
+        }
+        .store(in: &self.cancellables)
     }
 
     deinit {
@@ -270,6 +293,9 @@ final class WallpaperEngineXBridge: ObservableObject {
             isSettingWallpaper = false
             print("[WallpaperEngineXBridge] <<< setWallpaper END")
         }
+
+        // 设场景/web 壁纸时关闭并清除静态图 overlay（renderer 窗口本身覆盖桌面，静态 overlay 无意义且浪费窗口）
+        StaticImageWallpaperOverlayManager.shared.clearState()
 
         // 壁纸切换时使设计面板的缓存失效
         WebWallpaperDesignService.shared.invalidateAllCaches()
@@ -403,7 +429,38 @@ final class WallpaperEngineXBridge: ObservableObject {
             let effectiveFPS = min(Int(userFPSClamped), screenMaxFPS)
             perScreenArgs += ["--fps", String(effectiveFPS)]
 
+            // 可视区域裁切：始终预留 cropControlURL，wgpu 通过 50ms 轮询此 JSON 热更新；
+            // 启动时若已有裁切则同时传一次 --crop / --crop-viewport 作为兜底（避免首帧空窗）。
             let screenID = screen.wallpaperScreenIdentifier
+            let cropSettings = DisplayCropSettingsStore.shared.settings(for: screen)
+            let initialLayout: (crop: UnitRect, viewport: UnitRect)? = {
+                guard cropSettings.shouldApplyCrop else { return nil }
+                // scene canvas 尺寸拿不到精确值，用屏尺寸近似（canvas 通常与屏同比例）
+                let layout = CropLayoutEngine.compute(
+                    wallpaperSize: CGSize(width: screenW, height: screenH),
+                    screenSize: CGSize(width: screenW, height: screenH),
+                    settings: cropSettings)
+                return (crop: layout.wallpaperCropRect, viewport: layout.viewportRect)
+            }()
+            if let l = initialLayout {
+                let cr = l.crop
+                perScreenArgs += ["--crop", "\(cr.x),\(cr.y),\(cr.w),\(cr.h)"]
+                let vp = l.viewport
+                // 全屏 viewport 等价于无 letterbox，跳过参数避免冗余
+                let isFullVp = abs(vp.x) < 1e-4 && abs(vp.y) < 1e-4 && abs(vp.w - 1) < 1e-4 && abs(vp.h - 1) < 1e-4
+                if !isFullVp {
+                    perScreenArgs += ["--crop-viewport", "\(vp.x),\(vp.y),\(vp.w),\(vp.h)"]
+                }
+                print("[WallpaperEngineXBridge] 初始 crop=\(cr.x),\(cr.y),\(cr.w),\(cr.h) viewport=\(vp.x),\(vp.y),\(vp.w),\(vp.h)")
+            }
+            let cropControlURL = createCropControlURL(screenID: screenID)
+            writeCropControl(
+                url: cropControlURL,
+                crop: initialLayout?.crop,
+                viewport: initialLayout?.viewport
+            )
+            perScreenArgs += ["--crop-control", cropControlURL.path]
+
             let audioControlURL = createAudioControlURL(screenID: screenID)
             let audioVolume = VideoWallpaperManager.shared.volume(for: screen)
             writeAudioControl(
@@ -435,7 +492,8 @@ final class WallpaperEngineXBridge: ObservableObject {
                     generation: launchGeneration,
                     screenID: screenID,
                     logFile: process.logFile,
-                    audioControlURL: audioControlURL
+                    audioControlURL: audioControlURL,
+                    cropControlURL: cropControlURL
                 )
                 screenRenderStates[screenID] = ScreenRenderState(
                     screenID: screenID,
@@ -668,6 +726,8 @@ final class WallpaperEngineXBridge: ObservableObject {
     /// 用户从状态栏关闭动态壁纸时调用：停止当前 renderer，但保留持久化状态，方便再次点击开启恢复。
     func disableWallpaperKeepingRestoreState() {
         print("[WallpaperEngineXBridge] disableWallpaperKeepingRestoreState: 关闭渲染并保留恢复状态 (进程数=\(screenProcesses.count))")
+        // 对称关闭静态图 overlay（保持久化，与保留 WE 恢复状态语义一致）
+        StaticImageWallpaperOverlayManager.shared.hideAll()
         let statesToRestore = Array(screenRenderStates.values)
         stopRenderProcess()
         webRenderer.stop()
@@ -1452,6 +1512,14 @@ final class WallpaperEngineXBridge: ObservableObject {
             .appendingPathComponent("waifux-wallpaper-wgpu-audio-\(String(safeID))-\(UUID().uuidString).json")
     }
 
+    private func createCropControlURL(screenID: String) -> URL {
+        let safeID = screenID.map { ch -> Character in
+            ch.isLetter || ch.isNumber || ch == "-" || ch == "_" ? ch : "_"
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("waifux-wallpaper-wgpu-crop-\(String(safeID))-\(UUID().uuidString).json")
+    }
+
     private func writeAudioControl(url: URL, muted: Bool, paused: Bool, volume: Double) {
         let state = RendererAudioControlState(
             muted: muted,
@@ -1463,6 +1531,20 @@ final class WallpaperEngineXBridge: ObservableObject {
             try data.write(to: url, options: .atomic)
         } catch {
             print("[WallpaperEngineXBridge] ⚠️ 写入音频控制文件失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 把屏幕的最新裁切参数写入 `--crop-control` JSON 文件；wgpu 端 50ms 内拉取生效。
+    /// crop=nil 表示移除裁切（即全图）；viewport=nil/全屏 = 无 letterbox。
+    private func writeCropControl(url: URL, crop: UnitRect?, viewport: UnitRect?) {
+        let cropArr: [Float]? = crop.map { [Float($0.x), Float($0.y), Float($0.w), Float($0.h)] }
+        let vpArr: [Float]? = viewport.map { [Float($0.x), Float($0.y), Float($0.w), Float($0.h)] }
+        let state = RendererCropControlState(crop: cropArr, viewport: vpArr)
+        do {
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("[WallpaperEngineXBridge] ⚠️ 写入裁切控制文件失败: \(error.localizedDescription)")
         }
     }
 
@@ -1519,6 +1601,9 @@ final class WallpaperEngineXBridge: ObservableObject {
             if let audioControlURL = info.audioControlURL {
                 try? FileManager.default.removeItem(at: audioControlURL)
             }
+            if let cropControlURL = info.cropControlURL {
+                try? FileManager.default.removeItem(at: cropControlURL)
+            }
         }
     }
 
@@ -1527,6 +1612,9 @@ final class WallpaperEngineXBridge: ObservableObject {
             try? info.logFile?.close()
             if let audioControlURL = info.audioControlURL {
                 try? FileManager.default.removeItem(at: audioControlURL)
+            }
+            if let cropControlURL = info.cropControlURL {
+                try? FileManager.default.removeItem(at: cropControlURL)
             }
         }
     }
@@ -1602,6 +1690,16 @@ final class WallpaperEngineXBridge: ObservableObject {
         screenRenderStates.values.contains { $0.screenFingerprint == screen.wallpaperScreenFingerprint } ||
         targetScreenIDs.contains(screen.wallpaperScreenIdentifier) ||
         targetScreenFingerprints.contains(screen.wallpaperScreenFingerprint)
+    }
+
+    /// 该屏的外部引擎是否为 web 壁纸（web 暂不支持可视区域调节）。
+    func isWebWallpaperOn(screen: NSScreen) -> Bool {
+        guard isManaging(screen: screen) else { return false }
+        let id = screen.wallpaperScreenIdentifier
+        if let state = screenRenderStates[id], state.renderKind == .web { return true }
+        if let state = screenRenderStates.values.first(where: { $0.screenFingerprint == screen.wallpaperScreenFingerprint }),
+           state.renderKind == .web { return true }
+        return false
     }
 
     /// 检查一组屏幕 ID 中是否有被外部引擎管理的屏幕
@@ -1919,6 +2017,45 @@ final class WallpaperEngineXBridge: ObservableObject {
         for screen in NSScreen.screens where targetScreenFingerprints.contains(screen.wallpaperScreenFingerprint) {
             targetScreenIDs.insert(screen.wallpaperScreenIdentifier)
         }
+    }
+
+    /// 可视区域 crop 变更：把最新裁切写入该屏的 `--crop-control` JSON，wgpu 50ms 内热更新。
+    /// 不再重启进程；拖拽和落定都共享同一通路，避免进程频繁起停。
+    @MainActor
+    private func handleCropDidChange(_ note: Notification) {
+        guard isControllingExternalEngine else { return }
+        guard !isSettingWallpaper else { return }
+        guard let screenID = note.userInfo?["screenID"] as? String,
+              let screen = NSScreen.screens.first(where: { $0.wallpaperScreenIdentifier == screenID }),
+              isManaging(screen: screen),
+              !isWebWallpaperOn(screen: screen) else { return }
+        // 找到该屏（或同 fingerprint）的运行进程及其 cropControlURL
+        let info = screenProcesses[screenID]
+            ?? screenProcesses.values.first(where: { $0.screenID == screenID })
+        guard let cropControlURL = info?.cropControlURL else { return }
+
+        let cropSettings = DisplayCropSettingsStore.shared.settings(for: screen)
+        let f = screen.frame
+        let screenW = Int(f.width.rounded())
+        let screenH = Int(f.height.rounded())
+        let nextCrop: UnitRect?
+        let nextViewport: UnitRect?
+        if cropSettings.shouldApplyCrop {
+            let layout = CropLayoutEngine.compute(
+                wallpaperSize: CGSize(width: screenW, height: screenH),
+                screenSize: CGSize(width: screenW, height: screenH),
+                settings: cropSettings)
+            nextCrop = layout.wallpaperCropRect
+            // 全屏 viewport 等价于 None
+            let vp = layout.viewportRect
+            let isFullVp = abs(vp.x) < 1e-4 && abs(vp.y) < 1e-4
+                && abs(vp.w - 1) < 1e-4 && abs(vp.h - 1) < 1e-4
+            nextViewport = isFullVp ? nil : vp
+        } else {
+            nextCrop = nil
+            nextViewport = nil
+        }
+        writeCropControl(url: cropControlURL, crop: nextCrop, viewport: nextViewport)
     }
 
     private func handleScreenParametersChanged() {

@@ -523,7 +523,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         if let pendingURL = WallpaperState.shared.takePendingVideo(for: displayID) {
             extLog("  [Acquire] 📦 应用待处理视频 display=\(displayID) video=\(pendingURL.lastPathComponent)")
             do {
-                let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: pendingURL)
+                let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: pendingURL, displayID: displayID)
                 let activeCtx = ActiveWallpaper(
                     caContext: caContext,
                     rootLayer: rootLayer,
@@ -556,7 +556,7 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         // 导致切换壁纸后扩展冷启动仍然渲染旧内容。直接读 prefs 才能反映 App 的最后意图。
         if let videoURL = prefsVideoURL(for: displayID) {
             do {
-                let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: videoURL)
+                let renderer = try await VideoRenderer.create(rootLayer: rootLayer, videoURL: videoURL, displayID: displayID)
                 let activeCtx = ActiveWallpaper(
                     caContext: caContext,
                     rootLayer: rootLayer,
@@ -739,8 +739,8 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-        rootLayer.contentsGravity = .resizeAspectFill
         rootLayer.contents = image
+        applyStaticCrop(rootLayer: rootLayer, image: image, displayID: displayID)
         CATransaction.commit()
 
         let activeCtx = ActiveWallpaper(
@@ -757,6 +757,32 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
         WallpaperPrefs.shared.setActive(true)
         extLog("  [Acquire] ✅ 静态图渲染已启动 display=\(displayID) image=\(imageURL.lastPathComponent)")
         doReply("static image")
+    }
+
+    /// 应用可视区域 crop 到静态图 rootLayer。
+    /// contentsRect = 壁纸裁切框（源）；contentsCenter = 可视框（目标）；backgroundColor = letterbox。
+    /// shouldApplyCrop=false 时回现状 resizeAspectFill。
+    private static func applyStaticCrop(rootLayer: CALayer, image: CGImage, displayID: UInt32) {
+        let settings = ExtCropPrefs.settings(forDisplayID: displayID)
+        guard settings.shouldApplyCrop else {
+            rootLayer.contentsGravity = .resizeAspectFill
+            rootLayer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            rootLayer.contentsCenter = CGRect(x: 0, y: 0, width: 1, height: 1)
+            rootLayer.backgroundColor = nil
+            return
+        }
+        let wallpaperSize = CGSize(width: image.width, height: image.height)
+        let screenSize = rootLayer.bounds.size
+        let layout = ExtCropEngine.compute(
+            wallpaperSize: wallpaperSize, screenSize: screenSize, settings: settings)
+        rootLayer.contentsGravity = .resize
+        rootLayer.contentsRect = CGRect(
+            x: layout.wallpaperCropRect.x, y: layout.wallpaperCropRect.y,
+            width: layout.wallpaperCropRect.w, height: layout.wallpaperCropRect.h)
+        rootLayer.contentsCenter = CGRect(
+            x: layout.viewportRect.x, y: layout.viewportRect.y,
+            width: layout.viewportRect.w, height: layout.viewportRect.h)
+        rootLayer.backgroundColor = layout.letterboxColor
     }
 
     static func switchActiveContextToStaticImage(displayID: UInt32, sourceID: String, imageURL: URL) {
@@ -781,8 +807,8 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
                 rootLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
-                rootLayer.contentsGravity = .resizeAspectFill
                 rootLayer.contents = image
+                applyStaticCrop(rootLayer: rootLayer, image: image, displayID: displayID)
                 CATransaction.commit()
 
                 if let renderer = active.renderer {
