@@ -190,7 +190,10 @@ final class MediaExploreViewModel: ObservableObject {
             .sink { [weak self] status in
                 self?.networkStatus = status
                 // 网络恢复时自动刷新，根据当前源加载正确数据
-                if status.connectionState.isConnected && self?.items.isEmpty == true {
+                // 媒体模块关闭时跳过，避免禁用后仍触发远程源请求
+                if status.connectionState.isConnected
+                    && self?.items.isEmpty == true
+                    && ModuleAvailability.shared.mediaEnabled {
                     self?.networkRecoveryTask?.cancel()
                     self?.networkRecoveryTask = Task { [weak self] in
                         guard let self else { return }

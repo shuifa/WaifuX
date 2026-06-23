@@ -108,6 +108,20 @@ struct LibraryFolderCard: View {
                     if folder.isLocked && isUnlocked, let onRelock {
                         relockButton(onRelock: onRelock)
                     }
+
+                    // 收纳 drop 仅覆盖卡片缩略图中央 60%，
+                    // 卡片其他区域（左侧间隙、底部信息栏、外缘）让给 grid 的排序插入条 drop zone。
+                    Color.clear
+                        .frame(width: cardWidth * 0.6, height: thumbnailHeight * 0.6)
+                        .contentShape(Rectangle())
+                        .dropDestination(for: String.self) { strings, _ in
+                            let ids = uniqueIDs(strings.flatMap(parseDropPayload))
+                            guard !ids.isEmpty else { return false }
+                            onDrop(ids)
+                            return true
+                        } isTargeted: { isTargeted in
+                            isDropTarget = isTargeted
+                        }
                 }
                 .frame(width: cardWidth, height: thumbnailHeight)
                 .clipped()
@@ -183,16 +197,6 @@ struct LibraryFolderCard: View {
             Button(role: .destructive, action: onDisband) {
                 Label(t("disband.folder"), systemImage: "folder.badge.minus")
             }
-        }
-        .dropDestination(for: String.self) { strings, _ in
-            let ids = uniqueIDs(strings.flatMap(parseDropPayload))
-            guard !ids.isEmpty else {
-                return false
-            }
-            onDrop(ids)
-            return true
-        } isTargeted: { isTargeted in
-            isDropTarget = isTargeted
         }
     }
 

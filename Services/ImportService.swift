@@ -507,27 +507,51 @@ final class ImportService: ObservableObject {
         let destinationRoot = downloadPathManager.mediaFolderURL
 
         let title = (json["title"] as? String) ?? sourceName
-        var workshopID = (json["publishedfileid"] as? String) ?? (json["id"] as? String)
-
+        // 提取真实 Steam Workshop ID。优先级：
+        // 1) WE 规范字段 workshopid（发布到 Workshop 的项目都会写）
+        // 2) 兼容本 App 旧版写入的 publishedfileid / id
+        // 3) workshopurl 里的 ID（steam://url/CommunityFilePage/<id>）
+        // 4) 文件夹名中的纯数字
+        // 都拿不到时才用 hash 作为本地 slug，绝不当作真实 Steam ID 拼链接。
+        var workshopID = (json["workshopid"] as? String)
+            ?? (json["publishedfileid"] as? String)
+            ?? (json["id"] as? String)
+        workshopID = workshopID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if workshopID == nil || workshopID!.isEmpty,
+           let rawURL = json["workshopurl"] as? String {
+            let urlStr = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !urlStr.isEmpty, let extracted = Self.extractSteamID(from: urlStr) {
+                workshopID = extracted
+            }
+        }
         if workshopID == nil || workshopID!.isEmpty {
-            // 尝试从文件夹名提取纯数字 ID
             let numeric = sourceName.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
             if !numeric.isEmpty {
                 workshopID = numeric
-            } else {
-                // 中文或其他文字文件夹名：用路径哈希作为 fallback ID
-                let hash = String(format: "%08x", sourceDir.absoluteString.hashValue & 0xFFFFFFFF)
-                workshopID = hash.isEmpty ? String(UUID().uuidString.prefix(8)) : hash
-                print("[ImportService] Non-numeric folder name '\(sourceName)', using hash ID: \(hash)")
             }
         }
 
-        guard let id = workshopID, !id.isEmpty else {
+        // 真实 Steam ID 必须是纯数字；非数字值（如旧版 hash）不能当作 Steam ID
+        let realSteamID = workshopID.flatMap { id -> String? in
+            !id.isEmpty && id.allSatisfy(\.isNumber) ? id : nil
+        }
+
+        // 本地 slug：有真实 ID 就用，没有就生成稳定的本地 hash（仅用于目录名/去重，不暴露为 Steam 链接）
+        let localSlug: String
+        if let realSteamID {
+            localSlug = realSteamID
+        } else {
+            let hash = String(format: "%08x", sourceDir.absoluteString.hashValue & 0xFFFFFFFF)
+            localSlug = hash.isEmpty ? String(UUID().uuidString.prefix(8)) : hash
+            print("[ImportService] Non-numeric folder name '\(sourceName)', using local slug: \(localSlug) (no real Steam ID)")
+        }
+
+        guard !localSlug.isEmpty else {
             print("[ImportService] Could not infer workshop ID for \(sourceName)")
             return false
         }
 
-        let destDir = destinationRoot.appendingPathComponent("workshop_\(id)")
+        let destDir = destinationRoot.appendingPathComponent("workshop_\(localSlug)")
         do {
             if fileManager.fileExists(atPath: destDir.path) {
                 try fileManager.removeItem(at: destDir)
@@ -536,7 +560,8 @@ final class ImportService: ObservableObject {
 
             let previewURL = findPreview(in: destDir)
             let item = makeImportedWorkshopItem(
-                workshopID: id,
+                localSlug: localSlug,
+                steamID: realSteamID,
                 title: title,
                 projectJSON: json,
                 destDir: destDir,
@@ -573,7 +598,8 @@ final class ImportService: ObservableObject {
     }
 
     private func makeImportedWorkshopItem(
-        workshopID: String,
+        localSlug: String,
+        steamID: String?,
         title: String,
         projectJSON: [String: Any],
         destDir: URL,
@@ -583,10 +609,19 @@ final class ImportService: ObservableObject {
         let resolutionLabel = typeString.capitalized
         let thumbnailURL = previewURL ?? URL(string: "https://steamcommunity.com/favicon.ico")!
 
+        // 只有拿到真实纯数字 Steam ID 时才生成 Steam 链接；
+        // 否则用本地导入目录 file URL，避免把本地 hash/UUID 伪造成打不开的 Steam URL。
+        let pageURL: URL
+        if let steamID {
+            pageURL = URL(string: "https://steamcommunity.com/sharedfiles/filedetails/?id=\(steamID)")!
+        } else {
+            pageURL = destDir
+        }
+
         return MediaItem(
-            slug: "workshop_\(workshopID)",
+            slug: "workshop_\(localSlug)",
             title: title,
-            pageURL: URL(string: "https://steamcommunity.com/sharedfiles/filedetails/?id=\(workshopID)")!,
+            pageURL: pageURL,
             thumbnailURL: thumbnailURL,
             resolutionLabel: resolutionLabel,
             collectionTitle: t("workshop"),
@@ -600,6 +635,34 @@ final class ImportService: ObservableObject {
             sourceName: t("wallpaperEngine"),
             isAnimatedImage: nil
         )
+    }
+
+    /// 从 Steam 链接里提取 Workshop ID，支持：
+    /// - https://steamcommunity.com/sharedfiles/filedetails/?id=3741983456
+    /// - steam://url/CommunityFilePage/3741983456
+    /// - 纯数字
+    private static func extractSteamID(from urlString: String) -> String? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.allSatisfy(\.isNumber), !trimmed.isEmpty { return trimmed }
+
+        guard let url = URL(string: trimmed),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+
+        let path = components.path.lowercased()
+        // https 形式：取 query 的 id
+        if path.contains("sharedfiles/filedetails") {
+            return components.queryItems?.first(where: { $0.name.lowercased() == "id" })?.value
+        }
+
+        // steam://url/CommunityFilePage/<id> 形式：取最后一段路径
+        if trimmed.lowercased().hasPrefix("steam://"),
+           path.contains("communityfilepage") {
+            return path.split(separator: "/").last.map(String.init)
+        }
+
+        return nil
     }
 
     // MARK: - 文件类型判断

@@ -607,6 +607,11 @@ struct AnimeExploreView: View {
     // MARK: - Actions
 
     private func performFirstAppearanceLoad() async {
+        // 动漫模块关闭时不加载（防御性：禁用时该 tab 不应被添加，此处双保险）
+        guard ModuleAvailability.shared.animeEnabled else {
+            isFirstAppearance = false
+            return
+        }
         // ⚠️ 防止 NavigationStack pop 后视图被重建导致丢失已加载的多页数据
         guard viewModel.animeItems.isEmpty else {
             isFirstAppearance = false
@@ -631,6 +636,9 @@ struct AnimeExploreView: View {
     }
 
     private func handleAppear() {
+        // 动漫模块关闭时不加载（防御性：禁用时该 tab 不应被添加，此处双保险）
+        guard ModuleAvailability.shared.animeEnabled else { return }
+
         AppLogger.info(.anime, "动漫探索页 onAppear",
             metadata: ["已有数据": !viewModel.animeItems.isEmpty, "当前数量": viewModel.animeItems.count])
 

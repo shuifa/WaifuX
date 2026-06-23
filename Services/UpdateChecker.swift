@@ -114,12 +114,49 @@ final class UpdateChecker: ObservableObject {
     private let lastCheckKey = "update_checker_last_check"
     private let cachedReleaseKey = "update_checker_cached_release"
     private let cachedCommitKey = "update_checker_cached_commit"
+    private let cachedReleaseEtagKey = "update_checker_cached_release_etag"
     private let rateLimitUntilKey = "update_checker_rate_limit_until"
+    /// 自动检查专用时间戳（与 lastCheckKey 区分：手动检查不应被自动检查节流）
+    private let lastAutoCheckKey = "update_checker_last_auto_check"
 
-    // 最小检查间隔（秒）- 5分钟
+    // 最小检查间隔（秒）- 5分钟（仅限制手动重复点击）
     private let minCheckInterval: TimeInterval = 300
-    // 遇到 403 后的冷却时间（秒）- 15分钟
+    // 自动检查最小间隔（秒）- 24小时
+    private let autoCheckInterval: TimeInterval = 86_400
+    // 遇到 403 后的最小冷却时间（秒）- 15分钟（实际取 max(响应头 reset, 此值)）
     private let rateLimitCooldown: TimeInterval = 900
+
+    /// 更新检查专用 URLSession（独立于 NetworkService，以便精确控制 ETag/304/响应头）
+    private lazy var session: URLSession = {
+        let config = URLSessionConfiguration.default
+        // 显式禁用 URLCache：由 ETag 条件请求精确控制新鲜度，避免共享缓存返回 60s 旧 release
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.urlCache = nil
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 60
+        config.waitsForConnectivity = true
+        applyProxy(to: config)
+        return URLSession(configuration: config)
+    }()
+
+    /// 将用户配置的代理应用到指定 session 配置（与 UpdateManager 下载逻辑一致）
+    private func applyProxy(to config: URLSessionConfiguration) {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: "proxy_enabled"),
+              let host = defaults.string(forKey: "proxy_host"), !host.isEmpty,
+              let portStr = defaults.string(forKey: "proxy_port"),
+              let port = Int(portStr), port > 0 else {
+            return
+        }
+        config.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable: true,
+            kCFNetworkProxiesHTTPProxy: host,
+            kCFNetworkProxiesHTTPPort: port,
+            kCFNetworkProxiesHTTPSEnable: true,
+            kCFNetworkProxiesHTTPSProxy: host,
+            kCFNetworkProxiesHTTPSPort: port
+        ]
+    }
 
     private init() {
         // ⚠️ 不在 init 中读 UserDefaults，避免 _CFXPreferences 递归栈溢出
@@ -139,6 +176,20 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
+    /// 判断是否应执行自动检查（距上次自动检查超过 24 小时）
+    /// - Parameter force: 自动检查恒为 false；此方法仅约束自动检查频率
+    func shouldAutoCheck() -> Bool {
+        guard let lastAuto = UserDefaults.standard.object(forKey: lastAutoCheckKey) as? Date else {
+            return true // 从未自动检查过
+        }
+        return Date().timeIntervalSince(lastAuto) >= autoCheckInterval
+    }
+
+    /// 标记本次自动检查已执行（仅自动检查路径调用）
+    func markAutoCheckDone() {
+        UserDefaults.standard.set(Date(), forKey: lastAutoCheckKey)
+    }
+
     /// 获取当前应用版本
     var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
@@ -155,20 +206,20 @@ final class UpdateChecker: ObservableObject {
     }
 
     /// 检查更新
-    /// - Parameter force: 是否强制检查，忽略时间间隔限制
+    /// - Parameter force: 是否强制检查，忽略手动检查的 5 分钟间隔限制
+    ///   - 注意：force 仅跳过「手动检查过于频繁」的节流；速率限制冷却期对任何调用都生效，
+    ///     避免 force=true 反复发请求触发 403 重置冷却的死循环。
     func checkForUpdates(force: Bool = false) async -> UpdateCheckResult {
         isChecking = true
         defer { isChecking = false }
 
-        // 检查是否在冷却期内
-        if !force, let rateLimitUntil = UserDefaults.standard.object(forKey: rateLimitUntilKey) as? Date,
+        // 速率限制冷却期：无论 force 与否都生效，避免 force=true 反复 403 重置冷却
+        if let rateLimitUntil = UserDefaults.standard.object(forKey: rateLimitUntilKey) as? Date,
            Date() < rateLimitUntil {
-            let remaining = Int(rateLimitUntil.timeIntervalSince(Date()))
-            let minutes = remaining / 60
-            return .error("GitHub API 速率限制，请\(minutes)分钟后重试")
+            return .error(rateLimitMessage(until: rateLimitUntil))
         }
 
-        // 检查是否过于频繁（非强制模式下）
+        // 手动检查过于频繁节流（仅 force=false 时生效）
         if !force, let lastCheck = lastCheckDate {
             let elapsed = Date().timeIntervalSince(lastCheck)
             if elapsed < minCheckInterval {
@@ -188,15 +239,55 @@ final class UpdateChecker: ObservableObject {
         }
 
         var request = URLRequest(url: url)
+        // 显式禁用 URLCache：由 ETag 精确控制，避免共享缓存返回 60s 旧 release
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("WaifuX-App/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 30
+        // ETag 条件请求：命中 304 时不消耗 API 配额（GitHub 官方明确）
+        if let etag = UserDefaults.standard.string(forKey: cachedReleaseEtagKey), !etag.isEmpty {
+            request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+        }
 
         do {
-            let data = try await NetworkService.shared.fetchData(request: request)
+            let (data, response) = try await session.data(for: request)
 
-            // 清除冷却期
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return .error("无效的响应")
+            }
+
+            // 403 速率限制：解析 X-RateLimit-Reset 精确冷却
+            if httpResponse.statusCode == 403 {
+                let cooldownUntil = computeRateLimitReset(httpResponse: httpResponse)
+                UserDefaults.standard.set(cooldownUntil, forKey: rateLimitUntilKey)
+                return .error(rateLimitMessage(until: cooldownUntil))
+            }
+
+            // 304 Not Modified：内容未变，用已缓存的 release 做版本比较（不消耗配额）
+            // 必须在 200...299 校验之前处理，因为 304 不属于 2xx
+            if httpResponse.statusCode == 304 {
+                if let cached = currentRelease {
+                    lastCheckDate = Date()
+                    UserDefaults.standard.set(lastCheckDate, forKey: lastCheckKey)
+                    if isReleaseNewer(cached, than: currentVersion) {
+                        // commit 按需获取，此处不消耗配额
+                        return .updateAvailable(current: currentVersion, latest: cached, commit: currentCommit)
+                    } else {
+                        return .noUpdate(current: currentVersion)
+                    }
+                }
+                // 304 但无本地缓存：保守返回无更新，不发额外请求避免消耗配额
+                return .noUpdate(current: currentVersion)
+            }
+
+            guard (200...299).contains(httpResponse.statusCode) else {
+                return .error("检查失败: HTTP \(httpResponse.statusCode)")
+            }
+
+            // 清除冷却期（请求成功，说明限流已解除）
             UserDefaults.standard.removeObject(forKey: rateLimitUntilKey)
 
+            // 200：解析新 release
             let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
 
             // 过滤掉草稿和预发布版本
@@ -204,55 +295,82 @@ final class UpdateChecker: ObservableObject {
                 return .noUpdate(current: currentVersion)
             }
 
-            // 获取 commit 信息
-            let commit = await fetchCommit(sha: release.targetCommitish)
-
-            // 缓存结果
+            // 缓存 release 与 ETag（ETag 从响应头读取）
             currentRelease = release
-            currentCommit = commit
             lastCheckDate = Date()
-            cacheResult(release: release, commit: commit)
+            cacheResult(release: release, commit: currentCommit, etag: httpResponse.value(forHTTPHeaderField: "ETag"))
 
+            // commit 改为按需获取（仅 release.body 为空且用户查看详情时），此处不再每次检查都拉取
             // 比较版本号
             if isReleaseNewer(release, than: currentVersion) {
-                return .updateAvailable(current: currentVersion, latest: release, commit: commit)
+                return .updateAvailable(current: currentVersion, latest: release, commit: currentCommit)
             } else {
                 return .noUpdate(current: currentVersion)
             }
 
         } catch let decodingError as DecodingError {
             return .error("解析响应失败: \(decodingError.localizedDescription)")
-        } catch let error as NetworkError {
-            // 处理 403 速率限制
-            if case .httpError(403) = error {
-                let cooldownUntil = Date().addingTimeInterval(rateLimitCooldown)
-                UserDefaults.standard.set(cooldownUntil, forKey: rateLimitUntilKey)
-                return .error("GitHub API 速率限制，请15分钟后重试")
-            }
-            return .error("检查失败: \(error.localizedDescription)")
         } catch {
             return .error("检查失败: \(error.localizedDescription)")
         }
     }
 
-    /// 获取指定 SHA 的 commit 信息
-    private func fetchCommit(sha: String) async -> GitHubCommit? {
-        let commitURL = "https://api.github.com/repos/\(owner)/\(repo)/commits/\(sha)"
+    /// 根据响应头计算速率限制解除时间
+    /// 优先用 X-RateLimit-Reset（Unix 秒），取 max(响应头 reset, now+最小冷却) 防止过短
+    private func computeRateLimitReset(httpResponse: HTTPURLResponse) -> Date {
+        let minCooldown = Date().addingTimeInterval(rateLimitCooldown)
+        if let resetStr = httpResponse.value(forHTTPHeaderField: "X-RateLimit-Reset"),
+           let resetEpoch = TimeInterval(resetStr) {
+            let resetDate = Date(timeIntervalSince1970: resetEpoch)
+            return max(resetDate, minCooldown)
+        }
+        return minCooldown
+    }
 
+    /// 生成速率限制提示文案，含精确解除时间
+    private func rateLimitMessage(until: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        let remaining = Int(until.timeIntervalSince(Date()))
+        let minutes = max(0, remaining / 60)
+        return "GitHub API 速率限制，将在 \(formatter.string(from: until)) 解除（约\(minutes)分钟后）"
+    }
+
+    /// 按需获取 commit 信息（仅当 release.body 为空时调用，避免每次检查都消耗配额）
+    /// - Parameter release: 已确认有更新的 release
+    /// - Returns: commit 信息；获取失败返回 nil
+    func fetchCommitIfNeeded(for release: GitHubRelease) async -> GitHubCommit? {
+        // release body 非空时不需要 commit 作为 fallback
+        if let body = release.body, !body.isEmpty {
+            return currentCommit
+        }
+
+        let commitURL = "https://api.github.com/repos/\(owner)/\(repo)/commits/\(release.targetCommitish)"
         guard let url = URL(string: commitURL) else {
-            return nil
+            return currentCommit
         }
 
         var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("WaifuX-App/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 30
 
         do {
-            let data = try await NetworkService.shared.fetchData(request: request)
-            return try JSONDecoder().decode(GitHubCommit.self, from: data)
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                return currentCommit
+            }
+            let commit = try JSONDecoder().decode(GitHubCommit.self, from: data)
+            currentCommit = commit
+            if let data = try? JSONEncoder().encode(commit) {
+                UserDefaults.standard.set(data, forKey: cachedCommitKey)
+            }
+            return commit
         } catch {
-            print("[UpdateChecker] Failed to fetch commit: \(error)")
-            return nil
+            print("[UpdateChecker] fetchCommitIfNeeded failed: \(error)")
+            return currentCommit
         }
     }
 
@@ -290,13 +408,17 @@ final class UpdateChecker: ObservableObject {
 
     // MARK: - Private
 
-    private func cacheResult(release: GitHubRelease, commit: GitHubCommit?) {
+    private func cacheResult(release: GitHubRelease, commit: GitHubCommit?, etag: String?) {
         UserDefaults.standard.set(lastCheckDate, forKey: lastCheckKey)
         if let data = try? JSONEncoder().encode(release) {
             UserDefaults.standard.set(data, forKey: cachedReleaseKey)
         }
         if let commit = commit, let data = try? JSONEncoder().encode(commit) {
             UserDefaults.standard.set(data, forKey: cachedCommitKey)
+        }
+        // 缓存 ETag 用于下次条件请求（304 不消耗配额）
+        if let etag = etag, !etag.isEmpty {
+            UserDefaults.standard.set(etag, forKey: cachedReleaseEtagKey)
         }
     }
 

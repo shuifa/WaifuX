@@ -143,12 +143,28 @@ final class LibraryFolderStore: ObservableObject {
 
     // MARK: - 移动
 
-    func moveWallpaperToFolder(wallpaperID: String, folderID: String?) {
-        WallpaperLibraryService.shared.moveWallpaperToFolder(wallpaperID: wallpaperID, folderID: folderID)
+    func moveWallpaperToFolder(
+        wallpaperID: String,
+        folderID: String?,
+        fallback: (wallpaper: Wallpaper, fileURL: URL)? = nil
+    ) {
+        WallpaperLibraryService.shared.moveWallpaperToFolder(
+            wallpaperID: wallpaperID,
+            folderID: folderID,
+            fallback: fallback
+        )
     }
 
-    func moveMediaToFolder(mediaID: String, folderID: String?) {
-        MediaLibraryService.shared.moveMediaToFolder(mediaID: mediaID, folderID: folderID)
+    func moveMediaToFolder(
+        mediaID: String,
+        folderID: String?,
+        fallback: (item: MediaItem, fileURL: URL)? = nil
+    ) {
+        MediaLibraryService.shared.moveMediaToFolder(
+            mediaID: mediaID,
+            folderID: folderID,
+            fallback: fallback
+        )
     }
 
     // MARK: - 持久化
@@ -223,15 +239,23 @@ final class LibraryGridOrderStore: ObservableObject {
         return ordered
     }
 
-    func reorder(moving movingIDs: [String], before targetID: String, availableIDs: [String], scope: LibraryGridOrderScope) {
+    func reorder(moving movingIDs: [String], before targetID: String?, availableIDs: [String], scope: LibraryGridOrderScope) {
         let available = Set(availableIDs)
         let moving = movingIDs.filter { available.contains($0) }
-        guard !moving.isEmpty, available.contains(targetID), !moving.contains(targetID) else { return }
+        guard !moving.isEmpty else { return }
+        if let targetID {
+            guard available.contains(targetID), !moving.contains(targetID) else { return }
+        }
 
         var next = orderedIDs(for: availableIDs, scope: scope)
         next.removeAll { moving.contains($0) }
 
-        let insertIndex = next.firstIndex(of: targetID) ?? next.endIndex
+        let insertIndex: Int
+        if let targetID, let index = next.firstIndex(of: targetID) {
+            insertIndex = index
+        } else {
+            insertIndex = next.endIndex
+        }
         next.insert(contentsOf: moving, at: insertIndex)
 
         orders[scope.storageKey] = next

@@ -126,6 +126,12 @@ final class VideoWallpaperManager: ObservableObject {
         return false
     }
 
+    /// 系统壁纸同步是否启用（默认开启）。关闭后冻结 setDesktopImageURL 链路，
+    /// App 不再写入系统桌面/锁屏静态壁纸；mp4/场景/web 动态壁纸引擎不受影响。
+    var isSystemWallpaperSyncEnabled: Bool {
+        UserDefaults.standard.object(forKey: "system_wallpaper_sync_enabled") as? Bool ?? true
+    }
+
     /// 动态锁屏启用后，任何静态 poster 写入都会通过 macOS 桌面壁纸接口覆盖用户手动选择的锁屏实例。
     /// 因此这里看“用户设置是否启用”，而不是看扩展此刻是否正在锁屏运行。
     private var shouldSkipStaticPosterForDynamicLockScreen: Bool {
@@ -222,6 +228,14 @@ final class VideoWallpaperManager: ObservableObject {
             self,
             selector: #selector(handleScreenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+
+        // 可视区域 crop 变更（菜单调节 / overlay 拖拽）
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleCropDidChange),
+            name: DisplayCropSettingsStore.cropDidChangeNotification,
             object: nil
         )
 
@@ -617,6 +631,9 @@ final class VideoWallpaperManager: ObservableObject {
             throw NSError(domain: "VideoWallpaper", code: 1002, userInfo: [NSLocalizedDescriptionKey: "视频文件不存在。"])
         }
 
+        // 设视频壁纸时关闭并清除静态图 overlay（视频窗口本身覆盖桌面，静态 overlay 无意义且浪费窗口）
+        StaticImageWallpaperOverlayManager.shared.clearState()
+
         // 本机视频不经过 CLI：如果设到全局或目标屏幕恰好被 CLI 管理时 stop CLI。
         // 多屏场景下，如果 CLI 正在渲染另一块屏的壁纸而本屏不需要 CLI，不杀 CLI 进程。
         if let targetScreen {
@@ -830,6 +847,35 @@ final class VideoWallpaperManager: ObservableObject {
         return players[screenID] != nil
     }
 
+    /// 对指定屏应用当前可视区域 crop 配置。在设置壁纸、布局变化、crop 变更时调用。
+    /// 注：CropLayoutEngine 实际只用 screenSize（壁纸 crop 是归一化值，由 contentsRect 处理），
+    /// 因此无需异步等待视频 track 加载完成。
+    func applyCropToScreen(_ screen: NSScreen) {
+        let screenID = screen.wallpaperScreenIdentifier
+        guard let window = windows[screenID],
+              let containerView = window.contentView as? WallpaperVideoContainerView,
+              players[screenID] != nil else { return }
+
+        let settings = DisplayCropSettingsStore.shared.settings(for: screen)
+        guard settings.shouldApplyCrop else {
+            containerView.applyCropLayout(nil)
+            window.backgroundColor = .black
+            return
+        }
+        let layout = CropLayoutEngine.compute(
+            wallpaperSize: screen.frame.size,
+            screenSize: screen.frame.size,
+            settings: settings)
+        containerView.applyCropLayout(layout)
+        window.backgroundColor = NSColor(cgColor: layout.letterboxColor) ?? .black
+    }
+
+    @objc private func handleCropDidChange(_ note: Notification) {
+        guard let screenID = note.userInfo?["screenID"] as? String,
+              let screen = NSScreen.screens.first(where: { $0.wallpaperScreenIdentifier == screenID }) else { return }
+        applyCropToScreen(screen)
+    }
+
     /// 检测指定屏幕当前是否处于暂停状态。
     func isPaused(on screen: NSScreen) -> Bool {
         let screenID = screen.wallpaperScreenIdentifier
@@ -890,6 +936,8 @@ final class VideoWallpaperManager: ObservableObject {
             }
 
             teardownAllWindows()
+            // 对称关闭静态图 overlay（保持久化，便于用户再次开启时恢复，与 stopWallpaper 保留 video 状态语义一致）
+            StaticImageWallpaperOverlayManager.shared.hideAll()
             currentVideoURL = nil
             currentPosterURL = nil
             posterURLByScreen.removeAll()
@@ -910,6 +958,8 @@ final class VideoWallpaperManager: ObservableObject {
         // 单屏停止：只拆掉该屏幕的视频层，不回退到旧静态壁纸
         let screenID = targetScreen.wallpaperScreenIdentifier
         let screenFingerprint = targetScreen.wallpaperScreenFingerprint
+        // 对称关闭该屏静态图 overlay（保持久化，便于再次开启时恢复）
+        StaticImageWallpaperOverlayManager.shared.hide(for: targetScreen)
 
         // 锁屏镜像实例活跃时，也只需要清理该屏帧源追踪；动态锁屏开启时不能回退到静态 poster。
         if isLockScreenExtensionActive {
@@ -1235,6 +1285,12 @@ final class VideoWallpaperManager: ObservableObject {
             return
         }
 
+        // 系统壁纸同步关闭时，冻结 setDesktopImageURL 链路（mp4/场景/web 动态壁纸不受影响）
+        if !isSystemWallpaperSyncEnabled {
+            print("[VideoWallpaperManager] 🧊 [sync poster safety] 系统壁纸同步已关闭，跳过静态桌面 poster 设置")
+            return
+        }
+
         let workspace = NSWorkspace.shared
         do {
             let data = try Data(contentsOf: posterURL)
@@ -1273,9 +1329,15 @@ final class VideoWallpaperManager: ObservableObject {
         try? await Task.sleep(nanoseconds: 0)
         guard !Task.isCancelled else { return }
 
-        // 安全兜底：动态锁屏启用时绝不设置静态桌面壁纸。
+        // 安全兜底：动态锁屏启用时绝不设置静态桌面壁纸，避免覆盖用户手动选择的锁屏实例。
         if shouldSkipStaticPosterForDynamicLockScreen {
             print("[VideoWallpaperManager] 🔒 [poster safety] 动态锁屏已启用，跳过静态桌面 poster 设置")
+            return
+        }
+
+        // 系统壁纸同步关闭时，冻结 setDesktopImageURL 链路（mp4/场景/web 动态壁纸不受影响）
+        if !isSystemWallpaperSyncEnabled {
+            print("[VideoWallpaperManager] 🧊 [poster safety] 系统壁纸同步已关闭，跳过静态桌面 poster 设置")
             return
         }
 
@@ -1970,6 +2032,7 @@ final class VideoWallpaperManager: ObservableObject {
                     guard let self, let containerView else { return }
                     containerView.playerLayer.player = components.player
                     containerView.playerLayer.videoGravity = .resizeAspectFill
+                    self.applyCropToScreen(targetScreen)
 
                     if let oldLooper {
                         oldLooper.disableLooping()
@@ -2058,6 +2121,7 @@ final class VideoWallpaperManager: ObservableObject {
                     containerView.cancelPlayerTransitionIfNeeded()
                     containerView.playerLayer.player = components.player
                     containerView.playerLayer.videoGravity = .resizeAspectFill
+                    applyCropToScreen(targetScreen)
                     // 非动画替换会立即播放，新播放器绑定到 layer 后先同步静音音频轨状态。
                     let screenVolume = volumeByScreen[targetScreenID] ?? volume
                     applyPlayerAudioPolicy(components.player, muted: isMuted, volume: screenVolume)
@@ -2347,6 +2411,7 @@ final class VideoWallpaperManager: ObservableObject {
 
         containerView.playerLayer.player = components.player
         containerView.playerLayer.videoGravity = .resizeAspectFill
+        applyCropToScreen(screen)
 
         // 应用噪点纹理叠加（桌面壁纸颗粒蒙层，由 Settings 开关独立控制）
         let grainEnabled = ArcBackgroundSettings.shared.grainTextureEnabled
@@ -2686,6 +2751,15 @@ private final class WallpaperVideoContainerView: NSView {
     private var grainOverlayView: NSView?
     private var transitionPlayerLayer: AVPlayerLayer?
 
+    /// 实际播放视频的 AVPlayerLayer。作为容器 backing layer 的子层，
+    /// 通过修改它的 frame 实现 pan/zoom 裁切（容器 backing layer masksToBounds 自然裁剪）。
+    private let avPlayerLayer = AVPlayerLayer()
+
+    /// 上一次 layout() 后的 viewport 矩形（容器 bounds 坐标系），用于 layout 时复用。
+    private var currentViewportRect: CGRect?
+    /// 上一次 layout() 后的 wallpaperCropRect（归一化），用于 layout 时复用。
+    private var currentWallpaperCropRect: UnitRect?
+
     var isShowingPoster: Bool {
         posterImageView != nil
     }
@@ -2693,23 +2767,78 @@ private final class WallpaperVideoContainerView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer = AVPlayerLayer()
-        playerLayer.videoGravity = .resizeAspectFill
-        playerLayer.needsDisplayOnBoundsChange = true
+        // 容器 backing layer：CALayer + masksToBounds，作为 viewport 裁剪盒
+        let container = CALayer()
+        container.masksToBounds = true
+        layer = container
+        avPlayerLayer.videoGravity = .resizeAspectFill
+        avPlayerLayer.needsDisplayOnBoundsChange = true
+        avPlayerLayer.frame = bounds
+        container.addSublayer(avPlayerLayer)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    var playerLayer: AVPlayerLayer {
-        guard let layer = layer as? AVPlayerLayer else {
-            let replacementLayer = AVPlayerLayer()
-            replacementLayer.videoGravity = .resizeAspectFill
-            self.layer = replacementLayer
-            return replacementLayer
+    var playerLayer: AVPlayerLayer { avPlayerLayer }
+
+    /// 应用已算好的 CropLayout；nil 回现状 aspect-fill。
+    /// 实现：
+    /// 1. viewport（可视框）通过 avPlayerLayer.frame 限制到 viewport 区域；容器 backing layer
+    ///    masksToBounds=true 让 viewport 之外可见 view 背景（letterbox 由 window.backgroundColor 提供）。
+    /// 2. pan/zoom 通过把 avPlayerLayer.frame 在 viewport 内 放大并偏移 实现：
+    ///    layer.frame.size = viewport.size / wallpaperCropRect.size
+    ///    layer.frame.origin = viewport.origin - wallpaperCropRect.origin × layer.frame.size
+    ///    然后 backing layer masksToBounds 把溢出的部分裁掉。
+    ///    注意：CALayer y 向上、CropLayout y 向下，需做 y 翻转。
+    func applyCropLayout(_ layout: CropLayout?) {
+        let viewBounds = bounds
+        guard let layout, viewBounds.width > 0, viewBounds.height > 0 else {
+            currentViewportRect = nil
+            currentWallpaperCropRect = nil
+            avPlayerLayer.videoGravity = .resizeAspectFill
+            avPlayerLayer.frame = viewBounds
+            transitionPlayerLayer?.frame = avPlayerLayer.bounds
+            // 回退：poster/grain 恢复全 bounds + autoresize
+            posterImageView?.autoresizingMask = [.width, .height]
+            posterImageView?.frame = viewBounds
+            posterImageView?.imageScaling = .scaleAxesIndependently
+            grainOverlayView?.autoresizingMask = [.width, .height]
+            grainOverlayView?.frame = viewBounds
+            return
         }
-        return layer
+        // 视频不变形 → aspect-fill 到 layer bounds
+        avPlayerLayer.videoGravity = .resizeAspectFill
+
+        // viewport 在 view 坐标系（y 向上）。CropLayout.viewportRect y 向下需翻转。
+        let vpW = layout.viewportRect.w * viewBounds.width
+        let vpH = layout.viewportRect.h * viewBounds.height
+        let vpX = layout.viewportRect.x * viewBounds.width
+        let vpY = (1.0 - layout.viewportRect.y - layout.viewportRect.h) * viewBounds.height
+        let viewport = CGRect(x: vpX, y: vpY, width: vpW, height: vpH)
+        currentViewportRect = viewport
+        currentWallpaperCropRect = layout.wallpaperCropRect
+
+        // layer frame：放大到 viewport.size / cropRect.size，再偏移使得 viewport 看到 cropRect
+        let crop = layout.wallpaperCropRect
+        let cropW = max(0.0001, crop.w)
+        let cropH = max(0.0001, crop.h)
+        let layerW = vpW / cropW
+        let layerH = vpH / cropH
+        // cropRect.y 向下 → 翻转：从 wallpaper 顶部移除 (1-y-h) 高度 ⇔ layer 上沿移动到 viewport 顶之上 crop.y × layerH
+        let layerX = vpX - crop.x * layerW
+        let layerY = vpY - (1.0 - crop.y - crop.h) * layerH
+        avPlayerLayer.frame = CGRect(x: layerX, y: layerY, width: layerW, height: layerH)
+        transitionPlayerLayer?.frame = avPlayerLayer.bounds
+
+        // poster / grain 也同步到 viewport（subview 不被 backing layer 的 masksToBounds 裁剪）
+        // crop 模式下必须关 autoresize，否则 view 系统会把 frame 拉回 bounds
+        posterImageView?.autoresizingMask = []
+        posterImageView?.frame = viewport
+        posterImageView?.imageScaling = .scaleProportionallyUpOrDown
+        grainOverlayView?.autoresizingMask = []
+        grainOverlayView?.frame = viewport
     }
 
     func cancelPlayerTransitionIfNeeded() {
@@ -2725,7 +2854,7 @@ private final class WallpaperVideoContainerView: NSView {
         overlayLayer.player = newPlayer
         overlayLayer.videoGravity = playerLayer.videoGravity
         overlayLayer.needsDisplayOnBoundsChange = true
-        overlayLayer.frame = bounds
+        overlayLayer.frame = playerLayer.bounds   // 跟随 playerLayer（含 crop）几何
         overlayLayer.opacity = 0
         playerLayer.addSublayer(overlayLayer)
         transitionPlayerLayer = overlayLayer
@@ -2754,10 +2883,15 @@ private final class WallpaperVideoContainerView: NSView {
     func showPoster(_ image: NSImage) {
         hidePoster()
 
-        let imageView = NSImageView(frame: bounds)
+        // poster 限制在 viewport 区域（若存在 crop），否则铺满 bounds
+        let targetFrame = currentViewportRect ?? bounds
+        let imageView = NSImageView(frame: targetFrame)
         imageView.image = image
-        imageView.imageScaling = .scaleAxesIndependently
-        imageView.autoresizingMask = [.width, .height]
+        // crop 时 viewport 已是目标比例的区域，poster 在框内 aspect-fill；
+        // 无 crop 时维持旧行为 scaleAxesIndependently 拉伸填满
+        imageView.imageScaling = currentViewportRect != nil ? .scaleProportionallyUpOrDown : .scaleAxesIndependently
+        // crop 模式下不能 autoresize（会被拉回 bounds），由 layout() 手动同步到 viewport
+        imageView.autoresizingMask = currentViewportRect != nil ? [] : [.width, .height]
         addSubview(imageView)
         posterImageView = imageView
     }
@@ -2773,9 +2907,11 @@ private final class WallpaperVideoContainerView: NSView {
         hideGrainOverlay()
         guard intensity > 0.01 else { return }
 
-        let overlayView = GrainPatternOverlayView(frame: bounds)
+        let targetFrame = currentViewportRect ?? bounds
+        let overlayView = GrainPatternOverlayView(frame: targetFrame)
         overlayView.intensity = intensity
-        overlayView.autoresizingMask = [.width, .height]
+        // crop 模式下不能 autoresize（会被拉回 bounds），由 layout() 手动同步到 viewport
+        overlayView.autoresizingMask = currentViewportRect != nil ? [] : [.width, .height]
         addSubview(overlayView)
         grainOverlayView = overlayView
     }
@@ -2788,10 +2924,23 @@ private final class WallpaperVideoContainerView: NSView {
 
     override func layout() {
         super.layout()
-        playerLayer.frame = bounds
-        transitionPlayerLayer?.frame = bounds
-        posterImageView?.frame = bounds
-        grainOverlayView?.frame = bounds
+        // 无 crop（或回退状态）：avPlayerLayer 铺满 bounds；
+        // 有 crop：avPlayerLayer.frame 由 applyCropLayout 设定，layout 时不动它（外层会在
+        // bounds 变化后调用 applyCropToScreen 重新计算）。
+        if currentWallpaperCropRect == nil {
+            avPlayerLayer.frame = bounds
+        }
+        transitionPlayerLayer?.frame = avPlayerLayer.bounds
+
+        // poster 和 grain 是 subview（非 sublayer），容器 CALayer 的 masksToBounds 裁不到它们。
+        // crop 时把它们的 frame 限制到 viewport 区域，避免超出可视框渲染。
+        if let vp = currentViewportRect {
+            posterImageView?.frame = vp
+            grainOverlayView?.frame = vp
+        } else {
+            posterImageView?.frame = bounds
+            grainOverlayView?.frame = bounds
+        }
     }
 }
 

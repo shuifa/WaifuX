@@ -503,6 +503,27 @@ final class MediaLibraryService: ObservableObject {
         )
     }
 
+    /// 公开方法：清除烘焙 MP4 + 重置 artifact，但**保留** Scene 烘焙静态预览图 (poster)。
+    /// 用户在「更多」菜单点「删除烘焙产物」时使用，便于删除后立即用 poster 重设锁屏/桌面。
+    /// sceneBakeEligibility 保留，用户后续仍可重新烘焙。
+    func clearSceneBakeArtifactKeepingPoster(itemID: String) {
+        guard let index = downloadRecords.firstIndex(where: { $0.item.id == itemID }) else { return }
+        let record = downloadRecords[index]
+        deleteSceneBakeArtifacts(for: record)
+        // 注意：故意不调用 VideoThumbnailCache.removeSceneBakePoster，
+        // 保留 scene_bake_<itemID.md5>.jpg 供调用方用于锁屏/桌面重设
+        objectWillChange.send()
+        downloadRecords[index].sceneBakeArtifact = nil
+        saveDlToCache(downloadRecords[index])
+        syncDlIndex()
+        downloadRecords = Array(downloadRecords)
+        NotificationCenter.default.post(
+            name: .sceneOfflineBakeThumbnailDidUpdate,
+            object: record.item.id,
+            userInfo: [:]
+        )
+    }
+
     /// 删除与下载记录关联的 Scene 烘焙产物
     private func deleteSceneBakeArtifacts(for record: MediaDownloadRecord) {
         let fm = FileManager.default
@@ -555,13 +576,26 @@ final class MediaLibraryService: ObservableObject {
 
     // MARK: - 文件夹移动
 
-    func moveMediaToFolder(mediaID: String, folderID: String?) {
+    /// 将媒体项移动到指定文件夹。
+    /// - Parameters:
+    ///   - mediaID: 媒体项 ID
+    ///   - folderID: 目标文件夹 ID；传 nil 表示移回根目录
+    ///   - fallback: 用于「扫描进来但还没有 DownloadRecord 的项」的回退信息。
+    ///     当传入且 favorite/download 都不命中时，先调 `recordDownload` 把该项补登成下载记录，
+    ///     再写 folderID，避免拖入文件夹后看起来无效。
+    func moveMediaToFolder(
+        mediaID: String,
+        folderID: String?,
+        fallback: (item: MediaItem, fileURL: URL)? = nil
+    ) {
+        var hit = false
         // 更新收藏记录
         if let index = favoriteRecords.firstIndex(where: { $0.item.id == mediaID }) {
             favoriteRecords[index].folderID = folderID
             saveFavToCache(favoriteRecords[index])
             syncFavIndex()
             favoriteRecords = Array(favoriteRecords)
+            hit = true
         }
         // 更新下载记录
         if let index = downloadRecords.firstIndex(where: { $0.item.id == mediaID }) {
@@ -569,6 +603,17 @@ final class MediaLibraryService: ObservableObject {
             saveDlToCache(downloadRecords[index])
             syncDlIndex()
             downloadRecords = Array(downloadRecords)
+            hit = true
+        }
+        // 都没命中：尝试从 fallback 补登记，再写 folderID
+        if !hit, let fallback {
+            recordDownload(item: fallback.item, localFileURL: fallback.fileURL)
+            if let index = downloadRecords.firstIndex(where: { $0.item.id == mediaID }) {
+                downloadRecords[index].folderID = folderID
+                saveDlToCache(downloadRecords[index])
+                syncDlIndex()
+                downloadRecords = Array(downloadRecords)
+            }
         }
     }
 
@@ -1272,13 +1317,26 @@ final class WallpaperLibraryService: ObservableObject {
 
     // MARK: - 文件夹移动
 
-    func moveWallpaperToFolder(wallpaperID: String, folderID: String?) {
+    /// 将壁纸移动到指定文件夹。
+    /// - Parameters:
+    ///   - wallpaperID: 壁纸 ID
+    ///   - folderID: 目标文件夹 ID；传 nil 表示移回根目录
+    ///   - fallback: 用于「扫描进来但还没有 DownloadRecord 的项」的回退信息。
+    ///     当传入且 favorite/download 都不命中时，先调 `recordDownload` 把该项补登成下载记录，
+    ///     再写 folderID，避免拖入文件夹后看起来无效。
+    func moveWallpaperToFolder(
+        wallpaperID: String,
+        folderID: String?,
+        fallback: (wallpaper: Wallpaper, fileURL: URL)? = nil
+    ) {
+        var hit = false
         // 更新收藏记录
         if let index = favoriteRecords.firstIndex(where: { $0.wallpaper.id == wallpaperID }) {
             favoriteRecords[index].folderID = folderID
             saveFavToCache(favoriteRecords[index])
             syncFavIndex()
             favoriteRecords = Array(favoriteRecords)
+            hit = true
         }
         // 更新下载记录
         if let index = downloadRecords.firstIndex(where: { $0.wallpaper.id == wallpaperID }) {
@@ -1286,6 +1344,17 @@ final class WallpaperLibraryService: ObservableObject {
             saveDlToCache(downloadRecords[index])
             syncDlIndex()
             downloadRecords = Array(downloadRecords)
+            hit = true
+        }
+        // 都没命中：尝试从 fallback 补登记，再写 folderID
+        if !hit, let fallback {
+            recordDownload(fallback.wallpaper, fileURL: fallback.fileURL)
+            if let index = downloadRecords.firstIndex(where: { $0.wallpaper.id == wallpaperID }) {
+                downloadRecords[index].folderID = folderID
+                saveDlToCache(downloadRecords[index])
+                syncDlIndex()
+                downloadRecords = Array(downloadRecords)
+            }
         }
     }
 

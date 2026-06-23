@@ -198,6 +198,10 @@ struct MyLibraryContentView: View {
     @State private var renamingFolder: LibraryFolder?
     @State private var renameFolderName = ""
 
+    // 拖拽排序 UI 状态
+    /// 当前 hover 中的插入位置：插入到该 entry ID 之前。nil = 未 hover 任何插入条。
+    @State private var hoveredInsertionID: String? = nil
+
     // 同步 Steam 订阅
     @State private var isSyncingSubscriptions = false
     @State private var showSyncProfileSheet = false
@@ -717,13 +721,16 @@ struct MyLibraryContentView: View {
         switch entry {
         case .folder(let folder):
             wallpaperFolderCard(folder: folder, config: config)
+                .overlay(alignment: .leading) {
+                    insertionDropZone(before: entry.id)
+                }
         case .item(let item):
             wallpaperGridItem(item: item, config: config)
+                .overlay(alignment: .leading) {
+                    insertionDropZone(before: entry.id)
+                }
                 .onAppear {
                     preloadNearbyWallpapers(around: item, config: config)
-                }
-                .dropDestination(for: String.self) { strings, _ in
-                    handleGridReorderDrop(strings, before: entry.id)
                 }
         }
     }
@@ -776,8 +783,23 @@ struct MyLibraryContentView: View {
 
     private func moveWallpapersToFolder(ids: [String], folderID: String) {
         gridOrderStore.removeIDs(Set(ids), from: currentGridOrderScope)
+        let unifiedByID: [String: UnifiedLocalWallpaper] = Dictionary(
+            uniqueKeysWithValues: viewModel.allLocalWallpapers.map { ($0.id, $0) }
+        )
         for id in ids {
-            folderStore.moveWallpaperToFolder(wallpaperID: id, folderID: folderID)
+            // 对「扫描进来但还没有 DownloadRecord」的项传 fallback，
+            // 让 Service 层自动补登记，确保 folderID 写得进去。
+            let fallback: (wallpaper: Wallpaper, fileURL: URL)?
+            if let unified = unifiedByID[id], unified.downloadRecord == nil {
+                fallback = (unified.wallpaper, unified.fileURL)
+            } else {
+                fallback = nil
+            }
+            folderStore.moveWallpaperToFolder(
+                wallpaperID: id,
+                folderID: folderID,
+                fallback: fallback
+            )
         }
         updateWallpaperItems()
     }
@@ -1001,13 +1023,16 @@ struct MyLibraryContentView: View {
         switch entry {
         case .folder(let folder):
             mediaFolderCard(folder: folder, config: config)
+                .overlay(alignment: .leading) {
+                    insertionDropZone(before: entry.id)
+                }
         case .item(let item):
             mediaGridItem(item: item, config: config)
+                .overlay(alignment: .leading) {
+                    insertionDropZone(before: entry.id)
+                }
                 .onAppear {
                     preloadNearbyMedia(around: item, config: config)
-                }
-                .dropDestination(for: String.self) { strings, _ in
-                    handleGridReorderDrop(strings, before: entry.id)
                 }
         }
     }
@@ -1060,8 +1085,21 @@ struct MyLibraryContentView: View {
 
     private func moveMediasToFolder(ids: [String], folderID: String) {
         gridOrderStore.removeIDs(Set(ids), from: currentGridOrderScope)
+        let unifiedByID: [String: UnifiedLocalMedia] = Dictionary(
+            uniqueKeysWithValues: mediaViewModel.allLocalMedia.map { ($0.id, $0) }
+        )
         for id in ids {
-            folderStore.moveMediaToFolder(mediaID: id, folderID: folderID)
+            let fallback: (item: MediaItem, fileURL: URL)?
+            if let unified = unifiedByID[id], unified.downloadRecord == nil {
+                fallback = (unified.mediaItem, unified.fileURL)
+            } else {
+                fallback = nil
+            }
+            folderStore.moveMediaToFolder(
+                mediaID: id,
+                folderID: folderID,
+                fallback: fallback
+            )
         }
         updateMediaItems()
     }
@@ -1117,19 +1155,58 @@ struct MyLibraryContentView: View {
         return "waifux:items:\(selectedMovableIDs.sorted().joined(separator: "\n"))"
     }
 
-    private func handleGridReorderDrop(_ payloads: [String], before targetID: String) -> Bool {
+    // MARK: - 拖拽反馈辅助
+
+    /// 单条插入条 drop zone：贴在卡片左侧内缘，命中时显示一根蓝色指示条。
+    /// 占用卡片左侧约 14pt 命中宽。不挡卡片其他区域的点击/hover。
+    @ViewBuilder
+    private func insertionDropZone(before entryID: String) -> some View {
+        let isActive = hoveredInsertionID == entryID
+        ZStack(alignment: .leading) {
+            if isActive {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+                    .padding(.vertical, 6)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+            Color.clear
+                .frame(width: 14)
+                .contentShape(Rectangle())
+                .dropDestination(for: String.self) { payloads, _ in
+                    handleGridReorderDrop(payloads, before: entryID)
+                } isTargeted: { hovering in
+                    if hovering {
+                        hoveredInsertionID = entryID
+                    } else if hoveredInsertionID == entryID {
+                        hoveredInsertionID = nil
+                    }
+                }
+        }
+        .frame(maxHeight: .infinity)
+        .animation(.easeOut(duration: 0.12), value: isActive)
+    }
+
+    /// 处理排序 drop。
+    /// - Parameter targetID: 插入到该 entry 之前；传 nil 表示插入到末尾。
+    @discardableResult
+    private func handleGridReorderDrop(_ payloads: [String], before targetID: String?) -> Bool {
         let movingIDs = uniqueIDs(payloads.flatMap(parseDropPayload))
             .filter { currentItemIDs.contains($0) }
         guard !movingIDs.isEmpty else { return false }
 
-        gridOrderStore.reorder(
-            moving: movingIDs,
-            before: targetID,
-            availableIDs: currentItemIDs,
-            scope: currentGridOrderScope
-        )
-        updateWallpaperItems()
-        updateMediaItems()
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.85)) {
+            gridOrderStore.reorder(
+                moving: movingIDs,
+                before: targetID,
+                availableIDs: currentItemIDs,
+                scope: currentGridOrderScope
+            )
+            updateWallpaperItems()
+            updateMediaItems()
+            hoveredInsertionID = nil
+        }
         return true
     }
 

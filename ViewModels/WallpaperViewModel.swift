@@ -238,8 +238,10 @@ class WallpaperViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
                 self?.networkStatus = status
-                // 网络恢复时自动刷新
-                if status.connectionState.isConnected && self?.wallpapers.isEmpty == true {
+                // 网络恢复时自动刷新（壁纸模块关闭时跳过，避免禁用后仍触发 Wallhaven 请求）
+                if status.connectionState.isConnected
+                    && self?.wallpapers.isEmpty == true
+                    && ModuleAvailability.shared.wallpaperEnabled {
                     Task { await self?.search() }
                 }
             }
@@ -1177,6 +1179,16 @@ class WallpaperViewModel: ObservableObject {
         let workspace = NSWorkspace.shared
         let screens = NSScreen.screens
 
+        // 系统壁纸同步关闭时，冻结 setDesktopImageURL 链路，改走独立静态图 overlay 显示。
+        // mp4/场景/web 动态壁纸不受影响（它们通过 overlay 窗口或 CLI 进程覆盖桌面）。
+        // 颗粒蒙层独立于系统壁纸，仍正常更新。
+        if !VideoWallpaperManager.shared.isSystemWallpaperSyncEnabled {
+            print("[WallpaperViewModel] 🧊 系统壁纸同步已关闭，走独立静态图 overlay 显示")
+            StaticImageWallpaperOverlayManager.shared.showAll(imageURL: imageURL)
+            StaticWallpaperGrainManager.shared.updateOverlay()
+            return
+        }
+
         let fillOptions: [NSWorkspace.DesktopImageOptionKey: Any] = [
             .imageScaling: NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue),
             .allowClipping: true
@@ -1187,6 +1199,9 @@ class WallpaperViewModel: ObservableObject {
 
         // 注册壁纸以便跨 Space 同步
         DesktopWallpaperSyncManager.shared.registerWallpaperSet(imageURL)
+
+        // 互斥：走系统壁纸时关闭并清除静态图 overlay 持久化状态
+        StaticImageWallpaperOverlayManager.shared.clearState()
 
         // 更新静态壁纸颗粒蒙层（独立窗口，不受壁纸切换影响）
         StaticWallpaperGrainManager.shared.updateOverlay()
@@ -1229,12 +1244,24 @@ class WallpaperViewModel: ObservableObject {
                 return
             }
 
+            // 系统壁纸同步关闭时，冻结 setDesktopImageURL 链路，改走独立静态图 overlay 显示。
+            // mp4/场景/web 动态壁纸不受影响；颗粒蒙层独立于系统壁纸，仍正常更新。
+            if !VideoWallpaperManager.shared.isSystemWallpaperSyncEnabled {
+                print("[WallpaperViewModel] 🧊 系统壁纸同步已关闭，走单屏独立静态图 overlay 显示")
+                StaticImageWallpaperOverlayManager.shared.show(imageURL: imageURL, for: targetScreen)
+                StaticWallpaperGrainManager.shared.updateOverlay()
+                return
+            }
+
             let fillOptions: [NSWorkspace.DesktopImageOptionKey: Any] = [
                 .imageScaling: NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue),
                 .allowClipping: true
             ]
             try workspace.setDesktopImageURLForAllSpaces(imageURL, for: targetScreen, options: fillOptions)
             DesktopWallpaperSyncManager.shared.registerWallpaperSet(imageURL, for: targetScreen)
+
+            // 互斥：走系统壁纸时关闭并清除静态图 overlay 持久化状态
+            StaticImageWallpaperOverlayManager.shared.clearState()
         } else {
             try await setWallpaper(from: imageURL, option: option)
         }
