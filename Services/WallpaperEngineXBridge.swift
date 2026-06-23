@@ -72,6 +72,8 @@ private struct ScreenProcessInfo {
     /// `--crop-control` JSON 文件路径（wgpu 每 200ms 轮询，热更新 self.crop）。
     /// 拖拽 / 提交时 Bridge 重写此文件，进程无需重启即可应用新裁切。
     let cropControlURL: URL?
+    /// `--canvas-size-file` JSON 文件路径（wgpu scene 就绪后写出 ortho 尺寸，App 读取做 crop 计算）。
+    let canvasSizeURL: URL?
 }
 
 private struct RendererAudioControlState: Codable {
@@ -433,11 +435,14 @@ final class WallpaperEngineXBridge: ObservableObject {
             // 启动时若已有裁切则同时传一次 --crop / --crop-viewport 作为兜底（避免首帧空窗）。
             let screenID = screen.wallpaperScreenIdentifier
             let cropSettings = DisplayCropSettingsStore.shared.settings(for: screen)
+            let cropControlURL = createCropControlURL(screenID: screenID)
+            let canvasSizeURL = createCanvasSizeURL(screenID: screenID)
             let initialLayout: (crop: UnitRect, viewport: UnitRect)? = {
                 guard cropSettings.shouldApplyCrop else { return nil }
-                // scene canvas 尺寸拿不到精确值，用屏尺寸近似（canvas 通常与屏同比例）
+                // 启动时 canvas 尺寸文件可能尚未写出，先 fallback 屏尺寸；handleCropDidChange 会重读。
+                let wallpaperSize = readCanvasSize(url: canvasSizeURL) ?? CGSize(width: screenW, height: screenH)
                 let layout = CropLayoutEngine.compute(
-                    wallpaperSize: CGSize(width: screenW, height: screenH),
+                    wallpaperSize: wallpaperSize,
                     screenSize: CGSize(width: screenW, height: screenH),
                     settings: cropSettings)
                 return (crop: layout.wallpaperCropRect, viewport: layout.viewportRect)
@@ -453,13 +458,13 @@ final class WallpaperEngineXBridge: ObservableObject {
                 }
                 print("[WallpaperEngineXBridge] 初始 crop=\(cr.x),\(cr.y),\(cr.w),\(cr.h) viewport=\(vp.x),\(vp.y),\(vp.w),\(vp.h)")
             }
-            let cropControlURL = createCropControlURL(screenID: screenID)
             writeCropControl(
                 url: cropControlURL,
                 crop: initialLayout?.crop,
                 viewport: initialLayout?.viewport
             )
             perScreenArgs += ["--crop-control", cropControlURL.path]
+            perScreenArgs += ["--canvas-size-file", canvasSizeURL.path]
 
             let audioControlURL = createAudioControlURL(screenID: screenID)
             let audioVolume = VideoWallpaperManager.shared.volume(for: screen)
@@ -493,7 +498,8 @@ final class WallpaperEngineXBridge: ObservableObject {
                     screenID: screenID,
                     logFile: process.logFile,
                     audioControlURL: audioControlURL,
-                    cropControlURL: cropControlURL
+                    cropControlURL: cropControlURL,
+                    canvasSizeURL: canvasSizeURL
                 )
                 screenRenderStates[screenID] = ScreenRenderState(
                     screenID: screenID,
@@ -1520,6 +1526,32 @@ final class WallpaperEngineXBridge: ObservableObject {
             .appendingPathComponent("waifux-wallpaper-wgpu-crop-\(String(safeID))-\(UUID().uuidString).json")
     }
 
+    private func createCanvasSizeURL(screenID: String) -> URL {
+        let safeID = screenID.map { ch -> Character in
+            ch.isLetter || ch.isNumber || ch == "-" || ch == "_" ? ch : "_"
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("waifux-wallpaper-wgpu-canvas-size-\(String(safeID))-\(UUID().uuidString).json")
+    }
+
+    /// 读取 wgpu 写出的 canvas 尺寸 JSON。读不到/解析失败返回 nil（调用方 fallback 屏尺寸）。
+    private func readCanvasSize(url: URL?) -> CGSize? {
+        guard let url = url else { return nil }
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let w = obj["width"] as? Double, let h = obj["height"] as? Double,
+              w > 0, h > 0 else { return nil }
+        return CGSize(width: w, height: h)
+    }
+
+    /// 供 overlay 预览取 wgpu canvas 尺寸（scene 就绪后才有值）。
+    func canvasSize(for screen: NSScreen) -> CGSize? {
+        let screenID = screen.wallpaperScreenIdentifier
+        let info = screenProcesses[screenID]
+            ?? screenProcesses.values.first(where: { $0.screenID == screenID })
+        return readCanvasSize(url: info?.canvasSizeURL)
+    }
+
     private func writeAudioControl(url: URL, muted: Bool, paused: Bool, volume: Double) {
         let state = RendererAudioControlState(
             muted: muted,
@@ -1604,6 +1636,9 @@ final class WallpaperEngineXBridge: ObservableObject {
             if let cropControlURL = info.cropControlURL {
                 try? FileManager.default.removeItem(at: cropControlURL)
             }
+            if let canvasSizeURL = info.canvasSizeURL {
+                try? FileManager.default.removeItem(at: canvasSizeURL)
+            }
         }
     }
 
@@ -1615,6 +1650,9 @@ final class WallpaperEngineXBridge: ObservableObject {
             }
             if let cropControlURL = info.cropControlURL {
                 try? FileManager.default.removeItem(at: cropControlURL)
+            }
+            if let canvasSizeURL = info.canvasSizeURL {
+                try? FileManager.default.removeItem(at: canvasSizeURL)
             }
         }
     }
@@ -2041,8 +2079,10 @@ final class WallpaperEngineXBridge: ObservableObject {
         let nextCrop: UnitRect?
         let nextViewport: UnitRect?
         if cropSettings.shouldApplyCrop {
+            // 读 wgpu 写出的 canvas 尺寸；读不到 fallback 屏尺寸。
+            let wallpaperSize = readCanvasSize(url: info?.canvasSizeURL) ?? CGSize(width: screenW, height: screenH)
             let layout = CropLayoutEngine.compute(
-                wallpaperSize: CGSize(width: screenW, height: screenH),
+                wallpaperSize: wallpaperSize,
                 screenSize: CGSize(width: screenW, height: screenH),
                 settings: cropSettings)
             nextCrop = layout.wallpaperCropRect
