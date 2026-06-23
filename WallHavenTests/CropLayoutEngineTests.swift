@@ -88,47 +88,48 @@ final class CropLayoutEngineTests: XCTestCase {
         XCTAssertEqual(layout.viewportRect.y, (1 - expectedH) / 2, accuracy: 1e-6)
     }
 
-    /// zoom=2 → 裁切框尺寸 = 1/2，居中。
+    /// zoom=2 → 窗口尺寸减半（32:9 预设，垂直方向）。
     func testZoomHalvesCropSize() {
         var s = DisplayCropSettings.defaultSettings
-        s.aspectPreset = .ratio16x9
+        s.aspectPreset = .ratio32x9
         s.zoom = 2.0
+        s.pan = CGPoint(x: 0.5, y: 0.5)
         let layout = CropLayoutEngine.compute(
             wallpaperSize: CGSize(width: 1920, height: 1080),
             screenSize: CGSize(width: 1920, height: 1080),
             settings: s)
-        assertRect(layout.wallpaperCropRect, 0.25, 0.25, 0.5, 0.5)
-    }
-
-    /// pan=1（右移到底）+ zoom=2 → 裁切框 x=0.5（clamp 到右边缘）。
-    func testPanRightShiftsCropLeft() {
-        var s = DisplayCropSettings.defaultSettings
-        s.aspectPreset = .ratio16x9
-        s.zoom = 2.0
-        s.pan = CGPoint(x: 1, y: 0)
-        let layout = CropLayoutEngine.compute(
-            wallpaperSize: CGSize(width: 1920, height: 1080),
-            screenSize: CGSize(width: 1920, height: 1080),
-            settings: s)
+        // 32:9 vpAspect=2，wpAspect=16/9 < 2 → winW=1/2, winH=winW/vpAspect=0.25
         XCTAssertEqual(layout.wallpaperCropRect.w, 0.5, accuracy: 1e-9)
-        XCTAssertEqual(layout.wallpaperCropRect.x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(layout.wallpaperCropRect.h, 0.25, accuracy: 1e-9)
     }
 
-    /// pan 超过 1 应被 clamp 到裁切框范围。
+    /// 32:9 预设 + 16:9 壁纸：pan.y=0 看上方 → crop.y=0；pan.y=1 看下方 → crop.y=1-h。
+    func testPanVerticalWithinWallpaper() {
+        var s = DisplayCropSettings.defaultSettings
+        s.aspectPreset = .ratio32x9
+        s.zoom = 1.0
+        // 32:9 vpAspect=2, wpAspect=16/9 < 2 → winW=1, winH=0.5
+        s.pan = CGPoint(x: 0.5, y: 0)
+        let l0 = CropLayoutEngine.compute(wallpaperSize: CGSize(width:1920,height:1080), screenSize: CGSize(width:1920,height:1080), settings: s)
+        XCTAssertEqual(l0.wallpaperCropRect.y, 0, accuracy: 1e-9)
+        s.pan = CGPoint(x: 0.5, y: 1)
+        let l1 = CropLayoutEngine.compute(wallpaperSize: CGSize(width:1920,height:1080), screenSize: CGSize(width:1920,height:1080), settings: s)
+        XCTAssertEqual(l1.wallpaperCropRect.y, 0.5, accuracy: 1e-9)
+    }
+
+    /// pan 超出 [0,1] 被 clamp 到边缘，窗口始终在壁纸内。
     func testPanClampsToEdges() {
         var s = DisplayCropSettings.defaultSettings
-        s.aspectPreset = .ratio16x9
-        s.zoom = 2.0
-        s.pan = CGPoint(x: 5, y: 5)
-        let layout = CropLayoutEngine.compute(
-            wallpaperSize: CGSize(width: 1920, height: 1080),
-            screenSize: CGSize(width: 1920, height: 1080),
-            settings: s)
-        XCTAssertEqual(layout.wallpaperCropRect.x, 0.5, accuracy: 1e-9)
-        XCTAssertEqual(layout.wallpaperCropRect.y, 0.5, accuracy: 1e-9)
+        s.aspectPreset = .ratio1x1
+        s.zoom = 1.0
+        s.pan = CGPoint(x: -5, y: 5)
+        // 1:1 vpAspect=9/16, wpAspect=16/9 > vpAspect → winH=1, winW=9/16
+        let layout = CropLayoutEngine.compute(wallpaperSize: CGSize(width:1920,height:1080), screenSize: CGSize(width:1920,height:1080), settings: s)
+        XCTAssertEqual(layout.wallpaperCropRect.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(layout.wallpaperCropRect.y, 0, accuracy: 1e-9)
     }
 
-    /// zoom 下限 1.0、上限 4.0。
+    /// zoom 下限 1.0、上限 4.0（窗口尺寸随 zoom 缩小）。
     func testZoomClampsToRange() {
         var sLow = DisplayCropSettings.defaultSettings
         sLow.aspectPreset = .ratio16x9
@@ -137,16 +138,19 @@ final class CropLayoutEngineTests: XCTestCase {
             wallpaperSize: CGSize(width: 1920, height: 1080),
             screenSize: CGSize(width: 1920, height: 1080),
             settings: sLow)
+        // 16:9 on 16:9 → vp=full, vpAspect=16/9, wpAspect=16/9 → winW=winH=1
         XCTAssertEqual(lLow.wallpaperCropRect.w, 1, accuracy: 1e-9)
 
         var sHigh = DisplayCropSettings.defaultSettings
-        sHigh.aspectPreset = .ratio16x9
+        sHigh.aspectPreset = .ratio32x9
         sHigh.zoom = 10
         let lHigh = CropLayoutEngine.compute(
             wallpaperSize: CGSize(width: 1920, height: 1080),
             screenSize: CGSize(width: 1920, height: 1080),
             settings: sHigh)
-        XCTAssertEqual(lHigh.wallpaperCropRect.w, 0.25, accuracy: 1e-9) // 1/4
+        // 32:9 vpAspect=2, wpAspect=16/9 < 2 → winW=1/4, winH=winW/2=0.125
+        XCTAssertEqual(lHigh.wallpaperCropRect.w, 0.25, accuracy: 1e-9)
+        XCTAssertEqual(lHigh.wallpaperCropRect.h, 0.125, accuracy: 1e-9)
     }
 
     func testLetterboxColorParsed() {

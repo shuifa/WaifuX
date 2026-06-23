@@ -47,22 +47,31 @@ enum CropLayoutEngine {
             viewport = UnitRect(x: (1 - w) / 2, y: 0, w: w, h: 1)
         }
 
-        // 2. 算壁纸裁切框 wallpaperCropRect（可视框内 aspect-fill + pan/zoom）。
-        // pan 约定：正值 = 看向该方向（正x=右→裁切框右移看到壁纸右侧；正y=下→看到壁纸下方）。
+        // 2. 算壁纸裁切框 wallpaperCropRect（可视窗口在壁纸归一化空间内滑动）。
+        // 窗口宽高比 = 可视框宽高比（保证壁纸铺进可视框不变形）；窗口尺寸由 zoom 缩放；
+        // 平移范围 = 壁纸减窗口的真实富余量，clamp 在壁纸内（不超界、不露额外黑边）。
+        // pan ∈ [0,1]，0.5=居中，= 可视窗口中心在壁纸上的归一化位置（0=壁纸左/上边，1=右/下边）。
+        let vpAspect = viewport.h > 0 ? viewport.w / viewport.h : 1.0
+        let wpAspect = (wallpaperSize.height > 0) ? wallpaperSize.width / wallpaperSize.height : 1.0
         let zoom = max(1.0, min(4.0, settings.zoom))
-        let cropSize = 1.0 / zoom                  // zoom=1 裁全图；zoom=2 裁中央 1/2
-        let panX = max(-1, min(1, settings.pan.x))
-        let panY = max(-1, min(1, settings.pan.y))
-        // 居中后按 pan 偏移；pan 作用域 = 当前 zoom 下可移动范围 (cropSize/2)。
-        var originX = (0.5 - cropSize / 2) + panX * (cropSize / 2)
-        var originY = (0.5 - cropSize / 2) + panY * (cropSize / 2)
-        // clamp 到 [0, 1 - cropSize]
-        let maxOrigin = 1.0 - cropSize
-        originX = max(0, min(maxOrigin, originX))
-        originY = max(0, min(maxOrigin, originY))
+        let winW: Double, winH: Double
+        if wpAspect > vpAspect {
+            // 壁纸更宽 → 窗口高度贴满壁纸高度，宽度 = 高度 × vpAspect（水平有富余）
+            winH = 1.0 / zoom
+            winW = winH * vpAspect
+        } else {
+            // 壁纸更窄/等高 → 窗口宽度贴满壁纸宽度，高度 = 宽度 / vpAspect（垂直有富余）
+            winW = 1.0 / zoom
+            winH = winW / vpAspect
+        }
+        let panX = max(0, min(1, settings.pan.x))
+        let panY = max(0, min(1, settings.pan.y))
+        // origin = 中心 - 半窗；clamp 到 [0, 1-win] 保证窗口始终在壁纸内
+        let originX = max(0, min(1 - winW, panX - winW / 2))
+        let originY = max(0, min(1 - winH, panY - winH / 2))
 
         return CropLayout(
-            wallpaperCropRect: UnitRect(x: originX, y: originY, w: cropSize, h: cropSize),
+            wallpaperCropRect: UnitRect(x: originX, y: originY, w: winW, h: winH),
             viewportRect: viewport,
             letterboxColor: letterboxColor
         )

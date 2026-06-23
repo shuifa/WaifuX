@@ -54,8 +54,9 @@ struct DisplayCropSettings: Codable, Equatable {
     var aspectPreset: AspectPreset = .autoFill
     /// aspectPreset == .custom 时生效。
     var customAspect: Double? = nil
-    /// 平移，(-1...1, -1...1)，0=居中。正值=看向该方向（正x=右→看到壁纸右侧；正y=下→看到壁纸下方）。
-    var pan: CGPoint = .zero
+    /// 平移，(0...1, 0...1)，0.5=居中。= 可视窗口中心在壁纸上的归一化位置
+    /// （0=壁纸左/上边，1=右/下边）。哪个方向壁纸比可视框大有富余，那个方向可平移。
+    var pan: CGPoint = CGPoint(x: 0.5, y: 0.5)
     /// 缩放，1.0...4.0。1.0=壁纸刚好铺满可视框；>1.0=放大裁切。
     var zoom: Double = 1.0
     /// 框外填充色，默认黑。
