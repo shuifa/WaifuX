@@ -67,6 +67,8 @@ final class VideoWallpaperManager: ObservableObject {
     private var windows: [String: WallpaperVideoWindow] = [:]
     private var players: [String: AVQueuePlayer] = [:]
     private var loopers: [String: AVPlayerLooper] = [:]
+    /// 每屏视频真实尺寸缓存（naturalSize），供 crop 计算用。设置壁纸时填充。
+    private var videoSizes: [String: CGSize] = [:]
     /// 延迟释放的工作项，用于取消上一次未执行的清理，避免快速切换时多组 AVPlayer 并发驻留
     private var pendingPlayerCleanups: [DispatchWorkItem] = []
     private var pendingWindowCleanups: [DispatchWorkItem] = []
@@ -862,8 +864,10 @@ final class VideoWallpaperManager: ObservableObject {
             window.backgroundColor = .black
             return
         }
+        // wallpaperSize 用视频真实 naturalSize（取不到 fallback 屏尺寸，保证不崩）。
+        let wallpaperSize = videoSizes[screenID] ?? screen.frame.size
         let layout = CropLayoutEngine.compute(
-            wallpaperSize: screen.frame.size,
+            wallpaperSize: wallpaperSize,
             screenSize: screen.frame.size,
             settings: settings)
         containerView.applyCropLayout(layout)
@@ -874,6 +878,11 @@ final class VideoWallpaperManager: ObservableObject {
         guard let screenID = note.userInfo?["screenID"] as? String,
               let screen = NSScreen.screens.first(where: { $0.wallpaperScreenIdentifier == screenID }) else { return }
         applyCropToScreen(screen)
+    }
+
+    /// 供 overlay 预览取视频真实尺寸（naturalSize）。
+    func videoSize(for screen: NSScreen) -> CGSize? {
+        videoSizes[screen.wallpaperScreenIdentifier]
     }
 
     /// 检测指定屏幕当前是否处于暂停状态。
@@ -1089,6 +1098,7 @@ final class VideoWallpaperManager: ObservableObject {
         windows.removeAll()
         players.removeAll()
         loopers.removeAll()
+        videoSizes.removeAll()
         lastAppliedScreenConfigurations.removeAll()
     }
 
@@ -1243,6 +1253,7 @@ final class VideoWallpaperManager: ObservableObject {
             looper.disableLooping()
             loopers.removeValue(forKey: screenID)
         }
+        videoSizes.removeValue(forKey: screenID)
         playerItemObservers[screenID]?.invalidate()
         playerItemObservers.removeValue(forKey: screenID)
         playerItemObserverTokens.removeValue(forKey: screenID)
@@ -2413,6 +2424,19 @@ final class VideoWallpaperManager: ObservableObject {
         containerView.playerLayer.videoGravity = .resizeAspectFill
         applyCropToScreen(screen)
 
+        // 异步加载视频真实尺寸并缓存，加载完后重算 crop（首次用 fallback 屏尺寸）。
+        Task { [weak self, videoURL] in
+            let asset = AVURLAsset(url: videoURL)
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+                  let size = try? await track.load(.naturalSize),
+                  size.width > 0, size.height > 0 else { return }
+            await MainActor.run {
+                guard let self = self, self.players[screenID] != nil else { return }
+                self.videoSizes[screenID] = size
+                self.applyCropToScreen(screen)
+            }
+        }
+
         // 应用噪点纹理叠加（桌面壁纸颗粒蒙层，由 Settings 开关独立控制）
         let grainEnabled = ArcBackgroundSettings.shared.grainTextureEnabled
         if grainEnabled {
@@ -2563,6 +2587,7 @@ final class VideoWallpaperManager: ObservableObject {
             player.removeAllItems()
         }
         players.removeAll()
+        videoSizes.removeAll()
 
         // 延迟释放 player，让 MediaToolbox 后台线程完成 FigNotificationCenter 清理。
         // 延迟完成后必须移除 work item，否则闭包会继续持有旧 player。
