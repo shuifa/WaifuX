@@ -2825,7 +2825,8 @@ private final class WallpaperVideoContainerView: NSView {
             avPlayerLayer.videoGravity = .resizeAspectFill
             avPlayerLayer.frame = viewBounds
             transitionPlayerLayer?.frame = avPlayerLayer.bounds
-            // 回退：poster/grain 恢复全 bounds + autoresize
+            // 回退：mask 清除，poster/grain 恢复全 bounds + autoresize
+            layer?.mask = nil
             posterImageView?.autoresizingMask = [.width, .height]
             posterImageView?.frame = viewBounds
             posterImageView?.imageScaling = .scaleAxesIndependently
@@ -2856,6 +2857,22 @@ private final class WallpaperVideoContainerView: NSView {
         let layerY = vpY - (1.0 - crop.y - crop.h) * layerH
         avPlayerLayer.frame = CGRect(x: layerX, y: layerY, width: layerW, height: layerH)
         transitionPlayerLayer?.frame = avPlayerLayer.bounds
+
+        // ⚠️ 关键：当 cropRect 不是正方形时（如 viewport 比例窗口），avPlayerLayer 在某个方向
+        // 被放大后会超出 viewport 边界。容器 backing layer 的 masksToBounds 只裁到 view bounds（全屏），
+        // 不会裁到 viewport，所以视频内容会"漏"进 letterbox 区域，盖掉 window.backgroundColor。
+        // 解决方案：给容器 layer 装一个 viewport 矩形的 mask，把所有子层裁到 viewport 内。
+        // viewport 等于 bounds（无 letterbox）时不装 mask，避免无谓开销。
+        let isFullViewport = abs(vpX) < 0.5 && abs(vpY) < 0.5
+            && abs(vpW - viewBounds.width) < 0.5 && abs(vpH - viewBounds.height) < 0.5
+        if isFullViewport {
+            layer?.mask = nil
+        } else {
+            let mask = (layer?.mask as? CALayer) ?? CALayer()
+            mask.backgroundColor = CGColor(gray: 1, alpha: 1)
+            mask.frame = viewport
+            layer?.mask = mask
+        }
 
         // poster / grain 也同步到 viewport（subview 不被 backing layer 的 masksToBounds 裁剪）
         // crop 模式下必须关 autoresize，否则 view 系统会把 frame 拉回 bounds
