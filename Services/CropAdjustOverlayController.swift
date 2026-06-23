@@ -159,9 +159,9 @@ private final class CropAdjustOverlayView: NSView {
     }
 
     // MARK: - 手势
-    // 约定：pan 正值 = 画面看向该方向（见 DisplayCropSettings.pan 文档）。
-    // 拖拽采用「画面跟手」隐喻：拖右 → 画面右移 → pan.x 增大；拖上 → 画面上移 → pan.y 减小。
-    // 注意 NSEvent.mouseLocation 是屏幕坐标 y 向上为正，而 pan.y 是图像 y 向下为正，故需取反。
+    // pan ∈ [0,1]，0.5=居中（见 DisplayCropSettings.pan 文档）。
+    // 拖拽采用「画面跟手」隐喻：拖右 → 壁纸右移 → 看壁纸左侧 → pan.x 减小；
+    // 拖上（屏幕坐标 y 向上）→ 壁纸上移 → 看壁纸下方 → pan.y 增大。
 
     override func mouseDown(with event: NSEvent) {
         lastDragLocation = NSEvent.mouseLocation
@@ -174,12 +174,14 @@ private final class CropAdjustOverlayView: NSView {
         let dy = current.y - last.y
         lastDragLocation = current
 
-        // 灵敏度：拖动 1/4 屏宽度对应 pan 变化 1（比 1/2 屏更跟手）
-        let sensitivity = max(1, bounds.width / 4)
+        // 画面跟手：拖右 → 壁纸右移 → 看到壁纸左侧 → pan.x 减小。
+        // 拖上（dy>0）→ 壁纸上移 → 看到壁纸下方 → pan.y 增大。
+        // 灵敏度：拖动半个屏宽 = pan 从 0 走到 1。
+        let sensitivity = max(1, bounds.width / 2)
         // interactive=true：只本进程内即时刷新 + 写 App Group JSON，不广播 Darwin、不重启 wgpu
         DisplayCropSettingsStore.shared.update(for: screen, interactive: true) { s in
-            s.pan.x = max(-1, min(1, s.pan.x + dx / sensitivity))
-            s.pan.y = max(-1, min(1, s.pan.y - dy / sensitivity))
+            s.pan.x = max(0, min(1, s.pan.x - dx / sensitivity))
+            s.pan.y = max(0, min(1, s.pan.y + dy / sensitivity))
         }
         renderPreview()
         onSettingsChanged?()
