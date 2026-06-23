@@ -34,7 +34,8 @@ struct ExtCropSettings: Codable {
     var aspectPreset: ExtAspectPreset = .autoFill
     var customAspect: Double? = nil
     /// 与 App 端 DisplayCropSettings.pan 同名同型（CGPoint → JSON [x,y]），保证跨进程解码一致。
-    var pan: CGPoint = .zero
+    /// pan ∈ [0,1]，0.5=居中（与 App 端 v2 语义一致）。
+    var pan: CGPoint = CGPoint(x: 0.5, y: 0.5)
     var zoom: Double = 1.0
     var letterboxColorHex: String = "000000"
     var isEnabled: Bool = true
@@ -77,17 +78,23 @@ enum ExtCropEngine {
             let w = targetAspect / screenAspect
             viewport = ExtUnitRect(x: (1 - w) / 2, y: 0, w: w, h: 1)
         }
+        let vpAspect = viewport.h > 0 ? viewport.w / viewport.h : 1.0
+        let wpAspect = (wallpaperSize.height > 0) ? wallpaperSize.width / wallpaperSize.height : 1.0
         let zoom = max(1.0, min(4.0, settings.zoom))
-        let cropSize = 1.0 / zoom
-        let panX = max(-1, min(1, settings.pan.x))
-        let panY = max(-1, min(1, settings.pan.y))
-        var originX = (0.5 - cropSize / 2) + panX * (cropSize / 2)
-        var originY = (0.5 - cropSize / 2) + panY * (cropSize / 2)
-        let maxOrigin = 1.0 - cropSize
-        originX = max(0, min(maxOrigin, originX))
-        originY = max(0, min(maxOrigin, originY))
+        let winW: Double, winH: Double
+        if wpAspect > vpAspect {
+            winH = 1.0 / zoom
+            winW = winH * vpAspect
+        } else {
+            winW = 1.0 / zoom
+            winH = winW / vpAspect
+        }
+        let panX = max(0, min(1, settings.pan.x))
+        let panY = max(0, min(1, settings.pan.y))
+        let originX = max(0, min(1 - winW, panX - winW / 2))
+        let originY = max(0, min(1 - winH, panY - winH / 2))
         return ExtCropLayout(
-            wallpaperCropRect: ExtUnitRect(x: originX, y: originY, w: cropSize, h: cropSize),
+            wallpaperCropRect: ExtUnitRect(x: originX, y: originY, w: winW, h: winH),
             viewportRect: viewport,
             letterboxColor: letterboxColor)
     }
