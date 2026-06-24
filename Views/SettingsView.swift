@@ -1567,7 +1567,7 @@ private struct WorkshopSettingsTab: View {
                     }
 
                     if viewModel.upscalingEnabled {
-                        MacSettingsRow(title: t("workshop.upscalingRatio"), showDivider: false) {
+                        MacSettingsRow(title: t("workshop.upscalingRatio"), showDivider: true) {
                             HStack(spacing: 8) {
                                 Text("\(Int(viewModel.upscalingPercent))%")
                                     .font(.system(size: 12, weight: .medium))
@@ -1577,6 +1577,13 @@ private struct WorkshopSettingsTab: View {
                                     .frame(width: 120)
                                     .tint(Color(hex: "30D158"))
                             }
+                        }
+
+                        MacSettingsRow(title: t("workshop.effectReduction"), subtitle: t("workshop.effectReductionDesc"), showDivider: false) {
+                            MacToggle(isOn: Binding(
+                                get: { viewModel.effectReductionEnabled },
+                                set: { viewModel.effectReductionEnabled = $0 }
+                            ))
                         }
                     }
                 }

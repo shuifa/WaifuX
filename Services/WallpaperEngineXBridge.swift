@@ -28,6 +28,13 @@ private struct WebDaemonAudioMessage: Codable {
     let volume: Double?
 }
 
+/// 与 wallpaperengine-cli daemon IPC 的音频频谱数据消息。
+/// 协议：command="audioData", spectrum=[128 floats]（0..63=L, 64..127=R）；daemon 不回响应。
+private struct WebDaemonAudioDataMessage: Codable {
+    let command: String
+    let spectrum: [Float]
+}
+
 /// 进程终止事件（线程安全，通过 os_unfair_lock 传递到 @MainActor）
 private struct TerminationEvent: @unchecked Sendable {
     let pid: pid_t
@@ -181,6 +188,11 @@ final class WallpaperEngineXBridge: ObservableObject {
     private var targetScreenIDs = Set<String>()
     private var targetScreenFingerprints = Set<String>()
     private var cancellables = Set<AnyCancellable>()
+
+    /// WE Web 壁纸音频中继当前是否对应于活跃壁纸（基于 project.json audio 标志）
+    private var audioRelayActiveForCurrentWallpaper = false
+    /// 暂停前的 relay 状态，恢复时还原
+    private var wasAudioRelayActiveBeforePause = false
 
     private let lastWallpaperPathKey = "we_last_wallpaper_path_v1"
     private let controllingExternalKey = "we_controlling_external_v1"
@@ -363,8 +375,13 @@ final class WallpaperEngineXBridge: ObservableObject {
             recordRenderState(path: resolvedPath, renderKind: renderKind, screens: effectiveScreens, userProperties: userProperties)
             DynamicWallpaperAutoPauseManager.shared.clearForegroundPauseForWallpaperSwitch()
             DynamicWallpaperAutoPauseManager.shared.reevaluateCurrentState()
+            // 解析 project.json 的 audio.enabled / supportsaudioprocessing；命中则启动音频中继。
+            // 非 web 壁纸切换路径会在 ensureStoppedForNonCLIWallpaper / stopRenderProcess 走到时 stop。
+            ensureAudioRelayMatchesActiveWallpaper(projectRoot: resolvedPath)
             return
         }
+        // 切到非 web 壁纸：根据其它屏剩余 web 壁纸重新评估是否仍需音频中继
+        ensureAudioRelayMatchesActiveWallpaper()
 
         // 4. 解析 assets 路径（如果内嵌 assets 未解压完成，异步等待后台解压）
         let resolvedAssets: String
@@ -402,6 +419,13 @@ final class WallpaperEngineXBridge: ObservableObject {
             let clamped = percent > 0 ? max(30, min(100, Int(percent))) : 70
             args += ["--upscaling", "\(clamped)"]
             print("[WallpaperEngineXBridge] 超分辨率模式已启用，缩放比例: \(clamped)%")
+
+            // 性能模式：进一步把 effect 中间 RT 按超分比例缩小
+            // 仅在超分启用时追加，与 CLI 语义一致（effect-reduction 与 upscaling 配套）
+            if UserDefaults.standard.bool(forKey: "effect_reduction_enabled") {
+                args += ["--effect-reduction"]
+                print("[WallpaperEngineXBridge] 性能模式（effect-reduction）已启用")
+            }
         }
 
         // 用户属性覆盖（自动合并场景配置覆盖）
@@ -510,6 +534,45 @@ final class WallpaperEngineXBridge: ObservableObject {
                 )
                 _deinitPIDs.insert(launchedPID)
                 print("[WallpaperEngineXBridge] ✅ 屏幕 \(screenID) wallpaper-wgpu 已启动 (pid=\(launchedPID))")
+                // 启动后异步等待 wgpu 写出真实 canvas_size，用真实壁纸尺寸重算 crop 并热更新一次。
+                // 启动时只能用 fallback 屏尺寸算 crop（canvas_size 文件还不存在），导致新壁纸
+                // 比例与屏不一致时被压扁。此处轮询读到真实 size 后重算并写 crop-control JSON。
+                if cropSettings.shouldApplyCrop {
+                    let cropSettingsCopy = cropSettings
+                    let cropControlURLCopy = cropControlURL
+                    let canvasSizeURLCopy = canvasSizeURL
+                    let screenW_c = screenW
+                    let screenH_c = screenH
+                    let genCopy = self.launchGeneration
+                    let screenIDCopy = screenID
+                    Task { @MainActor [weak self] in
+                        // 最多等 5 秒（典型 scene 加载 < 2 秒）
+                        let deadline = Date().addingTimeInterval(5.0)
+                        while Date() < deadline {
+                            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                            guard let self else { return }
+                            // 状态校验：进程 generation 必须匹配（壁纸再次切换后旧任务不应再写）
+                            guard self.launchGeneration == genCopy,
+                                  self.screenProcesses[screenIDCopy]?.generation == genCopy else { return }
+                            if let realSize = self.readCanvasSize(url: canvasSizeURLCopy) {
+                                let layout = CropLayoutEngine.compute(
+                                    wallpaperSize: realSize,
+                                    screenSize: CGSize(width: screenW_c, height: screenH_c),
+                                    settings: cropSettingsCopy)
+                                let vp = layout.viewportRect
+                                let isFullVp = abs(vp.x) < 1e-4 && abs(vp.y) < 1e-4
+                                    && abs(vp.w - 1) < 1e-4 && abs(vp.h - 1) < 1e-4
+                                self.writeCropControl(
+                                    url: cropControlURLCopy,
+                                    crop: layout.wallpaperCropRect,
+                                    viewport: isFullVp ? nil : vp)
+                                print("[WallpaperEngineXBridge] 屏幕 \(screenIDCopy) canvas_size 就绪 (\(Int(realSize.width))×\(Int(realSize.height)))，crop 已按真实尺寸重算并热更新")
+                                return
+                            }
+                        }
+                        print("[WallpaperEngineXBridge] ⚠️ 屏幕 \(screenIDCopy) 等待 canvas_size 超时，沿用 fallback crop")
+                    }
+                }
             } catch {
                 print("[WallpaperEngineXBridge] ❌ 屏幕 \(screenID) 启动失败: \(error.localizedDescription)")
                 removeScreenProcess(screenID)
@@ -586,6 +649,11 @@ final class WallpaperEngineXBridge: ObservableObject {
         guard isControllingExternalEngine else { return }
         isExternalPaused = true
         updateRendererAudioControls(paused: true)
+        // 暂停时释放 SCK；恢复时由 resumeWallpaper 根据当前壁纸重启
+        if audioRelayActiveForCurrentWallpaper {
+            wasAudioRelayActiveBeforePause = true
+            stopAudioRelayIfActive()
+        }
         let generation = launchGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             guard let self, self.isExternalPaused, self.launchGeneration == generation else { return }
@@ -610,6 +678,11 @@ final class WallpaperEngineXBridge: ObservableObject {
         perScreenPausedScreenIDs.removeAll()
         isExternalPaused = false
         updateRendererAudioControls(paused: false)
+        // 恢复前是否启用过 relay → 根据当前壁纸的 project.json 重新检测启动
+        if wasAudioRelayActiveBeforePause, let path = lastWallpaperPath {
+            ensureAudioRelayMatchesActiveWallpaper(projectRoot: path)
+        }
+        wasAudioRelayActiveBeforePause = false
     }
 
     /// 按屏幕暂停追踪：通过 per-screen API 暂停的屏幕 ID
@@ -708,6 +781,96 @@ final class WallpaperEngineXBridge: ObservableObject {
         }
     }
 
+    /// 通过 Unix Socket 把 WE 128-frame 频谱 fire-and-forget 推给 daemon。
+    /// 不读响应、不阻塞：daemon 端 `.audioData` 路由明确不写响应（避免 30fps × OK 塞爆 socket）。
+    /// 协议帧格式：[UInt32 length, host byte order][JSON body]，与现有命令保持一致。
+    func sendAudioDataToWebDaemon(_ spectrum128: [Float]) {
+        guard isCurrentWallpaperWeb else { return }
+        guard spectrum128.count == 128 else { return }
+        let socketPath = "/tmp/wallpaperengine-cli.sock"
+        let msg = WebDaemonAudioDataMessage(command: "audioData", spectrum: spectrum128)
+        guard let data = try? JSONEncoder().encode(msg) else { return }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            strncpy(&addr.sun_path, socketPath, MemoryLayout.size(ofValue: addr.sun_path) - 1)
+
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else { return }
+            defer { close(fd) }
+
+            let size = MemoryLayout<sockaddr_un>.size
+            let connected = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(fd, $0, socklen_t(size))
+                }
+            }
+            guard connected == 0 else { return }
+
+            var length = UInt32(data.count)
+            let payload = Data(bytes: &length, count: MemoryLayout<UInt32>.size) + data
+            _ = payload.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, payload.count, 0) }
+            // 不 recv：daemon 不发响应；shutdown(SHUT_WR) 让对端读到 EOF 后干净关闭，
+            // 避免半开连接堆积。daemon 已 SIGPIPE IGN，残留写不会 KILL 进程。
+            shutdown(fd, SHUT_WR)
+        }
+    }
+
+    /// 解析 WE project.json 判断是否需要实时音频频谱。
+    /// 命中规则任一为真：`audio.enabled == true` 或 `general.supportsaudioprocessing == true`。
+    /// JSON 损坏 / 字段缺失 / 类型错误 → false（不抛）。
+    static func wallpaperRequiresAudio(projectJSONURL: URL) -> Bool {
+        guard let data = try? Data(contentsOf: projectJSONURL) else { return false }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        if let audio = obj["audio"] as? [String: Any],
+           let enabled = audio["enabled"] as? Bool, enabled {
+            return true
+        }
+        if let general = obj["general"] as? [String: Any],
+           let supports = general["supportsaudioprocessing"] as? Bool, supports {
+            return true
+        }
+        return false
+    }
+
+    /// 单点真相：扫描所有屏幕当前 web 壁纸的 project.json，
+    /// 只要有任意一块屏正在跑需要音频的 web 壁纸，就启 relay；否则停。
+    /// 任何会改变 `screenRenderStates` 或新增/停止 web 渲染的路径都应该在尾部调用一次。
+    func ensureAudioRelayMatchesActiveWallpaper(projectRoot: String? = nil) {
+        var needsAudio = false
+        // 扫描已记录的 per-screen 状态
+        for state in screenRenderStates.values where state.renderKind == .web {
+            let projectJSON = URL(fileURLWithPath: state.path).appendingPathComponent("project.json")
+            if Self.wallpaperRequiresAudio(projectJSONURL: projectJSON) {
+                needsAudio = true
+                break
+            }
+        }
+        // 兜底：调用方明确传入的 projectRoot（刚 setWebWallpaper 完，可能 recordRenderState 还未到）
+        if !needsAudio, let projectRoot {
+            let projectJSON = URL(fileURLWithPath: projectRoot).appendingPathComponent("project.json")
+            if Self.wallpaperRequiresAudio(projectJSONURL: projectJSON) {
+                needsAudio = true
+            }
+        }
+
+        if needsAudio && !audioRelayActiveForCurrentWallpaper {
+            WallpaperWebAudioRelay.shared.start()
+            audioRelayActiveForCurrentWallpaper = true
+        } else if !needsAudio && audioRelayActiveForCurrentWallpaper {
+            WallpaperWebAudioRelay.shared.stop()
+            audioRelayActiveForCurrentWallpaper = false
+        }
+    }
+
+    /// 任何"完全停止外部引擎/暂停"的路径必须调用，确保 relay 不残留 SCK。
+    func stopAudioRelayIfActive() {
+        guard audioRelayActiveForCurrentWallpaper else { return }
+        WallpaperWebAudioRelay.shared.stop()
+        audioRelayActiveForCurrentWallpaper = false
+    }
+
     /// 切换暂停/恢复
     func toggleWallpaper() {
         guard isControllingExternalEngine else {
@@ -738,6 +901,7 @@ final class WallpaperEngineXBridge: ObservableObject {
         stopRenderProcess()
         webRenderer.stop()
         Task { try? await Self.runLegacyCLIClientCommand(["stop"]) }
+        stopAudioRelayIfActive()
         isControllingExternalEngine = false
         isExternalPaused = false
         closeRendererLogs()
@@ -763,6 +927,7 @@ final class WallpaperEngineXBridge: ObservableObject {
         Task { await Self.killLegacyDaemonIfRunning(waitForExit: false) }
         webRenderer.stop()
         activeRenderKind = nil
+        stopAudioRelayIfActive()
         isControllingExternalEngine = false
         isExternalPaused = false
         closeRendererLogs()
@@ -824,6 +989,8 @@ final class WallpaperEngineXBridge: ObservableObject {
 
         removeRenderState(for: targetScreen)
         updateControlStateFromScreenStates()
+        // 这块屏被切走后，全局可能不再有需要音频的 web 壁纸了
+        ensureAudioRelayMatchesActiveWallpaper()
         persistState()
     }
 
@@ -844,6 +1011,7 @@ final class WallpaperEngineXBridge: ObservableObject {
         screenWatchdogs.values.forEach { $0.cancel() }
         screenWatchdogs.removeAll()
         webRenderer.stop()
+        stopAudioRelayIfActive()
         isControllingExternalEngine = false
         isExternalPaused = false
         targetScreenIDs.removeAll()

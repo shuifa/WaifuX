@@ -98,9 +98,36 @@ final class CropLayoutEngineTests: XCTestCase {
             wallpaperSize: CGSize(width: 1920, height: 1080),
             screenSize: CGSize(width: 1920, height: 1080),
             settings: s)
-        // 32:9 vpAspect=2，wpAspect=16/9 < 2 → winW=1/2, winH=winW/vpAspect=0.25
+        // cover: 32:9 可视框 1920×540, 16:9 壁纸 1920×1080, zoom=2 → coverScale×2=2.0
+        // 显示壁纸=3840×2160, winW=1920/3840=0.5, winH=540/2160=0.25
         XCTAssertEqual(layout.wallpaperCropRect.w, 0.5, accuracy: 1e-9)
         XCTAssertEqual(layout.wallpaperCropRect.h, 0.25, accuracy: 1e-9)
+    }
+
+    /// 回归：超宽壁纸（6600×3000, 2.2:1）选 32:9 预设 → 宽度撑满、上下裁切，
+    /// crop 窗口必须在 [0,1] 内（cover 语义，不能 w>1 溢出）。
+    /// 旧实现用宽高比分支推断 cover 方向，壁纸比可视框宽时误走 contain 分支算出 w=2.0，
+    /// 导致 wgpu blit 采样超界、右侧素材被 ClampToEdge 拉伸。
+    func testUltrawideWallpaperCoversNotContains() {
+        var s = DisplayCropSettings.defaultSettings
+        s.aspectPreset = .ratio32x9
+        s.zoom = 1.0
+        s.pan = CGPoint(x: 0.5, y: 0.5)
+        let layout = CropLayoutEngine.compute(
+            wallpaperSize: CGSize(width: 6600, height: 3000),
+            screenSize: CGSize(width: 1920, height: 1080),
+            settings: s)
+        // cover: 壁纸宽度铺满可视框宽度 → crop.w = 1.0
+        XCTAssertEqual(layout.wallpaperCropRect.w, 1.0, accuracy: 1e-6)
+        // 高度方向裁切 → crop.h < 1.0
+        // vp 像素 = 1920×540, coverScale = max(1920/6600, 540/3000) = 1920/6600
+        // 显示壁纸高 = 3000 × 1920/6600 = 872.7, crop.h = 540/872.7 ≈ 0.61875
+        XCTAssertEqual(layout.wallpaperCropRect.h, 0.61875, accuracy: 1e-4)
+        // 居中：origin = (1 - h)/2
+        XCTAssertEqual(layout.wallpaperCropRect.y, (1.0 - 0.61875) / 2.0, accuracy: 1e-4)
+        // crop 窗口不得超出 [0,1]
+        XCTAssertLessThanOrEqual(layout.wallpaperCropRect.w, 1.0)
+        XCTAssertLessThanOrEqual(layout.wallpaperCropRect.h, 1.0)
     }
 
     /// 32:9 预设 + 16:9 壁纸：pan.y=0 看上方 → crop.y=0；pan.y=1 看下方 → crop.y=1-h。
@@ -108,7 +135,8 @@ final class CropLayoutEngineTests: XCTestCase {
         var s = DisplayCropSettings.defaultSettings
         s.aspectPreset = .ratio32x9
         s.zoom = 1.0
-        // 32:9 vpAspect=2, wpAspect=16/9 < 2 → winW=1, winH=0.5
+        // cover: 32:9 可视框 1920×540, 16:9 壁纸 1920×1080
+        // coverScale = max(1920/1920, 540/1080) = 1.0, 显示壁纸=1920×1080, winW=1, winH=540/1080=0.5
         s.pan = CGPoint(x: 0.5, y: 0)
         let l0 = CropLayoutEngine.compute(wallpaperSize: CGSize(width:1920,height:1080), screenSize: CGSize(width:1920,height:1080), settings: s)
         XCTAssertEqual(l0.wallpaperCropRect.y, 0, accuracy: 1e-9)
@@ -123,7 +151,8 @@ final class CropLayoutEngineTests: XCTestCase {
         s.aspectPreset = .ratio1x1
         s.zoom = 1.0
         s.pan = CGPoint(x: -5, y: 5)
-        // 1:1 vpAspect=9/16, wpAspect=16/9 > vpAspect → winH=1, winW=9/16
+        // cover: 1:1 可视框 1080×1080, 16:9 壁纸 1920×1080
+        // coverScale = max(1080/1920, 1080/1080) = 1.0, 显示壁纸=1920×1080, winW=1080/1920=0.5625, winH=1
         let layout = CropLayoutEngine.compute(wallpaperSize: CGSize(width:1920,height:1080), screenSize: CGSize(width:1920,height:1080), settings: s)
         XCTAssertEqual(layout.wallpaperCropRect.x, 0, accuracy: 1e-9)
         XCTAssertEqual(layout.wallpaperCropRect.y, 0, accuracy: 1e-9)

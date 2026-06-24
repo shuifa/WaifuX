@@ -1211,7 +1211,7 @@ private struct DownloadProgressToast: View {
     }
 }
 
-// MARK: - 壁纸数据源切换 Toast（自动降级 / 手动切换提示）
+// MARK: - 壁纸数据源切换 Toast
 private struct WallpaperSourceSwitchToast: View {
     @ObservedObject private var sourceManager = WallpaperSourceManager.shared
     @State private var isShowing: Bool = false
@@ -1228,9 +1228,6 @@ private struct WallpaperSourceSwitchToast: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.9))
                         .multilineTextAlignment(.center)
-                    Text("可在「设置 → 壁纸数据源」中手动切回")
-                        .font(.system(size: 11, weight: .regular))
-                        .foregroundStyle(Color.white.opacity(0.4))
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 16)

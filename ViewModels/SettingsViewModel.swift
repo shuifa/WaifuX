@@ -73,6 +73,12 @@ class SettingsViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(upscalingPercent, forKey: "upscaling_percent") }
     }
 
+    /// 性能模式（--effect-reduction）：压缩次级采样等 effect 中间 RT 精度
+    /// 仅在超分模式启用时生效；默认关闭以避免静默损失 effect 精度
+    @Published var effectReductionEnabled = false {
+        didSet { UserDefaults.standard.set(effectReductionEnabled, forKey: "effect_reduction_enabled") }
+    }
+
     /// 壁纸引擎实时渲染帧率上限 (30 ~ 显示器最大刷新率)
     @Published var wallpaperEngineFPS: Double = 60 {
         didSet { UserDefaults.standard.set(wallpaperEngineFPS, forKey: "wallpaper_engine_fps") }
@@ -304,6 +310,7 @@ class SettingsViewModel: ObservableObject {
             sceneRealtimeRenderingEnabled = defaults.bool(forKey: "scene_realtime_rendering_enabled")
             upscalingEnabled = defaults.object(forKey: "upscaling_enabled") as? Bool ?? true
             upscalingPercent = defaults.object(forKey: "upscaling_percent") as? Double ?? 70
+            effectReductionEnabled = defaults.object(forKey: "effect_reduction_enabled") as? Bool ?? false
             wallpaperEngineFPS = defaults.object(forKey: "wallpaper_engine_fps") as? Double ?? 60.0
             sceneBakeFPS = defaults.object(forKey: "scene_bake_fps") as? Double ?? 30.0
             sceneBakeDuration = defaults.object(forKey: "scene_bake_duration") as? Double ?? 15

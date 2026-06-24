@@ -99,7 +99,7 @@ private func waifuXGrayscaleThumb(from cgImage: CGImage, dimension: Int) -> [UIn
 
 // MARK: - IPC
 private enum IPCCommand: String, Codable {
-    case set, pause, resume, stop, applyProperties, audioControl
+    case set, pause, resume, stop, applyProperties, audioControl, audioData
 }
 
 private struct IPCMessage: Codable {
@@ -109,14 +109,17 @@ private struct IPCMessage: Codable {
     let propertiesJSON: String?
     let muted: Bool?
     let volume: Double?
+    /// WE 音频频谱（128 floats; 0..63 = L, 64..127 = R）；仅 `.audioData` 命令使用。
+    let spectrum: [Float]?
 
-    init(command: IPCCommand, path: String?, screen: Int?, propertiesJSON: String? = nil, muted: Bool? = nil, volume: Double? = nil) {
+    init(command: IPCCommand, path: String?, screen: Int?, propertiesJSON: String? = nil, muted: Bool? = nil, volume: Double? = nil, spectrum: [Float]? = nil) {
         self.command = command
         self.path = path
         self.screen = screen
         self.propertiesJSON = propertiesJSON
         self.muted = muted
         self.volume = volume
+        self.spectrum = spectrum
     }
 }
 
@@ -1503,6 +1506,30 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         }
     }
 
+    /// 把 WE 标准 128 frame 浮点频谱注入到 webView，
+    /// 触发壁纸侧 `wallpaperRegisterAudioListener` 回调链（与 shim 中 `__wxUpdateAudioBuf` 对接）。
+    /// fire-and-forget：失败仅 dlog；JS 异常不影响后续帧。
+    /// 调用频率上限 30fps，~1KB JS 字符串，主线程开销可忽略。
+    func pushAudioFrame(_ floats: [Float]) {
+        guard floats.count == 128 else { return }
+        guard isLoaded, let webView else { return }
+        var sb = "if(window.__wxUpdateAudioBuf)window.__wxUpdateAudioBuf(["
+        sb.reserveCapacity(1200)
+        for i in 0..<128 {
+            if i > 0 { sb.append(",") }
+            sb.append(String(format: "%.4f", floats[i]))
+        }
+        sb.append("]);")
+        let js = sb
+        DispatchQueue.main.async { [weak webView] in
+            webView?.evaluateJavaScript(js) { _, error in
+                if let error {
+                    dlog("[WebRendererBridge] pushAudioFrame JS error: \(error)")
+                }
+            }
+        }
+    }
+
     @discardableResult
     func applyUserProperties(jsonString: String) -> Bool {
         injectedPropertiesJSON = jsonString
@@ -2116,6 +2143,14 @@ private final class DesktopWallpaperManager {
         WebRendererBridge.shared.setAudioControl(muted: muted, volume: volume)
     }
 
+    /// 透传 WE 音频频谱给 web renderer。仅在当前壁纸为 web 时有效；否则静默丢帧。
+    /// 参数为 WE 标准 128 frame：0..63 = L, 64..127 = R。
+    func pushWebAudioFrame(_ spectrum: [Float]) {
+        guard isRunning, isWebMode else { return }
+        guard spectrum.count == 128 else { return }
+        WebRendererBridge.shared.pushAudioFrame(spectrum)
+    }
+
     func stopWallpaper() {
         if isWebMode {
             WebRendererBridge.shared.stop()
@@ -2688,6 +2723,11 @@ private final class Daemon: NSObject, NSApplicationDelegate {
                 case .audioControl:
                     DesktopWallpaperManager.shared.setWebAudioControl(muted: msg.muted, volume: msg.volume)
                     sendResponse("OK")
+                case .audioData:
+                    if let spec = msg.spectrum, spec.count == 128 {
+                        DesktopWallpaperManager.shared.pushWebAudioFrame(spec)
+                    }
+                    // 不发响应：30fps 高频命令，sendResponse 会塞爆缓冲且让 App 侧每帧都要 recv。
                 }
             }
         }

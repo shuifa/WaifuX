@@ -47,23 +47,23 @@ enum CropLayoutEngine {
             viewport = UnitRect(x: (1 - w) / 2, y: 0, w: w, h: 1)
         }
 
-        // 2. 算壁纸裁切框 wallpaperCropRect（可视窗口在壁纸归一化空间内滑动）。
-        // 窗口宽高比 = 可视框宽高比（保证壁纸铺进可视框不变形）；窗口尺寸由 zoom 缩放；
-        // 平移范围 = 壁纸减窗口的真实富余量，clamp 在壁纸内（不超界、不露额外黑边）。
+        // 2. 算壁纸裁切框 wallpaperCropRect（cover 语义：壁纸铺满可视框，裁掉溢出部分）。
+        // 纯 cover 几何：壁纸按 max(可视框/壁纸 缩放比) 放大覆盖可视框，较短轴铺满、较长轴裁切。
+        // zoom > 1 进一步放大（窗口缩小），露出更多平移空间。
         // pan ∈ [0,1]，0.5=居中，= 可视窗口中心在壁纸上的归一化位置（0=壁纸左/上边，1=右/下边）。
-        let vpAspect = viewport.h > 0 ? viewport.w / viewport.h : 1.0
-        let wpAspect = (wallpaperSize.height > 0) ? wallpaperSize.width / wallpaperSize.height : 1.0
+        // 哪个方向壁纸比可视框大有富余，那个方向可平移。
+        let vpW_px = viewport.w * screenSize.width
+        let vpH_px = viewport.h * screenSize.height
+        let wpW = wallpaperSize.width
+        let wpH = wallpaperSize.height
+        let coverScale = max(vpW_px / wpW, vpH_px / wpH)
         let zoom = max(1.0, min(4.0, settings.zoom))
-        let winW: Double, winH: Double
-        if wpAspect > vpAspect {
-            // 壁纸更宽 → 窗口高度贴满壁纸高度，宽度 = 高度 × vpAspect（水平有富余）
-            winH = 1.0 / zoom
-            winW = winH * vpAspect
-        } else {
-            // 壁纸更窄/等高 → 窗口宽度贴满壁纸宽度，高度 = 宽度 / vpAspect（垂直有富余）
-            winW = 1.0 / zoom
-            winH = winW / vpAspect
-        }
+        let scale = coverScale * zoom
+        let dispW = wpW * scale
+        let dispH = wpH * scale
+        // crop 窗口（壁纸归一化空间）= 可视框像素 / 显示壁纸像素
+        let winW = (dispW > 0) ? vpW_px / dispW : 1.0
+        let winH = (dispH > 0) ? vpH_px / dispH : 1.0
         let panX = max(0, min(1, settings.pan.x))
         let panY = max(0, min(1, settings.pan.y))
         // origin = 中心 - 半窗；clamp 到 [0, 1-win] 保证窗口始终在壁纸内

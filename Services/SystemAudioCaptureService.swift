@@ -3,22 +3,25 @@ import Accelerate
 import Combine
 import ScreenCaptureKit
 import AVFoundation
+import CoreAudio
+import AudioToolbox
 
 // MARK: - 系统音频捕获服务
 //
-// 使用 ScreenCaptureKit 捕获系统音频输出，
+// 使用 CoreAudio Process Tap（macOS 14.4+）捕获系统音频输出，
 // 经 vDSP FFT 转换为频谱数据。
 //
 // ═══════════════════════════════════════════════════════════
 // 捕获方式：
-//   ScreenCaptureKit (SCStream)
-//   → 捕获系统全局音频输出（Spotify/浏览器/游戏等一切声音）
+//   CATapDescription + AudioHardwareCreateProcessTap
+//   → 捕获系统全局音频输出 mixdown（Spotify/浏览器/游戏等）
 //   → 无需虚拟环回驱动
-//   → 需要屏幕录制权限（首次启用时系统弹窗）
+//   → 无需屏幕录制权限（不同于早期 ScreenCaptureKit 方案）
+//   → 通过 Aggregate Device + AudioDeviceIOProc 回调读取 PCM
 //
-// 性能优化：
-//   - 仅在可视化启用时才启动 SCStream
-//   - 音频处理在后台串行队列执行
+// 性能：
+//   - 启动后系统直接以原生采样率推送 Float32 PCM
+//   - 处理在 IOProc 回调线程（CoreAudio 实时线程）执行
 //   - 平滑系数避免视觉闪烁
 // ═══════════════════════════════════════════════════════════
 
@@ -50,12 +53,19 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
 
     // MARK: - 私有状态
 
-    private var stream: SCStream?
-    private let fftSize: Int = 2048
-    private let fftSizeLog2: Int = 11
+    private var tapID: AudioObjectID = kAudioObjectUnknown
+    private var aggregateDeviceID: AudioObjectID = kAudioObjectUnknown
+    private var ioProcID: AudioDeviceIOProcID?
+    private let tapUUID = UUID()
+
+    nonisolated(unsafe) fileprivate static let fftSize: Int = 2048
+    nonisolated(unsafe) fileprivate static let fftSizeLog2: Int = 11
+
+    /// 用于让 FFT 线程能访问 self 上的 @Published 属性
+    nonisolated(unsafe) private static var sharedRef: SystemAudioCaptureService?
 
     /// 平滑系数（0~1，越大越敏感）
-    private let smoothFactor: Float = 0.30
+    nonisolated(unsafe) fileprivate static let smoothFactor: Float = 0.30
 
     /// 缓存上一帧的频谱值用于平滑
     private var lastSpectrum16: [Float] = .init(repeating: 0, count: 16)
@@ -63,22 +73,39 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
     private var lastSpectrum64: [Float] = .init(repeating: 0, count: 64)
 
     /// FFT 处理队列
-    private let fftQueue = DispatchQueue(label: "com.waifux.audio-fft", qos: .userInitiated)
+    nonisolated(unsafe) fileprivate static let fftQueue = DispatchQueue(label: "com.waifux.audio-fft", qos: .userInitiated)
 
     /// 权限是否已获取
     @Published public private(set) var isAuthorized = false
 
     // MARK: - FFT 缓存（避免每帧重建）
 
-    nonisolated(unsafe) private var fftSetup: FFTSetup?
-    nonisolated(unsafe) private var hannWindow: [Float] = []
+    nonisolated(unsafe) fileprivate static var fftSetup: FFTSetup?
+    nonisolated(unsafe) fileprivate static var hannWindow: [Float] = []
+
+    /// IOProc 实时线程用的预分配 buffer（无 malloc）
+    /// 8192 frames × 2 channels = 16384 floats = 64KB，足够单次回调
+    nonisolated(unsafe) fileprivate static let ioBufferCapacity: Int = 16384
+    nonisolated(unsafe) fileprivate static var ioBuffer: UnsafeMutablePointer<Float> = .allocate(capacity: 16384)
+
+    /// 复用的 FFT 工作 buffer（避免每帧堆分配）
+    nonisolated(unsafe) fileprivate static let fftChunk: UnsafeMutablePointer<Float> = .allocate(capacity: 2048)
+    nonisolated(unsafe) fileprivate static let fftReal: UnsafeMutablePointer<Float> = .allocate(capacity: 1024)
+    nonisolated(unsafe) fileprivate static let fftImag: UnsafeMutablePointer<Float> = .allocate(capacity: 1024)
+    nonisolated(unsafe) fileprivate static let fftMag: UnsafeMutablePointer<Float> = .allocate(capacity: 1024)
+    nonisolated(unsafe) fileprivate static let fftWindowed: UnsafeMutablePointer<Float> = .allocate(capacity: 2048)
+    nonisolated(unsafe) fileprivate static let fftDb: UnsafeMutablePointer<Float> = .allocate(capacity: 1024)
+
+    /// FFT 处理派发节流：仅当 ring 中已累积 ≥ fftSize 才派发（避免空 dispatch）
+    nonisolated(unsafe) fileprivate static var fftWorkPending: Bool = false
 
     /// UI 更新节流（~30fps）
-    nonisolated(unsafe) private var lastUIUpdateTime: UInt64 = 0
+    nonisolated(unsafe) fileprivate static var lastUIUpdateTime: UInt64 = 0
     nonisolated private static let uiUpdateIntervalNs: UInt64 = 33_000_000 // ~30fps
 
     private override init() {
         super.init()
+        Self.sharedRef = self
     }
 
     // MARK: - 启停控制
@@ -86,21 +113,17 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
     /// 启动音频捕获
     public func start() {
         guard !isRunning else { return }
-
         Task {
-            await requestPermissionAndStart()
+            await startCoreAudioTap()
         }
     }
 
     /// 停止音频捕获并释放资源
     public func stop() {
         guard isRunning else { return }
-
-        stream?.stopCapture()
-        stream = nil
+        stopCoreAudioTap()
         isRunning = false
         resetSpectrum()
-        print("[AudioCapture] ScreenCaptureKit 音频捕获已停止")
     }
 
     private func resetSpectrum() {
@@ -116,122 +139,196 @@ public final class SystemAudioCaptureService: NSObject, ObservableObject {
         averageEnergy = 0
     }
 
-    // MARK: - 权限与启动
+    // MARK: - CoreAudio Tap 启停（macOS 14.4+）
+    //
+    // 参考 BasedHardware/omi 的 SystemAudioCaptureService 实现：
+    //   1) CATapDescription(stereoGlobalTapButExcludeProcesses: []) — 抓全局系统音频
+    //   2) Tap-only Aggregate Device（无 master sub-device，TapAutoStart=true）
+    //   3) AudioDeviceCreateIOProcIDWithBlock + AudioDeviceStart
+    //
+    // 关键：必须用 stereoGlobalTapButExcludeProcesses 而不是 stereoMixdownOfProcesses
+    // 或 processes:deviceUID:stream:。前者是唯一能在 IOProc 模式下拿到非零数据的 init。
 
-    private func requestPermissionAndStart() async {
-        // 检查是否已有屏幕录制权限
-        let hasPermission = CGPreflightScreenCaptureAccess()
-        if !hasPermission {
-            // 请求权限（会在主线程弹出系统授权对话框）
-            let granted = await MainActor.run {
-                CGRequestScreenCaptureAccess()
-            }
-            guard granted else {
-                print("[AudioCapture] 屏幕录制权限被拒绝")
-                isAuthorized = false
-                return
-            }
-            isAuthorized = true
+    private func startCoreAudioTap() async {
+        // 预创建 FFT 资源
+        if Self.fftSetup == nil {
+            Self.fftSetup = vDSP_create_fftsetup(vDSP_Length(Self.fftSizeLog2), FFTRadix(kFFTRadix2))
+        }
+        if Self.hannWindow.isEmpty {
+            Self.hannWindow = [Float](repeating: 0, count: Self.fftSize)
+            vDSP_hann_window(&Self.hannWindow, vDSP_Length(Self.fftSize), Int32(vDSP_HANN_NORM))
         }
 
-        await startSCStream()
+        // 1) 创建 Process Tap — stereoGlobalTapButExcludeProcesses 抓全局系统音频
+        let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        tapDescription.uuid = tapUUID
+        tapDescription.name = "WaifuX System Audio Tap"
+        tapDescription.muteBehavior = .unmuted  // 不影响系统正常播放
+
+        var tap: AudioObjectID = kAudioObjectUnknown
+        var err = AudioHardwareCreateProcessTap(tapDescription, &tap)
+        guard err == noErr, tap != kAudioObjectUnknown else {
+            print("[AudioCapture] ❌ AudioHardwareCreateProcessTap failed: OSStatus=\(err)")
+            return
+        }
+        self.tapID = tap
+
+        // 2) 创建 Tap-only Aggregate Device（无 master，TapAutoStart=true）
+        let aggregateDescription: [String: Any] = [
+            kAudioAggregateDeviceNameKey as String: "WaifuX System Audio Tap Device",
+            kAudioAggregateDeviceUIDKey as String: "com.waifux.systemaudio.\(tapUUID.uuidString)",
+            kAudioAggregateDeviceIsPrivateKey as String: true,
+            kAudioAggregateDeviceTapListKey as String: [
+                [
+                    kAudioSubTapUIDKey as String: tapUUID.uuidString,
+                    kAudioSubTapDriftCompensationKey as String: NSNumber(value: 1),
+                    kAudioSubTapDriftCompensationQualityKey as String: NSNumber(value: kAudioAggregateDriftCompensationMaxQuality),
+                ]
+            ],
+            kAudioAggregateDeviceTapAutoStartKey as String: true
+        ]
+
+        var aggregate: AudioObjectID = kAudioObjectUnknown
+        err = AudioHardwareCreateAggregateDevice(aggregateDescription as CFDictionary, &aggregate)
+        guard err == noErr, aggregate != kAudioObjectUnknown else {
+            print("[AudioCapture] ❌ AudioHardwareCreateAggregateDevice failed: OSStatus=\(err)")
+            stopCoreAudioTap()
+            return
+        }
+        self.aggregateDeviceID = aggregate
+
+        // 3) 注册 IOProc — 用纯 C 函数指针，避免 Swift @MainActor 隔离检查在实时线程 trap
+        Self.sharedRef = self
+        var procID: AudioDeviceIOProcID?
+        err = AudioDeviceCreateIOProcID(aggregate, audioIOProc_C, nil, &procID)
+        guard err == noErr, let procID else {
+            print("[AudioCapture] ❌ AudioDeviceCreateIOProcID failed: OSStatus=\(err)")
+            stopCoreAudioTap()
+            return
+        }
+        self.ioProcID = procID
+
+        err = AudioDeviceStart(aggregate, procID)
+        guard err == noErr else {
+            print("[AudioCapture] ❌ AudioDeviceStart failed: OSStatus=\(err)")
+            stopCoreAudioTap()
+            return
+        }
+
+        self.isRunning = true
+        self.isAuthorized = true
     }
 
-    private func startSCStream() async {
-        // 预创建 FFT 资源（避免每帧分配）
-        if fftSetup == nil {
-            fftSetup = vDSP_create_fftsetup(vDSP_Length(fftSizeLog2), FFTRadix(kFFTRadix2))
+    private func stopCoreAudioTap() {
+        if let procID = ioProcID, aggregateDeviceID != kAudioObjectUnknown {
+            AudioDeviceStop(aggregateDeviceID, procID)
+            AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
         }
-        if hannWindow.isEmpty {
-            hannWindow = [Float](repeating: 0, count: fftSize)
-            vDSP_hann_window(&hannWindow, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+        ioProcID = nil
+        if aggregateDeviceID != kAudioObjectUnknown {
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+            aggregateDeviceID = kAudioObjectUnknown
         }
-
-        do {
-            // 获取可捕获的内容（显示器列表）
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-
-            guard let display = content.displays.first else {
-                print("[AudioCapture] 找不到可捕获的显示器")
-                return
-            }
-
-            // 创建内容过滤器：捕获整个显示器（不含窗口），仅用于获取音频
-            let filter = SCContentFilter(display: display, including: [])
-
-            // 配置：仅音频
-            let config = SCStreamConfiguration()
-            config.capturesAudio = true
-            config.excludesCurrentProcessAudio = false
-            config.showsCursor = false
-            config.width = 1
-            config.height = 1
-            config.minimumFrameInterval = CMTime(value: 1, timescale: 10)
-
-            // 创建 stream
-            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-            self.stream = stream
-
-            // 添加音频输出接收器
-            try stream.addStreamOutput(self, type: SCStreamOutputType.audio, sampleHandlerQueue: fftQueue)
-
-            // 启动捕获
-            try await stream.startCapture()
-
-            self.isRunning = true
-            self.isAuthorized = true
-            print("[AudioCapture] ScreenCaptureKit 系统音频环回已启动 (display=\(display.width)x\(display.height))")
-
-        } catch {
-            print("[AudioCapture] ScreenCaptureKit 启动失败: \(error.localizedDescription)")
-            self.stream = nil
-            self.isRunning = false
+        if tapID != kAudioObjectUnknown {
+            AudioHardwareDestroyProcessTap(tapID)
+            tapID = kAudioObjectUnknown
         }
+        // 重置 ring index（drainRingAndFFT 与 IOProc 已停，下一次 start 从 0 开始）
+        Self.pcmRingReadIndex = 0
+        Self.pcmRingWriteIndex = 0
+        Self.fftWorkPending = false
     }
-}
 
-// MARK: - SCStreamOutput
+    /// IOProc 回调 —— 在 CoreAudio 实时线程被调用
+    //
+    // ⚠️ 实时线程铁律：不能 malloc、不能 lock、不能 print。
+    // 实现：用一个无锁 SPSC 风格的 static ring 缓冲区，IOProc 只做 memcpy + 原子递增 write index。
+    // 后台线程定时从 ring 读出做 FFT。
+    nonisolated private func handleIOInput(_ inInputData: UnsafePointer<AudioBufferList>) {
+        let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+        guard abl.count > 0 else { return }
+        let buf = abl[0]
+        guard let mData = buf.mData else { return }
+        let channels = max(1, Int(buf.mNumberChannels))
+        let totalFloats = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
+        guard totalFloats > 0, channels > 0 else { return }
 
-extension SystemAudioCaptureService: SCStreamOutput {
+        let srcPtr = mData.assumingMemoryBound(to: Float.self)
+        let frames = totalFloats / channels
+        Self.writeToRing(srcPtr: srcPtr, frames: frames, channels: channels)
+    }
 
-    nonisolated public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
-        guard outputType == .audio,
-              let blockBuffer = sampleBuffer.dataBuffer,
-              let audioFormat = sampleBuffer.formatDescription,
-              audioFormat.mediaType == .audio
-        else { return }
+    /// 无锁 SPSC：IOProc 线程写，FFT 后台线程读
+    /// ring 容量 = fftSize * 4 = 8192 floats，足够 ~170ms @ 48kHz
+    nonisolated(unsafe) fileprivate static let pcmRing = UnsafeMutablePointer<Float>.allocate(capacity: 8192)
+    nonisolated(unsafe) fileprivate static let pcmRingCapacity: Int = 8192
+    nonisolated(unsafe) fileprivate static var pcmRingWriteIndex: Int = 0  // 仅 IOProc 写
+    nonisolated(unsafe) fileprivate static var pcmRingReadIndex: Int = 0   // 仅后台读
 
-        // 获取音频数据
-        var length: Int = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &dataPointer)
-
-        guard let data = dataPointer, length > fftSize * MemoryLayout<Float>.size else { return }
-
-        // 获取音频格式信息
-        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(audioFormat)
-        let channels = Int(asbd?.pointee.mChannelsPerFrame ?? 2)
-        let frameLength = length / (MemoryLayout<Float>.size * channels)
-
-        guard frameLength >= fftSize else { return }
-
-        // 混音到单声道并提取样本
-        let floatPtr = UnsafeRawPointer(data).assumingMemoryBound(to: Float.self)
-        let samples = UnsafeBufferPointer(start: floatPtr, count: frameLength * channels)
-        var monoData = [Float](repeating: 0, count: fftSize)
-        for i in 0..<fftSize {
-            var sum: Float = 0
-            for ch in 0..<channels {
-                let idx = i * channels + ch
-                if idx < samples.count {
-                    sum += samples[idx]
+    /// IOProc 线程调用：mono 混音 + 写入 ring。完全无分配。
+    nonisolated(unsafe) fileprivate static func writeToRing(srcPtr: UnsafePointer<Float>, frames: Int, channels: Int) {
+        let cap = pcmRingCapacity
+        var w = pcmRingWriteIndex
+        if channels == 1 {
+            // 单声道快路径：直接拷贝（处理 ring 环绕）
+            var remaining = frames
+            var srcOffset = 0
+            while remaining > 0 {
+                let chunk = min(remaining, cap - w)
+                memcpy(pcmRing.advanced(by: w), srcPtr.advanced(by: srcOffset), chunk * MemoryLayout<Float>.size)
+                w = (w + chunk) % cap
+                srcOffset += chunk
+                remaining -= chunk
+            }
+        } else {
+            let inv = 1.0 / Float(channels)
+            for i in 0..<frames {
+                var sum: Float = 0
+                let base = i * channels
+                for ch in 0..<channels {
+                    sum += srcPtr[base + ch]
                 }
+                pcmRing[w] = sum * inv
+                w = (w + 1) % cap
             }
-            monoData[i] = sum / Float(channels)
         }
+        pcmRingWriteIndex = w
 
-        // 在后台队列执行 FFT（此方法运行在 sampleHandlerQueue 上，已经是后台）
-        performFFT(samples: monoData)
+        // 仅当累积达 fftSize 才派发，避免空 dispatch；
+        // 用 Bool gate 防止 IOProc 与后台 drainer 并发期间堆积多个 async block
+        let r = pcmRingReadIndex
+        var avail = w - r
+        if avail < 0 { avail += cap }
+        if avail >= fftSize && !fftWorkPending {
+            fftWorkPending = true
+            fftQueue.async {
+                fftWorkPending = false
+                drainRingAndFFT()
+            }
+        }
+    }
+
+    /// 后台线程：从 ring 读尽可用数据，每 fftSize 触发一次 FFT
+    nonisolated(unsafe) fileprivate static func drainRingAndFFT() {
+        let cap = pcmRingCapacity
+        let w = pcmRingWriteIndex
+        var r = pcmRingReadIndex
+        var available = w - r
+        if available < 0 { available += cap }
+
+        while available >= fftSize {
+            // 用 memcpy 处理 ring 环绕，避免每元素模运算
+            let firstChunk = min(fftSize, cap - r)
+            memcpy(fftChunk, pcmRing.advanced(by: r), firstChunk * MemoryLayout<Float>.size)
+            if firstChunk < fftSize {
+                memcpy(fftChunk.advanced(by: firstChunk), pcmRing, (fftSize - firstChunk) * MemoryLayout<Float>.size)
+            }
+            r = (r + fftSize) % cap
+            available -= fftSize
+
+            performFFT()
+        }
+        pcmRingReadIndex = r
     }
 }
 
@@ -240,89 +337,110 @@ extension SystemAudioCaptureService: SCStreamOutput {
 extension SystemAudioCaptureService {
 
     /// 非主线程 FFT 计算（纯数学运算，不涉及 UI）
-    nonisolated private func performFFT(samples: [Float]) {
-        guard let fftSetup = fftSetup else { return }
+    /// 输入数据从复用的 `fftChunk` buffer 读取，结果中间数据写入复用 buffer，零堆分配。
+    nonisolated(unsafe) fileprivate static func performFFT() {
+        guard let setup = fftSetup else { return }
         guard hannWindow.count == fftSize else { return }
 
-        var realPart = [Float](repeating: 0, count: fftSize / 2)
-        var imagPart = [Float](repeating: 0, count: fftSize / 2)
+        let half = fftSize / 2
+        var splitComplex = DSPSplitComplex(realp: fftReal, imagp: fftImag)
 
-        var magnitudes = [Float](repeating: 0, count: fftSize / 2)
+        // 加窗：fftWindowed = fftChunk * hannWindow
+        hannWindow.withUnsafeBufferPointer { win in
+            vDSP_vmul(fftChunk, 1, win.baseAddress!, 1, fftWindowed, 1, vDSP_Length(fftSize))
+        }
+
+        // 实数 → split complex
+        fftWindowed.withMemoryRebound(to: DSPComplex.self, capacity: half) { cptr in
+            vDSP_ctoz(cptr, 2, &splitComplex, 1, vDSP_Length(half))
+        }
+
+        vDSP_fft_zrip(setup, &splitComplex, 1, vDSP_Length(fftSizeLog2), FFTDirection(kFFTDirection_Forward))
+        vDSP_zvmags(&splitComplex, 1, fftMag, 1, vDSP_Length(half))
+
         var scalar: Float = 1.0 / Float(fftSize)
-
-        realPart.withUnsafeMutableBufferPointer { realBuf in
-        imagPart.withUnsafeMutableBufferPointer { imagBuf in
-            var splitComplex = DSPSplitComplex(realp: realBuf.baseAddress!, imagp: imagBuf.baseAddress!)
-
-            // 使用缓存的 Hann 窗
-            var windowedSamples = [Float](repeating: 0, count: fftSize)
-            vDSP_vmul(samples, 1, hannWindow, 1, &windowedSamples, 1, vDSP_Length(fftSize))
-
-            windowedSamples.withUnsafeMutableBufferPointer { ptr in
-                ptr.baseAddress?.withMemoryRebound(to: DSPComplex.self, capacity: fftSize / 2) { complexPtr in
-                    vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(fftSize / 2))
-                }
-            }
-
-            vDSP_fft_zrip(fftSetup, &splitComplex, 1, vDSP_Length(fftSizeLog2), FFTDirection(kFFTDirection_Forward))
-            vDSP_zvmags(&splitComplex, 1, &magnitudes, 1, vDSP_Length(fftSize / 2))
-        }
-        }
-
-        vDSP_vsmul(magnitudes, 1, &scalar, &magnitudes, 1, vDSP_Length(fftSize / 2))
+        vDSP_vsmul(fftMag, 1, &scalar, fftMag, 1, vDSP_Length(half))
 
         // dB 映射
-        var dbValues = [Float](repeating: 0, count: fftSize / 2)
-        for i in 0..<(fftSize / 2) {
-            let mag = magnitudes[i]
-            dbValues[i] = mag > 0 ? max(0, min(1, 20 * log10(mag * 10) / 80 + 0.5)) : 0
+        for i in 0..<half {
+            let mag = fftMag[i]
+            fftDb[i] = mag > 0 ? max(0, min(1, 20 * log10(mag * 10) / 80 + 0.5)) : 0
         }
 
-        let new16 = downsample(dbValues, targetCount: 16)
-        let new32 = downsample(dbValues, targetCount: 32)
-        let new64 = downsample(dbValues, targetCount: 64)
-
-        // UI 更新节流（~30fps，避免每帧音频都向主线程派发）
+        // UI 更新节流（~30fps）
         let now = DispatchTime.now().uptimeNanoseconds
-        guard now - lastUIUpdateTime >= SystemAudioCaptureService.uiUpdateIntervalNs else { return }
+        guard now - lastUIUpdateTime >= uiUpdateIntervalNs else { return }
         lastUIUpdateTime = now
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.spectrum16 = self.smooth(new16, last: self.lastSpectrum16)
-            self.spectrum32 = self.smooth(new32, last: self.lastSpectrum32)
-            self.spectrum64 = self.smooth(new64, last: self.lastSpectrum64)
-            self.lastSpectrum16 = self.spectrum16
-            self.lastSpectrum32 = self.spectrum32
-            self.lastSpectrum64 = self.spectrum64
-            // 通过 Subject 推送，仅订阅了频谱的组件会收到更新
-            self.spectrum16Publisher.send(self.spectrum16)
-            self.spectrum32Publisher.send(self.spectrum32)
-            self.spectrum64Publisher.send(self.spectrum64)
-            let sum = self.spectrum16.reduce(0, +)
-            self.averageEnergy = sum / Float(self.spectrum16.count)
+        // 下采样到 16/32/64 频段；只在派发瞬间分配一次（每秒 ≤30 次，可接受）
+        let new16 = downsamplePtr(fftDb, srcCount: half, targetCount: 16)
+        let new32 = downsamplePtr(fftDb, srcCount: half, targetCount: 32)
+        let new64 = downsamplePtr(fftDb, srcCount: half, targetCount: 64)
+
+        DispatchQueue.main.async {
+            guard let svc = sharedRef else { return }
+            smoothInPlace(into: &svc.spectrum16, from: new16, factor: smoothFactor)
+            smoothInPlace(into: &svc.spectrum32, from: new32, factor: smoothFactor)
+            smoothInPlace(into: &svc.spectrum64, from: new64, factor: smoothFactor)
+            // lastSpectrumNN 维持向后兼容（其它代码可能读取）
+            svc.lastSpectrum16 = svc.spectrum16
+            svc.lastSpectrum32 = svc.spectrum32
+            svc.lastSpectrum64 = svc.spectrum64
+            svc.spectrum16Publisher.send(svc.spectrum16)
+            svc.spectrum32Publisher.send(svc.spectrum32)
+            svc.spectrum64Publisher.send(svc.spectrum64)
+            var sum: Float = 0
+            for v in svc.spectrum16 { sum += v }
+            svc.averageEnergy = sum / Float(svc.spectrum16.count)
         }
     }
 
-    nonisolated private func downsample(_ data: [Float], targetCount: Int) -> [Float] {
-        guard targetCount > 0, data.count >= targetCount else { return data }
+    /// 从复用指针下采样到目标频段
+    nonisolated private static func downsamplePtr(_ src: UnsafePointer<Float>, srcCount: Int, targetCount: Int) -> [Float] {
+        guard targetCount > 0, srcCount >= targetCount else {
+            return Array(UnsafeBufferPointer(start: src, count: srcCount))
+        }
         var result = [Float](repeating: 0, count: targetCount)
-        let binSize = data.count / targetCount
+        let binSize = srcCount / targetCount
+        let invBin = 1.0 / Float(binSize)
         for i in 0..<targetCount {
             let start = i * binSize
-            let end = min(start + binSize, data.count)
-            guard start < end else { continue }
             var sum: Float = 0
-            for j in start..<end { sum += data[j] }
-            result[i] = sum / Float(end - start)
+            for j in start..<(start + binSize) { sum += src[j] }
+            result[i] = sum * invBin
         }
         return result
     }
 
-    nonisolated private func smooth(_ new: [Float], last: [Float]) -> [Float] {
-        guard new.count == last.count else { return new }
-        return zip(new, last).map { n, l in
-            l + (n - l) * smoothFactor
+    /// 原地平滑 `into[i] = into[i] + (from[i] - into[i]) * factor`
+    nonisolated private static func smoothInPlace(into dst: inout [Float], from src: [Float], factor: Float) {
+        let n = min(dst.count, src.count)
+        for i in 0..<n {
+            let l = dst[i]
+            dst[i] = l + (src[i] - l) * factor
         }
     }
+}
+
+// MARK: - 纯 C 风格 IOProc 回调（顶层函数，避免 @MainActor 隔离检查 trap）
+private func audioIOProc_C(
+    inDevice: AudioObjectID,
+    inNow: UnsafePointer<AudioTimeStamp>,
+    inInputData: UnsafePointer<AudioBufferList>,
+    inInputTime: UnsafePointer<AudioTimeStamp>,
+    outOutputData: UnsafeMutablePointer<AudioBufferList>,
+    inOutputTime: UnsafePointer<AudioTimeStamp>,
+    inClientData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+    guard abl.count > 0 else { return noErr }
+    let buf = abl[0]
+    guard let mData = buf.mData else { return noErr }
+    let channels = max(1, Int(buf.mNumberChannels))
+    let totalFloats = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
+    guard totalFloats > 0, channels > 0 else { return noErr }
+    let srcPtr = mData.assumingMemoryBound(to: Float.self)
+    let frames = totalFloats / channels
+    SystemAudioCaptureService.writeToRing(srcPtr: srcPtr, frames: frames, channels: channels)
+    return noErr
 }

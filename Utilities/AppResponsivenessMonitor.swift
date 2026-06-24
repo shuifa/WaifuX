@@ -151,16 +151,16 @@ enum AppResponsivenessMonitor {
     }
 
     private static func logSnapshot(trigger: String, state: State, elapsed: TimeInterval) {
-        AppLogger.info(.ui, "Responsiveness snapshot", metadata: [
-            "trigger": trigger,
-            "heartbeat": state.heartbeat,
-            "ackedHeartbeat": state.lastAckedHeartbeat,
-            "mainThreadLagMS": String(format: "%.0f", elapsed * 1000),
-            "currentTab": state.currentTab,
-            "detailDepth": state.detailDepth,
-            "windowVisible": state.windowVisible,
-            "appActive": state.appActive,
-            "scenePhase": state.scenePhase
-        ])
+        // AppLogger.debug(.ui, "Responsiveness snapshot", metadata: [
+        //     "trigger": trigger,
+        //     "heartbeat": state.heartbeat,
+        //     "ackedHeartbeat": state.lastAckedHeartbeat,
+        //     "mainThreadLagMS": String(format: "%.0f", elapsed * 1000),
+        //     "currentTab": state.currentTab,
+        //     "detailDepth": state.detailDepth,
+        //     "windowVisible": state.windowVisible,
+        //     "appActive": state.appActive,
+        //     "scenePhase": state.scenePhase
+        // ])
     }
 }
