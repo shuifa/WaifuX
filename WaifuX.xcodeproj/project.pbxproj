@@ -1286,7 +1286,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MACOSX_DEPLOYMENT_TARGET = 14.4;
 				MARKETING_VERSION = 38.0.116;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1355,7 +1355,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MACOSX_DEPLOYMENT_TARGET = 14.4;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -1382,7 +1382,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MACOSX_DEPLOYMENT_TARGET = 14.4;
 				MARKETING_VERSION = 38.0.116;
 				PRODUCT_BUNDLE_IDENTIFIER = com.waifux.app.wallpaperextension;
 				PRODUCT_NAME = WaifuXWallpaperExtension;
@@ -1407,7 +1407,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MACOSX_DEPLOYMENT_TARGET = 14.4;
 				MARKETING_VERSION = 38.0.116;
 				PRODUCT_BUNDLE_IDENTIFIER = com.waifux.app.wallpaperextension;
 				PRODUCT_NAME = WaifuXWallpaperExtension;
@@ -1466,7 +1466,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MACOSX_DEPLOYMENT_TARGET = 14.4;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1492,7 +1492,7 @@
 						"$(inherited)",
 						"@executable_path/../Frameworks",
 					);
-					MACOSX_DEPLOYMENT_TARGET = 14.2;
+					MACOSX_DEPLOYMENT_TARGET = 14.4;
 					MARKETING_VERSION = 38.0.116;
 					OTHER_LDFLAGS = (
 						"$(inherited)",
