@@ -234,8 +234,8 @@ EOF
   for arch in "${REQUIRED_EMBED_ARCHS[@]}"; do
     data_object="$DEST_DIR/zip_data.${arch}.o"
     accessor_object="$DEST_DIR/zip_accessor.${arch}.o"
-    as -arch "$arch" -mmacosx-version-min=14.0 "$ZIP_DATA_S" -o "$data_object"
-    clang -arch "$arch" -c -mmacosx-version-min=14.0 "$ZIP_ACCESSOR_C" -o "$accessor_object"
+    as -arch "$arch" -mmacosx-version-min=14.4 "$ZIP_DATA_S" -o "$data_object"
+    clang -arch "$arch" -c -mmacosx-version-min=14.4 "$ZIP_ACCESSOR_C" -o "$accessor_object"
     data_objects+=("$data_object")
     accessor_objects+=("$accessor_object")
   done

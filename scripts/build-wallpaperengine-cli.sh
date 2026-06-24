@@ -48,8 +48,8 @@ _zip_data_start:
 _zip_data_end:
 EOF
 
-as -arch arm64  -mmacosx-version-min=14.0 "$ROOT/Resources/zip_data.s" -o "$TMP_DIR/zip_data_arm64.o"
-as -arch x86_64 -mmacosx-version-min=14.0 "$ROOT/Resources/zip_data.s" -o "$TMP_DIR/zip_data_x86_64.o"
+as -arch arm64  -mmacosx-version-min=14.4 "$ROOT/Resources/zip_data.s" -o "$TMP_DIR/zip_data_arm64.o"
+as -arch x86_64 -mmacosx-version-min=14.4 "$ROOT/Resources/zip_data.s" -o "$TMP_DIR/zip_data_x86_64.o"
 # 主 App 是 universal (arm64 + x86_64)，链接时两份切片都需要；
 # 早先只产 arm64 单切片会让 x86_64 archive 阶段报 "Undefined symbols _get_zip_data_ptr"。
 lipo -create "$TMP_DIR/zip_data_arm64.o" "$TMP_DIR/zip_data_x86_64.o" -output "$ROOT/Resources/zip_data.o"
@@ -66,11 +66,11 @@ uint8_t* get_zip_data_ptr(void) { return zip_data_start; }
 size_t get_zip_data_size(void) { return (size_t)(zip_data_end - zip_data_start); }
 EOF
 
-clang -c -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 "$ROOT/Resources/zip_accessor.c" -o "$ROOT/Resources/zip_accessor.o"
+clang -c -arch arm64 -arch x86_64 -mmacosx-version-min=14.4 "$ROOT/Resources/zip_accessor.c" -o "$ROOT/Resources/zip_accessor.o"
 
 echo "[build-wallpaperengine-cli] swiftc..."
 swiftc -parse-as-library \
-  -target arm64-apple-macosx14.0 \
+  -target arm64-apple-macosx14.4 \
   -I Resources/CRenderer -I Resources -L Resources/lib \
   -llinux-wallpaperengine-renderer \
   -Xlinker -stack_size -Xlinker 0x2000000 \

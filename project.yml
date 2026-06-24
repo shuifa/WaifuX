@@ -2,7 +2,7 @@ name: WaifuX
 options:
   bundleIdPrefix: com.waifux
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "14.4"
   xcodeVersion: "26.4"
 
 # 共享 Scheme 纳入仓库，避免仅存在 xcuserdata 时换机/重装后 Cmd+R 无可用方案
@@ -76,7 +76,7 @@ targets:
         MARKETING_VERSION: 38.0.122
         CURRENT_PROJECT_VERSION: 38
         SWIFT_VERSION: "6.0"
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.4"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: H6W325NJX2
         ENABLE_HARDENED_RUNTIME: YES
@@ -232,7 +232,7 @@ targets:
         MARKETING_VERSION: 38.0.122
         CURRENT_PROJECT_VERSION: 38
         SWIFT_VERSION: "6.0"
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.4"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: H6W325NJX2
         ENABLE_HARDENED_RUNTIME: YES
