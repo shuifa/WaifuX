@@ -1037,9 +1037,19 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
                   return new Promise(function(resolve, reject) {
                     var xhr = new XMLHttpRequest();
                     xhr.open("GET", url, true);
+                    xhr.responseType = "arraybuffer";
                     xhr.onload = function() {
                       if (xhr.status === 200 || xhr.status === 0) {
-                        resolve(new Response(xhr.responseText, { status: 200, statusText: "OK" }));
+                        var headers = new Headers();
+                        try {
+                          var contentType = xhr.getResponseHeader("Content-Type");
+                          if (contentType) headers.set("Content-Type", contentType);
+                        } catch (e) {}
+                        resolve(new Response(xhr.response, {
+                          status: xhr.status === 0 ? 200 : xhr.status,
+                          statusText: xhr.statusText || "OK",
+                          headers: headers
+                        }));
                       } else {
                         reject(new Error("HTTP " + xhr.status));
                       }
@@ -1078,14 +1088,39 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
                 el.dispatchEvent(event);
                 return;
               }
-              var event = new MouseEvent(type, {
-                clientX: x, clientY: y,
-                screenX: x, screenY: y,
-                bubbles: true, cancelable: true,
+              var mouseInit = {
+                clientX: x,
+                clientY: y,
+                screenX: x,
+                screenY: y,
+                bubbles: true,
+                cancelable: true,
                 button: button || 0,
                 buttons: type === 'mouseup' ? 0 : 1,
                 view: window
-              });
+              };
+              var pointerMap = {
+                mousemove: 'pointermove',
+                mousedown: 'pointerdown',
+                mouseup: 'pointerup'
+              };
+              var pointerType = pointerMap[type];
+              if (pointerType && typeof PointerEvent === 'function') {
+                var pointerEvent = new PointerEvent(pointerType, Object.assign({}, mouseInit, {
+                  pointerId: 1,
+                  pointerType: 'mouse',
+                  isPrimary: true,
+                  width: 1,
+                  height: 1,
+                  pressure: type === 'mouseup' ? 0 : (type === 'mousedown' ? 0.5 : 0),
+                  tangentialPressure: 0,
+                  tiltX: 0,
+                  tiltY: 0,
+                  twist: 0
+                }));
+                el.dispatchEvent(pointerEvent);
+              }
+              var event = new MouseEvent(type, mouseInit);
               el.dispatchEvent(event);
               if (type === 'mousedown') { this.lastDownTarget = el; }
               if (type === 'mouseup' && this.lastDownTarget) {
@@ -1284,8 +1319,10 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         w.backgroundColor = .clear
         w.hasShadow = false
         w.setFrame(targetScreen.frame, display: true)
-        // 允许交互式 Web 壁纸（如 Spine 点击）接收鼠标；桌面图标层仍高于 desktopWindow，一般仍可点到图标
-        w.acceptsMouseMovedEvents = false
+        // 允许交互式 Web 壁纸接收鼠标；桌面图标层仍高于 desktopWindow，一般仍可点到图标。
+        // acceptsMouseMovedEvents 必须为 true：否则窗口不生成 mouseMoved 事件，
+        // local monitor 收不到鼠标移动，依赖 pointermove 的壁纸 hover 永远无法建立。
+        w.acceptsMouseMovedEvents = true
         w.ignoresMouseEvents = false
         w.isReleasedWhenClosed = false
 
@@ -1581,36 +1618,38 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
 
     // MARK: - Mouse Event Bridge
 
-    /// 启动全局鼠标事件监听，将事件转发给 WebView。
-    /// macOS Finder 桌面图标层位于 desktopWindow 之上，会拦截鼠标事件，因此需要全局监听 + JS 注入。
+    /// 启动鼠标事件监听，将事件转发给 WebView。
+    ///
+    /// 需要同时注册 global + local monitor：
+    /// - global monitor 只收「发送给其他 app」的事件（被 Finder 桌面图标层拦截的情况）；
+    /// - local monitor 收「发送给本 app」的事件（ignoresMouseEvents=false 时点击穿透到 daemon 窗口）。
+    /// 之前只有 global monitor，导致到达 daemon 自身窗口的点击/移动无人转发，WebView 收不到交互。
     private func startMouseEventBridge() {
         stopMouseEventBridge()
         guard window != nil, webView != nil else { return }
 
-        // 左键按下
-        let downMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            self?.handleGlobalMouseEvent(event, type: "mousedown")
+        let eventTypes: [(NSEvent.EventTypeMask, String)] = [
+            (.leftMouseDown, "mousedown"),
+            (.leftMouseUp, "mouseup"),
+            (.mouseMoved, "mousemove"),
+            (.scrollWheel, "wheel")
+        ]
+
+        for (eventType, type) in eventTypes {
+            // global：捕获被 Finder 桌面层拦截、分发给其他 app 的事件
+            if let g = NSEvent.addGlobalMonitorForEvents(matching: eventType) { [weak self] event in
+                self?.handleGlobalMouseEvent(event, type: type)
+            } {
+                mouseEventMonitors.append(g)
+            }
+            // local：捕获穿透到 daemon 自身窗口的事件（desktopWindow 层级 WKWebView 非 key window，原生收不到）
+            if let l = NSEvent.addLocalMonitorForEvents(matching: eventType) { [weak self] event -> NSEvent? in
+                self?.handleGlobalMouseEvent(event, type: type)
+                return event
+            } {
+                mouseEventMonitors.append(l)
+            }
         }
-        if let m = downMonitor { mouseEventMonitors.append(m) }
-        // 左键抬起
-        let upMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
-            self?.handleGlobalMouseEvent(event, type: "mouseup")
-        }
-        if let m = upMonitor { mouseEventMonitors.append(m) }
-        // 鼠标移动（节流到 30fps 避免过度 evaluateJavaScript）
-        let moveMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
-            guard let self = self else { return }
-            let now = CFAbsoluteTimeGetCurrent()
-            if now - self.lastMouseMoveTime < self.mouseMoveThrottle { return }
-            self.lastMouseMoveTime = now
-            self.handleGlobalMouseEvent(event, type: "mousemove")
-        }
-        if let m = moveMonitor { mouseEventMonitors.append(m) }
-        // 滚轮
-        let wheelMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            self?.handleGlobalMouseEvent(event, type: "wheel")
-        }
-        if let m = wheelMonitor { mouseEventMonitors.append(m) }
 
         dlog("[WebRendererBridge] Mouse event bridge started with \(mouseEventMonitors.count) monitors")
     }
@@ -1625,6 +1664,13 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
 
     private func handleGlobalMouseEvent(_ event: NSEvent, type: String) {
         guard let window = self.window, let webView = self.webView else { return }
+
+        // mousemove 统一节流（global + local 共用），避免高频 evaluateJavaScript 开销
+        if type == "mousemove" {
+            let now = CFAbsoluteTimeGetCurrent()
+            if now - lastMouseMoveTime < mouseMoveThrottle { return }
+            lastMouseMoveTime = now
+        }
 
         let mouseLocation = NSEvent.mouseLocation
         // 检查鼠标是否在 WebView 窗口范围内

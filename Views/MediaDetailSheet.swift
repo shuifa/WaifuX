@@ -3909,9 +3909,19 @@ struct WebWallpaperPreviewView: NSViewRepresentable {
                   return new Promise(function(resolve, reject) {
                     var xhr = new XMLHttpRequest();
                     xhr.open("GET", url, true);
+                    xhr.responseType = "arraybuffer";
                     xhr.onload = function() {
                       if (xhr.status === 200 || xhr.status === 0) {
-                        resolve(new Response(xhr.responseText, { status: 200, statusText: "OK" }));
+                        var headers = new Headers();
+                        try {
+                          var contentType = xhr.getResponseHeader("Content-Type");
+                          if (contentType) headers.set("Content-Type", contentType);
+                        } catch (e) {}
+                        resolve(new Response(xhr.response, {
+                          status: xhr.status === 0 ? 200 : xhr.status,
+                          statusText: xhr.statusText || "OK",
+                          headers: headers
+                        }));
                       } else {
                         reject(new Error("HTTP " + xhr.status));
                       }
