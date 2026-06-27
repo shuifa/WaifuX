@@ -450,13 +450,6 @@ jobs:
             sleep 30
           done
 
-      - name: Setup Sparkle tools
-        run: |
-          curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/2.6.4/Sparkle-2.6.4.tar.xz" -o /tmp/Sparkle.tar.xz
-          cd /tmp && tar xJf Sparkle.tar.xz
-          # 注意：Sparkle-2.6.4.tar.xz 解压后没有顶层目录，bin/ 直接在 /tmp/ 下
-          echo "/tmp/bin" >> $GITHUB_PATH
-
       - name: Sign DMG and generate appcast.xml
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
@@ -465,15 +458,42 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           DMG_PATH="build/WaifuX.dmg"
 
-          # 签名 DMG 获取 Ed25519 签名
-          SIGN_OUTPUT=$(sign_update -s "$SPARKLE_PRIVATE_KEY" "$DMG_PATH" 2>&1)
-          echo "sign_update output: $SIGN_OUTPUT"
-          ED_SIG=$(echo "$SIGN_OUTPUT" | grep -o 'sparkle:edSignature="[^"]*"' | sed 's/sparkle:edSignature="//;s/"//')
+          # 签名 DMG 获取 Ed25519 签名（Sparkle 2.6.4 tarball 已移除 sign_update 工具）
+          # 改用 Python + nacl/cryptography 生成 Ed25519 签名
+          ED_SIG=$(python3 -c "
+import sys, base64
+
+priv_b64 = sys.argv[1]
+dmg_path = sys.argv[2]
+
+# 尝试多种库
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    seed = base64.b64decode(priv_b64)
+    key = Ed25519PrivateKey.from_private_bytes(seed)
+    with open(dmg_path, 'rb') as f:
+        sig = key.sign(f.read())
+    sig_b64 = base64.b64encode(sig).decode()
+    print('sparkle:edSignature=\"' + sig_b64 + '\"')
+except ImportError:
+    try:
+        from nacl.bindings import crypto_sign_ed25519
+        from nacl.bindings import crypto_sign_seed_keypair
+        seed = base64.b64decode(priv_b64)
+        pk, sk = crypto_sign_seed_keypair(seed)
+        with open(dmg_path, 'rb') as f:
+            sig = crypto_sign_ed25519(f.read(), sk)
+        sig_b64 = base64.b64encode(sig[:64]).decode() if len(sig) > 64 else base64.b64encode(sig).decode()
+        print('sparkle:edSignature=\"' + sig_b64 + '\"')
+    except ImportError as e:
+        print('ERROR: No ed25519 library available: ' + str(e), file=sys.stderr)
+        sys.exit(1)
+" "$SPARKLE_PRIVATE_KEY" "$DMG_PATH")
+          echo "sign_update output: $ED_SIG"
+          ED_SIG=$(echo "$ED_SIG" | grep -o 'sparkle:edSignature="[^"]*"' | sed 's/sparkle:edSignature="//;s/"//')
           if [ -z "$ED_SIG" ]; then
             echo "❌ Failed to sign DMG with Sparkle"
-            echo "Debug: DMG_PATH=$DMG_PATH"
-            echo "Debug: DMG exists: $([ -f "$DMG_PATH" ] && echo yes || echo no)"
-            ls -la "$DMG_PATH" 2>/dev/null || echo "Debug: DMG not found at $DMG_PATH"
+            echo "Debug: using Python ed25519 signature"
             exit 1
           fi
           echo "✅ DMG signed: $ED_SIG"
