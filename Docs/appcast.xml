@@ -6,22 +6,40 @@
     <description>WaifuX Updates</description>
     <language>zh</language>
     <item>
-      <title>Version 38.0.129</title>
-      <sparkle:version>38.0.129</sparkle:version>
-      <sparkle:shortVersionString>38.0.129</sparkle:shortVersionString>
-      <pubDate>Sat, 27 Jun 2026 12:00:00 +0800</pubDate>
+      <title>Version 38.0.125</title>
+      <sparkle:version>38.0.125</sparkle:version>
+      <sparkle:shortVersionString>38.0.125</sparkle:shortVersionString>
+      <pubDate>Sat, 27 Jun 2026 23:34:54 +0800</pubDate>
       <description><![CDATA[
-        <h3>WaifuX 38.0.129</h3>
+        <h3>WaifuX 38.0.125</h3>
         <ul>
-          <li>perf: 遮挡检测从定时轮询迁移到 AXObserver 事件驱动 + 网格采样</li>
-          <li>fix(sign): 修复 Sparkle.framework Autoupdate 公证签名失败</li>
-          <li>fix: Sparkle 更新地址修正、移除签名要求</li>
-          <li>fix: 镜像 SPM 本地化资源到框架，修复更新弹窗英文问题</li>
-          <li>chore: 版本更新至 38.0.129</li>
+          <li>fix: 修正 Sparkle.framework CFBundleIdentifier (0ce84b0)</li>
+          <li>chore: 更新 appcast 至 38.0.129 + 添加完整更新日志 (a56a80d)</li>
+          <li>fix: 镜像 SPM Sparkle_Sparkle.bundle 本地化资源到 framework (17ce58f)</li>
+          <li>chore: bump to 38.0.128 (721b9fc)</li>
+          <li>chore: 更新 appcast.xml 添加完整更新日志 (b83d1bb)</li>
+          <li>fix: 恢复 ci.yml/release.yml/package.sh 至 aae885f（--deep 签名 + 无 appcast 干扰） (746dfe7)</li>
+          <li>fix(sign): 恢复 --deep 签名修复（回退时被误删） (b46a6b0)</li>
+          <li>fix: 修正 Sparkle 更新地址 & 移除公钥（仅版本比较，不要签名） (19bb606)</li>
+          <li>revert: 回退 ci.yml/release.yml 至原始版本，移除非法的 edSignature (8616124)</li>
+          <li>fix(ci): 移除导致 YAML 解析失败的多行 Python 块 (8ed5ce8)</li>
+          <li>chore: force release.yml re-cache (2c917a9)</li>
+          <li>fix(ci): YAML | 块内 Python 代码缩进修正 (1ddba31)</li>
+          <li>chore: bump to 38.0.127 + CI appcast 生成 (8b81b4f)</li>
+          <li>chore: restore release.yml with fixed triggers (9b01ddc)</li>
+          <li>chore: remove broken release.yml (e31cc50)</li>
+          <li>chore: touch release.yml (3ea8f81)</li>
+          <li>chore: bump to 38.0.126 for release test (a308060)</li>
+          <li>fix(release): 用 Python Ed25519 替代已移除的 sign_update 工具 (d5f79a0)</li>
+          <li>fix(release): Sparkle tarball 解压路径修正 (ff5166f)</li>
+          <li>chore: bump to 38.0.125 for release test (153f5f9)</li>
+          <li>fix(release): 显示 sign_update 真实错误输出以便排查 (49ed620)</li>
+          <li>chore: 更新 appcast.xml 至 v38.0.124 (4a20d2c)</li>
+          <li>fix(release): appcast 生成改为同时支持 workflow_dispatch 和 tag push (bde9057)</li>
         </ul>
       ]]></description>
       <enclosure
-        url="https://github.com/jipika/WaifuX/releases/download/v38.0.129/WaifuX.dmg"
+        url="https://github.com/jipika/WaifuX/releases/download/v38.0.125/WaifuX.dmg"
         type="application/octet-stream"
         length="0"
       />
