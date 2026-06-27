@@ -630,3 +630,4 @@ jobs:
             git push
             echo "✅ appcast.xml committed and pushed"
           fi
+
