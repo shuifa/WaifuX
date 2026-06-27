@@ -131,9 +131,29 @@ targets:
                   fi
                   # 移除 App 资源里多余的 .bundle（已复制进 framework）
                   rm -rf "$APP_RES/${fw_name}_${fw_name}.bundle" 2>/dev/null || true
-                fi
+	                fi
 
-                execName=$(basename "$framework" .framework)
+	                # SPM 自动生成 CFBundleIdentifier 为 spakle.Sparkle，
+	                # 但 Sparkle 内部代码写死用 [NSBundle bundleWithIdentifier:@"org.sparkle-project.Sparkle"]
+	                # 查找本地化资源。不修正则 zh.lproj 等永远不会被加载，弹窗始终英文。
+	                FW_PLIST="$framework/Versions/Current/Resources/Info.plist"
+	                if [ -f "$FW_PLIST" ]; then
+	                  CURRENT_ID=$(plutil -extract CFBundleIdentifier raw "$FW_PLIST" 2>/dev/null || echo "")
+	                  if [ "$CURRENT_ID" != "org.sparkle-project.Sparkle" ]; then
+	                    echo "Rewriting CFBundleIdentifier: $CURRENT_ID → org.sparkle-project.Sparkle"
+	                    plutil -replace CFBundleIdentifier -string "org.sparkle-project.Sparkle" "$FW_PLIST"
+	                  fi
+	                  # PackageFrameworks 也同步改（Debug 构建用）
+	                  PKG_PLIST="${BUILT_PRODUCTS_DIR}/PackageFrameworks/${fw_name}.framework/Versions/Current/Resources/Info.plist"
+	                  if [ -f "$PKG_PLIST" ]; then
+	                    PKG_ID=$(plutil -extract CFBundleIdentifier raw "$PKG_PLIST" 2>/dev/null || echo "")
+	                    if [ "$PKG_ID" != "org.sparkle-project.Sparkle" ]; then
+	                      plutil -replace CFBundleIdentifier -string "org.sparkle-project.Sparkle" "$PKG_PLIST"
+	                    fi
+	                  fi
+	                fi
+
+	                execName=$(basename "$framework" .framework)
                 if [ -f "$framework/$execName" ] && [ ! -L "$framework/$execName" ]; then
                   mv "$framework/$execName" "$framework/Versions/Current/$execName"
                   ln -sf "Versions/Current/$execName" "$framework/$execName"
