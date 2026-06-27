@@ -6,13 +6,14 @@
     <description>WaifuX Updates</description>
     <language>zh</language>
     <item>
-      <title>Version 38.0.125</title>
-      <sparkle:version>38.0.125</sparkle:version>
-      <sparkle:shortVersionString>38.0.125</sparkle:shortVersionString>
-      <pubDate>Sat, 27 Jun 2026 23:34:54 +0800</pubDate>
+      <title>Version 38.0.126</title>
+      <sparkle:version>38.0.126</sparkle:version>
+      <sparkle:shortVersionString>38.0.126</sparkle:shortVersionString>
+      <pubDate>Sat, 27 Jun 2026 23:48:54 +0800</pubDate>
       <description><![CDATA[
-        <h3>WaifuX 38.0.125</h3>
+        <h3>WaifuX 38.0.126</h3>
         <ul>
+          <li>fix(ci): release body 添加打赏信息 + hook 修复 appcast 自动生成 (e00e9de)</li>
           <li>fix: 修正 Sparkle.framework CFBundleIdentifier (0ce84b0)</li>
           <li>chore: 更新 appcast 至 38.0.129 + 添加完整更新日志 (a56a80d)</li>
           <li>fix: 镜像 SPM Sparkle_Sparkle.bundle 本地化资源到 framework (17ce58f)</li>
@@ -39,7 +40,7 @@
         </ul>
       ]]></description>
       <enclosure
-        url="https://github.com/jipika/WaifuX/releases/download/v38.0.125/WaifuX.dmg"
+        url="https://github.com/jipika/WaifuX/releases/download/v38.0.126/WaifuX.dmg"
         type="application/octet-stream"
         length="0"
       />

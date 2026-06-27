@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -142,6 +142,7 @@
 		8BD71B61A3E07060DA16E6C0 /* AnimePortraitCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14DDF91A608069837E8FF492 /* AnimePortraitCard.swift */; };
 		8D2BD782AB1A4774207D5804 /* GuessYouLikeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E6D95488469530050E4E91 /* GuessYouLikeViewModel.swift */; };
 		8D578500A676505D3EC9AB41 /* ArcBackgroundPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34088609B67C582BB4C80973 /* ArcBackgroundPanel.swift */; };
+		8D7F96183814A75F03674265 /* Debouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C63D47E7AC33D30D991B8DD /* Debouncer.swift */; };
 		8F5EC14D5729C2CC77795E76 /* DisplayCropSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60BF2E10795AE5AC074B85C2 /* DisplayCropSettingsStore.swift */; };
 		940C5C019DEA74617741A6E7 /* WallpaperSourceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1105A3D2BD988D514CE5D6F1 /* WallpaperSourceManager.swift */; };
 		9479E46D5ADC2991CFA13194 /* DownloadTaskViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD06550D464D22FB55D951EA /* DownloadTaskViewModel.swift */; };
@@ -215,9 +216,8 @@
 		DB540D9F6379FDAEFB285F76 /* VideoThumbnailCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45A0C1ABDB171C326129A73E /* VideoThumbnailCache.swift */; };
 		DB8871BEB9E5BFA5DF65AA40 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9FBFD203D24AC295FEDADA9 /* StatusBarController.swift */; };
 		DBF4F63F9D69E02FB6A63BB0 /* WallpaperSchedulerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5433F5B3470D14D8CE5A3029 /* WallpaperSchedulerViewModel.swift */; };
-			DEB000000000000000000002 /* Debouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEB000000000000000000001 /* Debouncer.swift */; };
-			DDA9519C500666EFB4DE29D7 /* DisplayCropSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 241C406FB2E706A93ABEB4EC /* DisplayCropSettings.swift */; };
-			DF5859029BC8D2872798FAB3 /* AppRelauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F78B7BE373C7A7F4094E0FE /* AppRelauncher.swift */; };
+		DDA9519C500666EFB4DE29D7 /* DisplayCropSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 241C406FB2E706A93ABEB4EC /* DisplayCropSettings.swift */; };
+		DF5859029BC8D2872798FAB3 /* AppRelauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F78B7BE373C7A7F4094E0FE /* AppRelauncher.swift */; };
 		E14C8D6FB374C89B70996BEC /* SuperResolutionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69E901FF6D205414875FD5F4 /* SuperResolutionService.swift */; };
 		E2E777395B775DE3457A9092 /* ExploreAtmosphere.swift in Sources */ = {isa = PBXBuildFile; fileRef = E97EC9C6232E75963BB2CFA0 /* ExploreAtmosphere.swift */; };
 		E3103B14290C2916CC737246 /* AnimeContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AD24D6CC8E7DEC9CE467C9E /* AnimeContentView.swift */; };
@@ -288,7 +288,7 @@
 		14E3DF54D73DDABA010A0185 /* DownloadPathManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadPathManager.swift; sourceTree = "<group>"; };
 		14FCC7E2B2D2C043F74B4102 /* HomeContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeContentView.swift; sourceTree = "<group>"; };
 		1823EAC90BA4264646D4E1D3 /* KonachanService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KonachanService.swift; sourceTree = "<group>"; };
-		18D6AC9201B325C7879D3E50 /* LockScreenWallpaperService.swift.bak */ = {isa = PBXFileReference; lastKnownFileType = text; path = LockScreenWallpaperService.swift.bak; sourceTree = "<group>"; };
+		18D6AC9201B325C7879D3E50 /* LockScreenWallpaperService.swift.bak */ = {isa = PBXFileReference; path = LockScreenWallpaperService.swift.bak; sourceTree = "<group>"; };
 		1909660C314E363CB12A5857 /* Danmaku.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Danmaku.swift; sourceTree = "<group>"; };
 		193203C5461256F1DA85FA07 /* GitHubDNSResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubDNSResolver.swift; sourceTree = "<group>"; };
 		19A8887CFC60BA0605B2EDBD /* ViewExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewExtensions.swift; sourceTree = "<group>"; };
@@ -345,6 +345,7 @@
 		46516D807852C39C100910A6 /* ExploreGridContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreGridContainer.swift; sourceTree = "<group>"; };
 		49D07F6F44CB59BB826B491E /* SceneWallpaperPropertiesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperPropertiesPanel.swift; sourceTree = "<group>"; };
 		4C13D08E6482C8C55D97DE9E /* WallpaperCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperCardView.swift; sourceTree = "<group>"; };
+		4C63D47E7AC33D30D991B8DD /* Debouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Debouncer.swift; sourceTree = "<group>"; };
 		4D49A7B305CF1CA62E5D9540 /* ScrollBottomSentinel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollBottomSentinel.swift; sourceTree = "<group>"; };
 		4D4DA3125A4D7C5A87ABC9BF /* WaifuXWallpaperExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaifuXWallpaperExtension.swift; sourceTree = "<group>"; };
 		4FBE371602391BF36A8714FE /* WallpaperState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperState.swift; sourceTree = "<group>"; };
@@ -469,7 +470,6 @@
 		DACDF1F5659B23034A3076C7 /* MediaCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaCardView.swift; sourceTree = "<group>"; };
 		DB805E534CA1B0DF8F944037 /* Print.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Print.swift; sourceTree = "<group>"; };
 		DCB5D4A6D1AA43902CF9E13E /* PowerSourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerSourceMonitor.swift; sourceTree = "<group>"; };
-		DEB000000000000000000001 /* Debouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Debouncer.swift; sourceTree = "<group>"; };
 		DDACF870010A59BA3EC37538 /* SourceRulesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceRulesSettingsView.swift; sourceTree = "<group>"; };
 		DE340CF2EF289C67261EF588 /* AnimeDetailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeDetailSheet.swift; sourceTree = "<group>"; };
 		DEDFE715B248A8496E3CE357 /* SourceHintIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceHintIcon.swift; sourceTree = "<group>"; };
@@ -550,7 +550,7 @@
 				7CE736888A84E23833953C49 /* ArcBackgroundSettings.swift */,
 				7025EE0D111F36D9DC79675B /* ArcFrostedGlass.swift */,
 				02E3788AB0F9EC18D14604A4 /* BounceSymbolModifier.swift */,
-				DEB000000000000000000001 /* Debouncer.swift */,
+				4C63D47E7AC33D30D991B8DD /* Debouncer.swift */,
 				E97EC9C6232E75963BB2CFA0 /* ExploreAtmosphere.swift */,
 				5E59748FA75E24603AC8DF96 /* ExploreGridLayout.swift */,
 				C29FB33BEC37A4DFE4E3B207 /* FileIO.swift */,
@@ -920,9 +920,11 @@
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
 					43FF1F1B38F8BD5B8FFDBE0F = {
+						DevelopmentTeam = H6W325NJX2;
 						ProvisioningStyle = Automatic;
 					};
 					D90F333FC051272819E83A61 = {
+						DevelopmentTeam = H6W325NJX2;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -944,6 +946,7 @@
 				57417E6DA8B6A5F718B7EFBC /* XCRemoteSwiftPackageReference "Sparkle" */,
 				9780DABD8DD91C37A69DF031 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 			);
+			preferredProjectObjectVersion = 54;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -1004,7 +1007,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "FRAMEWORKS_DIR=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Frameworks\"\nif [ -d \"$FRAMEWORKS_DIR\" ]; then\n  for framework in \"$FRAMEWORKS_DIR\"/*.framework; do\n    if [ -f \"$framework/Info.plist\" ]; then\n      mkdir -p \"$framework/Versions/Current/Resources\"\n      if [ ! -f \"$framework/Versions/Current/Resources/Info.plist\" ]; then\n        mv \"$framework/Info.plist\" \"$framework/Versions/Current/Resources/Info.plist\"\n        ln -sf \"Versions/Current/Resources/Info.plist\" \"$framework/Info.plist\"\n      fi\n      if [ ! -L \"$framework/Resources\" ]; then\n        ln -sf \"Versions/Current/Resources\" \"$framework/Resources\"\n      fi\n      execName=$(basename \"$framework\" .framework)\n      if [ -f \"$framework/$execName\" ] && [ ! -L \"$framework/$execName\" ]; then\n        mv \"$framework/$execName\" \"$framework/Versions/Current/$execName\"\n        ln -sf \"Versions/Current/$execName\" \"$framework/$execName\"\n      fi\n      if [ -d \"$framework/Headers\" ] && [ ! -L \"$framework/Headers\" ]; then\n        mv \"$framework/Headers\" \"$framework/Versions/Current/Headers\"\n        ln -sf \"Versions/Current/Headers\" \"$framework/Headers\"\n      fi\n      if [ -d \"$framework/Modules\" ] && [ ! -L \"$framework/Modules\" ]; then\n        mv \"$framework/Modules\" \"$framework/Versions/Current/Modules\"\n        ln -sf \"Versions/Current/Modules\" \"$framework/Modules\"\n      fi\n      if [ -d \"$framework/_CodeSignature\" ]; then\n        rm -rf \"$framework/_CodeSignature\"\n      fi\n      find \"$framework\" -name \".DS_Store\" -delete 2>/dev/null || true\n    fi\n  done\nfi\n";
+			shellScript = "FRAMEWORKS_DIR=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Frameworks\"\nAPP_RES=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nif [ -d \"$FRAMEWORKS_DIR\" ]; then\n  for framework in \"$FRAMEWORKS_DIR\"/*.framework; do\n    if [ -f \"$framework/Info.plist\" ]; then\n      fw_name=$(basename \"$framework\" .framework)\n\n      # 整理 framework 标准结构：Versions/Current/Resources + 符号链接\n      mkdir -p \"$framework/Versions/Current/Resources\"\n      if [ ! -f \"$framework/Versions/Current/Resources/Info.plist\" ]; then\n        mv \"$framework/Info.plist\" \"$framework/Versions/Current/Resources/Info.plist\"\n        ln -sf \"Versions/Current/Resources/Info.plist\" \"$framework/Info.plist\"\n      fi\n      if [ ! -L \"$framework/Resources\" ]; then\n        ln -sf \"Versions/Current/Resources\" \"$framework/Resources\"\n      fi\n\n      # 镜像 SPM 生成本地化资源（zh.lproj 等）到 framework\n      SPM_BUNDLE=\"${BUILT_PRODUCTS_DIR}/${fw_name}_${fw_name}.bundle\"\n      if [ -d \"$SPM_BUNDLE/Contents/Resources\" ]; then\n        echo \"Mirroring resources from $SPM_BUNDLE to $framework/Versions/Current/Resources\"\n        rsync -a \"$SPM_BUNDLE/Contents/Resources/\" \"$framework/Versions/Current/Resources/\" 2>/dev/null || \\\n          cp -R \"$SPM_BUNDLE/Contents/Resources/\" \"$framework/Versions/Current/Resources/\" 2>/dev/null || true\n        PKG_FW=\"${BUILT_PRODUCTS_DIR}/PackageFrameworks/${fw_name}.framework/Versions/Current/Resources\"\n        if [ -d \"$PKG_FW\" ]; then\n          rsync -a \"$SPM_BUNDLE/Contents/Resources/\" \"$PKG_FW/\" 2>/dev/null || true\n        fi\n        rm -rf \"$APP_RES/${fw_name}_${fw_name}.bundle\" 2>/dev/null || true\n      fi\n\n      # 修正 Sparkle CFBundleIdentifier（SPM 生成 spakle.Sparkle → org.sparkle-project.Sparkle）\n      FW_PLIST=\"$framework/Versions/Current/Resources/Info.plist\"\n      if [ -f \"$FW_PLIST\" ]; then\n        CURRENT_ID=$(plutil -extract CFBundleIdentifier raw \"$FW_PLIST\" 2>/dev/null || echo \"\")\n        if [ \"$CURRENT_ID\" != \"org.sparkle-project.Sparkle\" ]; then\n          echo \"Rewriting CFBundleIdentifier: $CURRENT_ID -> org.sparkle-project.Sparkle\"\n          plutil -replace CFBundleIdentifier -string \"org.sparkle-project.Sparkle\" \"$FW_PLIST\"\n        fi\n        PKG_PLIST=\"${BUILT_PRODUCTS_DIR}/PackageFrameworks/${fw_name}.framework/Versions/Current/Resources/Info.plist\"\n        if [ -f \"$PKG_PLIST\" ]; then\n          PKG_ID=$(plutil -extract CFBundleIdentifier raw \"$PKG_PLIST\" 2>/dev/null || echo \"\")\n          if [ \"$PKG_ID\" != \"org.sparkle-project.Sparkle\" ]; then\n            plutil -replace CFBundleIdentifier -string \"org.sparkle-project.Sparkle\" \"$PKG_PLIST\"\n          fi\n        fi\n      fi\n\n      # 整理可执行文件、Headers、Modules 到 Versions/Current\n      execName=$(basename \"$framework\" .framework)\n      if [ -f \"$framework/$execName\" ] && [ ! -L \"$framework/$execName\" ]; then\n        mv \"$framework/$execName\" \"$framework/Versions/Current/$execName\"\n        ln -sf \"Versions/Current/$execName\" \"$framework/$execName\"\n      fi\n      if [ -d \"$framework/Headers\" ] && [ ! -L \"$framework/Headers\" ]; then\n        mv \"$framework/Headers\" \"$framework/Versions/Current/Headers\"\n        ln -sf \"Versions/Current/Headers\" \"$framework/Headers\"\n      fi\n      if [ -d \"$framework/Modules\" ] && [ ! -L \"$framework/Modules\" ]; then\n        mv \"$framework/Modules\" \"$framework/Versions/Current/Modules\"\n        ln -sf \"Versions/Current/Modules\" \"$framework/Modules\"\n      fi\n      if [ -d \"$framework/_CodeSignature\" ]; then\n        rm -rf \"$framework/_CodeSignature\"\n      fi\n      find \"$framework\" -name \".DS_Store\" -delete 2>/dev/null || true\n    fi\n  done\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1082,9 +1085,9 @@
 				9B0765A8A225A37AD48E1EAA /* DanmakuService.swift in Sources */,
 				7CE9D7595407EF27D532FE30 /* DanmakuView.swift in Sources */,
 				FD1B442F09B4C2465EEA06DF /* DataSourceRule.swift in Sources */,
+				8D7F96183814A75F03674265 /* Debouncer.swift in Sources */,
 				7A5CA2BA6D3C63B7CB949C6C /* DesktopIconManager.swift in Sources */,
 				7BE02314734DADA1C09E6947 /* DesktopWallpaperSyncManager.swift in Sources */,
-				DEB000000000000000000002 /* Debouncer.swift in Sources */,
 				01B60DB90F73D58721413052 /* DirectoryMigrationService.swift in Sources */,
 				DDA9519C500666EFB4DE29D7 /* DisplayCropSettings.swift in Sources */,
 				8F5EC14D5729C2CC77795E76 /* DisplayCropSettingsStore.swift in Sources */,
@@ -1268,20 +1271,13 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 38;
-				DEVELOPMENT_TEAM = SRHKTRJ83W;
+				DEVELOPMENT_TEAM = H6W325NJX2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = App/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.4;
-				MARKETING_VERSION = 38.0.124;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"$(SRCROOT)/Resources/zip_data.o",
-					"$(SRCROOT)/Resources/zip_accessor.o",
-				);
+				MARKETING_VERSION = 38.0.125;
+				OTHER_LDFLAGS = "$(inherited) $(SRCROOT)/Resources/zip_data.o $(SRCROOT)/Resources/zip_accessor.o";
 				PRODUCT_BUNDLE_IDENTIFIER = com.waifux.app;
 				PRODUCT_NAME = WaifuX;
 				SDKROOT = macosx;
@@ -1363,16 +1359,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 38;
-				DEVELOPMENT_TEAM = SRHKTRJ83W;
+				DEVELOPMENT_TEAM = H6W325NJX2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = WaifuXWallpaperExtension/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@executable_path/../../../../Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.4;
-				MARKETING_VERSION = 38.0.124;
+				MARKETING_VERSION = 38.0.125;
 				PRODUCT_BUNDLE_IDENTIFIER = com.waifux.app.wallpaperextension;
 				PRODUCT_NAME = WaifuXWallpaperExtension;
 				SDKROOT = macosx;
@@ -1388,16 +1380,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 38;
-				DEVELOPMENT_TEAM = SRHKTRJ83W;
+				DEVELOPMENT_TEAM = H6W325NJX2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = WaifuXWallpaperExtension/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@executable_path/../../../../Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.4;
-				MARKETING_VERSION = 38.0.124;
+				MARKETING_VERSION = 38.0.125;
 				PRODUCT_BUNDLE_IDENTIFIER = com.waifux.app.wallpaperextension;
 				PRODUCT_NAME = WaifuXWallpaperExtension;
 				SDKROOT = macosx;
@@ -1474,20 +1462,13 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 38;
-				DEVELOPMENT_TEAM = SRHKTRJ83W;
+				DEVELOPMENT_TEAM = H6W325NJX2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = App/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.4;
-				MARKETING_VERSION = 38.0.124;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"$(SRCROOT)/Resources/zip_data.o",
-					"$(SRCROOT)/Resources/zip_accessor.o",
-				);
+				MARKETING_VERSION = 38.0.125;
+				OTHER_LDFLAGS = "$(inherited) $(SRCROOT)/Resources/zip_data.o $(SRCROOT)/Resources/zip_accessor.o";
 				PRODUCT_BUNDLE_IDENTIFIER = com.waifux.app;
 				PRODUCT_NAME = WaifuX;
 				SDKROOT = macosx;

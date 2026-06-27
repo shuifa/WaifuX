@@ -28,15 +28,23 @@
     <string>AppIcon</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2024 WaifuX. All rights reserved.</string>
-	<key>LSUIElement</key>
-	<false/>
-	<key>NSScreenCaptureDescription</key>
-	<string>WaifuX 需要屏幕录制权限来捕获动态壁纸的渲染窗口，用于实时桌面显示和视频烘焙导出。系统音频环回（音乐可视化柱状图）同样依赖此权限。</string>
-		<key>SUFeedURL</key>
-		<string>https://jipika.github.io/WaifuX/appcast.xml</string>
-		<key>SUEnableAutomaticChecks</key>
-	<true/>
-	<key>SUScheduledCheckInterval</key>
-	<integer>86400</integer>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh</string>
+        <string>en</string>
+        <string>ja</string>
+    </array>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh</string>
+    <key>LSUIElement</key>
+    <false/>
+    <key>NSScreenCaptureDescription</key>
+    <string>WaifuX 需要屏幕录制权限来捕获动态壁纸的渲染窗口，用于实时桌面显示和视频烘焙导出。系统音频环回（音乐可视化柱状图）同样依赖此权限。</string>
+        <key>SUFeedURL</key>
+        <string>https://jipika.github.io/WaifuX/appcast.xml</string>
+        <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>

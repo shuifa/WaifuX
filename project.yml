@@ -76,7 +76,7 @@ targets:
       base:
         PRODUCT_NAME: WaifuX
         PRODUCT_BUNDLE_IDENTIFIER: com.waifux.app
-        MARKETING_VERSION: 38.0.125
+        MARKETING_VERSION: 38.0.126
         CURRENT_PROJECT_VERSION: 38
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.4"
@@ -118,42 +118,37 @@ targets:
                 fi
 
                 # 镜像 SPM 生成本地化资源（zh.lproj 等）到 framework
-                # SPM 内置资源放在 $BUILT_PRODUCTS_DIR/Sparkle_Sparkle.bundle
                 SPM_BUNDLE="${BUILT_PRODUCTS_DIR}/${fw_name}_${fw_name}.bundle"
                 if [ -d "$SPM_BUNDLE/Contents/Resources" ]; then
                   echo "Mirroring resources from $SPM_BUNDLE to $framework/Versions/Current/Resources"
                   rsync -a "$SPM_BUNDLE/Contents/Resources/" "$framework/Versions/Current/Resources/" 2>/dev/null || \
                     cp -R "$SPM_BUNDLE/Contents/Resources/" "$framework/Versions/Current/Resources/" 2>/dev/null || true
-                  # 也保留一份在 PackageFrameworks（Debug 构建用）
                   PKG_FW="${BUILT_PRODUCTS_DIR}/PackageFrameworks/${fw_name}.framework/Versions/Current/Resources"
                   if [ -d "$PKG_FW" ]; then
                     rsync -a "$SPM_BUNDLE/Contents/Resources/" "$PKG_FW/" 2>/dev/null || true
                   fi
-                  # 移除 App 资源里多余的 .bundle（已复制进 framework）
                   rm -rf "$APP_RES/${fw_name}_${fw_name}.bundle" 2>/dev/null || true
-	                fi
+                fi
 
-	                # SPM 自动生成 CFBundleIdentifier 为 spakle.Sparkle，
-	                # 但 Sparkle 内部代码写死用 [NSBundle bundleWithIdentifier:@"org.sparkle-project.Sparkle"]
-	                # 查找本地化资源。不修正则 zh.lproj 等永远不会被加载，弹窗始终英文。
-	                FW_PLIST="$framework/Versions/Current/Resources/Info.plist"
-	                if [ -f "$FW_PLIST" ]; then
-	                  CURRENT_ID=$(plutil -extract CFBundleIdentifier raw "$FW_PLIST" 2>/dev/null || echo "")
-	                  if [ "$CURRENT_ID" != "org.sparkle-project.Sparkle" ]; then
-	                    echo "Rewriting CFBundleIdentifier: $CURRENT_ID → org.sparkle-project.Sparkle"
-	                    plutil -replace CFBundleIdentifier -string "org.sparkle-project.Sparkle" "$FW_PLIST"
-	                  fi
-	                  # PackageFrameworks 也同步改（Debug 构建用）
-	                  PKG_PLIST="${BUILT_PRODUCTS_DIR}/PackageFrameworks/${fw_name}.framework/Versions/Current/Resources/Info.plist"
-	                  if [ -f "$PKG_PLIST" ]; then
-	                    PKG_ID=$(plutil -extract CFBundleIdentifier raw "$PKG_PLIST" 2>/dev/null || echo "")
-	                    if [ "$PKG_ID" != "org.sparkle-project.Sparkle" ]; then
-	                      plutil -replace CFBundleIdentifier -string "org.sparkle-project.Sparkle" "$PKG_PLIST"
-	                    fi
-	                  fi
-	                fi
+                # 修正 Sparkle CFBundleIdentifier（SPM 生成 spakle.Sparkle → org.sparkle-project.Sparkle）
+                FW_PLIST="$framework/Versions/Current/Resources/Info.plist"
+                if [ -f "$FW_PLIST" ]; then
+                  CURRENT_ID=$(plutil -extract CFBundleIdentifier raw "$FW_PLIST" 2>/dev/null || echo "")
+                  if [ "$CURRENT_ID" != "org.sparkle-project.Sparkle" ]; then
+                    echo "Rewriting CFBundleIdentifier: $CURRENT_ID -> org.sparkle-project.Sparkle"
+                    plutil -replace CFBundleIdentifier -string "org.sparkle-project.Sparkle" "$FW_PLIST"
+                  fi
+                  PKG_PLIST="${BUILT_PRODUCTS_DIR}/PackageFrameworks/${fw_name}.framework/Versions/Current/Resources/Info.plist"
+                  if [ -f "$PKG_PLIST" ]; then
+                    PKG_ID=$(plutil -extract CFBundleIdentifier raw "$PKG_PLIST" 2>/dev/null || echo "")
+                    if [ "$PKG_ID" != "org.sparkle-project.Sparkle" ]; then
+                      plutil -replace CFBundleIdentifier -string "org.sparkle-project.Sparkle" "$PKG_PLIST"
+                    fi
+                  fi
+                fi
 
-	                execName=$(basename "$framework" .framework)
+                # 整理可执行文件、Headers、Modules 到 Versions/Current
+                execName=$(basename "$framework" .framework)
                 if [ -f "$framework/$execName" ] && [ ! -L "$framework/$execName" ]; then
                   mv "$framework/$execName" "$framework/Versions/Current/$execName"
                   ln -sf "Versions/Current/$execName" "$framework/$execName"
@@ -274,7 +269,7 @@ targets:
       base:
         PRODUCT_NAME: WaifuXWallpaperExtension
         PRODUCT_BUNDLE_IDENTIFIER: com.waifux.app.wallpaperextension
-        MARKETING_VERSION: 38.0.125
+        MARKETING_VERSION: 38.0.126
         CURRENT_PROJECT_VERSION: 38
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.4"
