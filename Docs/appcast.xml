@@ -15,7 +15,6 @@
         url="https://github.com/jipika/WaifuX/releases/download/v38.0.124/WaifuX.dmg"
         type="application/octet-stream"
         length="244909901"
-        sparkle:edSignature="PLACEHOLDER_SIGNATURE"
       />
     </item>
   </channel>
