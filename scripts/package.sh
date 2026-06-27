@@ -399,13 +399,17 @@ sign_exported_app() {
 	          codesign --force --timestamp=none --options runtime -s "$identity" "$app" 2>/dev/null || \
 	            codesign --force -s "$identity" "$app" 2>/dev/null || { echo "    ❌ Failed to sign App: ${app#"$code_path/"}"; return 1; }
 	        done
-	        find "$code_path" -type f 2>/dev/null | while read -r exe; do
-	          case "$exe" in *.app/*|*.xpc/*) continue ;; esac
-	          if file "$exe" | grep -q "Mach-O"; then
-	            echo "    Executable: ${exe#"$code_path/"}"
-	            codesign --force --timestamp=none --options runtime -s "$identity" "$exe" 2>/dev/null || \
-	              codesign --force -s "$identity" "$exe" 2>/dev/null || { echo "    ❌ Failed to sign executable: ${exe#"$code_path/"}"; return 1; }
-	          fi
+	        # 查找 framework 内的独立 Mach-O 可执行文件（不在 .app/.xpc 内部）
+	        # 使用 -L 跟随符号链接 + 深度限制，覆盖 Versions/B/ 的独立工具
+	        for search_root in "$code_path" "$code_path/Versions"; do
+	          [[ -d "$search_root" ]] || continue
+	          find -L "$search_root" -maxdepth 4 -type f ! -path "*.app/*" ! -path "*.xpc/*" 2>/dev/null | while read -r exe; do
+	            if file "$exe" | grep -q "Mach-O"; then
+	              echo "    Executable: ${exe#"$code_path/"}"
+	              codesign --force --timestamp=none --options runtime -s "$identity" "$exe" 2>/dev/null || \
+	                codesign --force -s "$identity" "$exe" 2>/dev/null || { echo "    ❌ Failed to sign executable: ${exe#"$code_path/"}"; return 1; }
+	            fi
+	          done
 	        done
 	      fi
       codesign --force --timestamp=none --options runtime -s "$identity" "$code_path" 2>/dev/null || \

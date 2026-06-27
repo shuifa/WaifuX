@@ -366,12 +366,18 @@ jobs:
                         echo "    App: ${app#"$f/"}"
                         codesign --force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$app" || { echo "    ❌ Failed to sign App: ${app#"$f/"}"; exit 1; }
                       done
-                      find "$f" -type f 2>/dev/null | while read -r exe; do
-                        case "$exe" in *.app/*|*.xpc/*) continue ;; esac
-                        if file "$exe" | grep -q "Mach-O"; then
-                          echo "    Executable: ${exe#"$f/"}"
-                          codesign --force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$exe" || { echo "    ❌ Failed to sign executable: ${exe#"$f/"}"; exit 1; }
-                        fi
+                      # 查找 framework 内的独立 Mach-O 可执行文件（不在 .app/.xpc 内部）
+                      # - 框架根目录（如 Sparkle.framework/Sparkle）
+                      # - Versions/B/ 下的独立工具（如 Sparkle.framework/Versions/B/Autoupdate）
+                      # - 跟随符号链接确保能找到所有可执行文件
+                      for search_root in "$f" "$f/Versions"; do
+                        [[ -d "$search_root" ]] || continue
+                        find -L "$search_root" -maxdepth 4 -type f ! -path "*.app/*" ! -path "*.xpc/*" 2>/dev/null | while read -r exe; do
+                          if file "$exe" | grep -q "Mach-O"; then
+                            echo "    Executable: ${exe#"$f/"}"
+                            codesign --force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$exe" || { echo "    ❌ Failed to sign executable: ${exe#"$f/"}"; exit 1; }
+                          fi
+                        done
                       done
                     fi
                     SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
