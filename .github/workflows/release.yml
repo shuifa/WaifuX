@@ -457,7 +457,7 @@ jobs:
           echo "/tmp/Sparkle/bin" >> $GITHUB_PATH
 
       - name: Sign DMG and generate appcast.xml
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
