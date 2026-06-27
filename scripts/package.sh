@@ -374,9 +374,22 @@ sign_exported_app() {
         echo "$ent_check" | head -20 >&2
         return 1
       fi
-    else
-      codesign --force --timestamp=none --options runtime -s "$identity" "$code_path" 2>/dev/null || \
-        codesign --force -s "$identity" "$code_path" 2>/dev/null || true
+	    else
+	      # 对 framework：清除旧签名封印后用 --deep 递归签名
+	      if [[ "$code_path" == *.framework ]]; then
+	        echo "  Signing framework with --deep: $(basename "$code_path")"
+	        local fw_vers_dir="$code_path"
+	        if [[ -d "$code_path/Versions" ]]; then
+	          fw_vers_dir="$code_path/Versions/$(ls "$code_path/Versions" 2>/dev/null | grep -v Current | head -1)"
+	          [[ -z "$fw_vers_dir" || ! -d "$fw_vers_dir" ]] && fw_vers_dir="$code_path"
+	        fi
+	        rm -rf "$fw_vers_dir/_CodeSignature" "$code_path/_CodeSignature" 2>/dev/null || true
+	        codesign --force --deep --timestamp=none --options runtime -s "$identity" "$code_path" 2>/dev/null || \
+	          codesign --force --deep -s "$identity" "$code_path" 2>/dev/null || true
+	      else
+	        codesign --force --timestamp=none --options runtime -s "$identity" "$code_path" 2>/dev/null || \
+	          codesign --force -s "$identity" "$code_path" 2>/dev/null || true
+	      fi
     fi
   }
 

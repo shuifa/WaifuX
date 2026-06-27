@@ -308,9 +308,30 @@ jobs:
                 echo "$ent_check" | head -20
                 exit 1
               fi
-              return 0
-            fi
-            SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
+	              return 0
+	            fi
+	            # 对 framework：清除旧签名封印后用 --deep 递归签全部内嵌组件
+	            if [[ "$f" == *.framework ]]; then
+	              echo "  Signing framework with --deep: $(basename "$f")"
+	              local fw_vers_dir="$f"
+	              if [[ -d "$f/Versions" ]]; then
+	                fw_vers_dir="$f/Versions/$(ls "$f/Versions" 2>/dev/null | grep -v Current | head -1)"
+	                [[ -z "$fw_vers_dir" || ! -d "$fw_vers_dir" ]] && fw_vers_dir="$f"
+	              fi
+	              rm -rf "$fw_vers_dir/_CodeSignature" "$f/_CodeSignature" 2>/dev/null || true
+	              codesign --force --deep --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$f" || {
+	                echo "    ⚠️ --deep failed, falling back to component signing"
+	                find "$f" -name "*.xpc" -type d 2>/dev/null | while read -r xpc; do
+	                  codesign --force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$xpc" || exit 1
+	                done
+	                find "$f" -name "*.app" -type d 2>/dev/null | while read -r app; do
+	                  codesign --force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$app" || exit 1
+	                done
+	                codesign --force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp "$f"
+	              }
+	              return 0
+	            fi
+	            SIGN_ARGS=(--force --sign "${{ vars.APPLE_SIGNING_IDENTITY }}" --options=runtime --timestamp)
             if [[ "$(basename "$f")" == "wallpaper-wgpu" && -f "WallpaperRenderer.entitlements" ]]; then
               SIGN_ARGS+=(--entitlements "WallpaperRenderer.entitlements")
             fi
