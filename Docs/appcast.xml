@@ -10,7 +10,15 @@
       <sparkle:version>38.0.124</sparkle:version>
       <sparkle:shortVersionString>38.0.124</sparkle:shortVersionString>
       <pubDate>Sat, 27 Jun 2026 12:00:00 +0800</pubDate>
-      <description><![CDATA[<p>WaifuX 38.0.124</p>]]></description>
+      <description><![CDATA[
+        <h3>WaifuX 38.0.124</h3>
+        <ul>
+          <li>perf: 遮挡检测从定时轮询迁移到 AXObserver 事件驱动 + 网格采样</li>
+          <li>fix(sign): 修复 Sparkle.framework Autoupdate 公证签名失败</li>
+          <li>docs: 更新落地页文案 - 动起来 + 三语支持 + Homebrew 安装弹窗</li>
+          <li>fix: 修正 Sparkle 更新地址为 GitHub Pages</li>
+        </ul>
+      ]]></description>
       <enclosure
         url="https://github.com/jipika/WaifuX/releases/download/v38.0.124/WaifuX.dmg"
         type="application/octet-stream"
