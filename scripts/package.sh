@@ -375,28 +375,39 @@ sign_exported_app() {
         return 1
       fi
     else
-      # 对 framework：先递归签内部嵌套代码（XPC services、.app 包、独立可执行文件），再签 framework 本身
-      if [[ "$code_path" == *.framework ]]; then
-        echo "  Signing nested code in: $(basename "$code_path")"
-        find "$code_path" -name "*.xpc" -type d 2>/dev/null | while read -r xpc; do
-          echo "    XPC: ${xpc#"$code_path/"}"
-          codesign --force --timestamp=none --options runtime -s "$identity" "$xpc" 2>/dev/null || \
-            codesign --force -s "$identity" "$xpc" 2>/dev/null || true
-        done
-        find "$code_path" -name "*.app" -type d 2>/dev/null | while read -r app; do
-          echo "    App: ${app#"$code_path/"}"
-          codesign --force --timestamp=none --options runtime -s "$identity" "$app" 2>/dev/null || \
-            codesign --force -s "$identity" "$app" 2>/dev/null || true
-        done
-        find "$code_path" -type f 2>/dev/null | while read -r exe; do
-          case "$exe" in *.app/*|*.xpc/*) continue ;; esac
-          if file "$exe" | grep -q "Mach-O"; then
-            echo "    Executable: ${exe#"$code_path/"}"
-            codesign --force --timestamp=none --options runtime -s "$identity" "$exe" 2>/dev/null || \
-              codesign --force -s "$identity" "$exe" 2>/dev/null || true
-          fi
-        done
-      fi
+	      # 对 framework：先递归签内部嵌套代码（XPC services、.app 包、独立可执行文件），再签 framework 本身
+	      if [[ "$code_path" == *.framework ]]; then
+	        echo "  Signing nested code in: $(basename "$code_path")"
+
+	        # 清除旧签名封印，避免 Sparkle 等预签名框架的旧 CodeResources 与我们的新签名冲突
+	        local fw_vers_dir
+	        fw_vers_dir="$code_path"
+	        if [[ -d "$code_path/Versions" ]]; then
+	          fw_vers_dir="$code_path/Versions/$(ls "$code_path/Versions" 2>/dev/null | grep -v Current | head -1)"
+	          [[ -z "$fw_vers_dir" || ! -d "$fw_vers_dir" ]] && fw_vers_dir="$code_path"
+	        fi
+	        echo "    Cleaning old code signature in: $(basename "$code_path")"
+	        rm -rf "$fw_vers_dir/_CodeSignature" "$code_path/_CodeSignature" 2>/dev/null || true
+
+	        find "$code_path" -name "*.xpc" -type d 2>/dev/null | while read -r xpc; do
+	          echo "    XPC: ${xpc#"$code_path/"}"
+	          codesign --force --timestamp=none --options runtime -s "$identity" "$xpc" 2>/dev/null || \
+	            codesign --force -s "$identity" "$xpc" 2>/dev/null || { echo "    ❌ Failed to sign XPC: ${xpc#"$code_path/"}"; return 1; }
+	        done
+	        find "$code_path" -name "*.app" -type d 2>/dev/null | while read -r app; do
+	          echo "    App: ${app#"$code_path/"}"
+	          codesign --force --timestamp=none --options runtime -s "$identity" "$app" 2>/dev/null || \
+	            codesign --force -s "$identity" "$app" 2>/dev/null || { echo "    ❌ Failed to sign App: ${app#"$code_path/"}"; return 1; }
+	        done
+	        find "$code_path" -type f 2>/dev/null | while read -r exe; do
+	          case "$exe" in *.app/*|*.xpc/*) continue ;; esac
+	          if file "$exe" | grep -q "Mach-O"; then
+	            echo "    Executable: ${exe#"$code_path/"}"
+	            codesign --force --timestamp=none --options runtime -s "$identity" "$exe" 2>/dev/null || \
+	              codesign --force -s "$identity" "$exe" 2>/dev/null || { echo "    ❌ Failed to sign executable: ${exe#"$code_path/"}"; return 1; }
+	          fi
+	        done
+	      fi
       codesign --force --timestamp=none --options runtime -s "$identity" "$code_path" 2>/dev/null || \
         codesign --force -s "$identity" "$code_path" 2>/dev/null || true
     fi
