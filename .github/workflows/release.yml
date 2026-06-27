@@ -465,9 +465,14 @@ jobs:
           DMG_PATH="build/WaifuX.dmg"
 
           # 签名 DMG 获取 Ed25519 签名
-          ED_SIG=$(sign_update -s "$SPARKLE_PRIVATE_KEY" "$DMG_PATH" 2>&1 | grep -o 'sparkle:edSignature="[^"]*"' | sed 's/sparkle:edSignature="//;s/"//')
+          SIGN_OUTPUT=$(sign_update -s "$SPARKLE_PRIVATE_KEY" "$DMG_PATH" 2>&1)
+          echo "sign_update output: $SIGN_OUTPUT"
+          ED_SIG=$(echo "$SIGN_OUTPUT" | grep -o 'sparkle:edSignature="[^"]*"' | sed 's/sparkle:edSignature="//;s/"//')
           if [ -z "$ED_SIG" ]; then
             echo "❌ Failed to sign DMG with Sparkle"
+            echo "Debug: DMG_PATH=$DMG_PATH"
+            echo "Debug: DMG exists: $([ -f "$DMG_PATH" ] && echo yes || echo no)"
+            ls -la "$DMG_PATH" 2>/dev/null || echo "Debug: DMG not found at $DMG_PATH"
             exit 1
           fi
           echo "✅ DMG signed: $ED_SIG"
