@@ -454,7 +454,8 @@ jobs:
         run: |
           curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/2.6.4/Sparkle-2.6.4.tar.xz" -o /tmp/Sparkle.tar.xz
           cd /tmp && tar xJf Sparkle.tar.xz
-          echo "/tmp/Sparkle/bin" >> $GITHUB_PATH
+          # 注意：Sparkle-2.6.4.tar.xz 解压后没有顶层目录，bin/ 直接在 /tmp/ 下
+          echo "/tmp/bin" >> $GITHUB_PATH
 
       - name: Sign DMG and generate appcast.xml
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
