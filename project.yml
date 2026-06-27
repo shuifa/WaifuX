@@ -76,7 +76,7 @@ targets:
       base:
         PRODUCT_NAME: WaifuX
         PRODUCT_BUNDLE_IDENTIFIER: com.waifux.app
-        MARKETING_VERSION: 38.0.128
+        MARKETING_VERSION: 38.0.129
         CURRENT_PROJECT_VERSION: 38
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.4"
@@ -101,9 +101,13 @@ targets:
       - basedOnDependencyAnalysis: false
         script: |
           FRAMEWORKS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Frameworks"
+          APP_RES="${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
           if [ -d "$FRAMEWORKS_DIR" ]; then
             for framework in "$FRAMEWORKS_DIR"/*.framework; do
               if [ -f "$framework/Info.plist" ]; then
+                fw_name=$(basename "$framework" .framework)
+
+                # 整理 framework 标准结构：Versions/Current/Resources + 符号链接
                 mkdir -p "$framework/Versions/Current/Resources"
                 if [ ! -f "$framework/Versions/Current/Resources/Info.plist" ]; then
                   mv "$framework/Info.plist" "$framework/Versions/Current/Resources/Info.plist"
@@ -112,6 +116,23 @@ targets:
                 if [ ! -L "$framework/Resources" ]; then
                   ln -sf "Versions/Current/Resources" "$framework/Resources"
                 fi
+
+                # 镜像 SPM 生成本地化资源（zh.lproj 等）到 framework
+                # SPM 内置资源放在 $BUILT_PRODUCTS_DIR/Sparkle_Sparkle.bundle
+                SPM_BUNDLE="${BUILT_PRODUCTS_DIR}/${fw_name}_${fw_name}.bundle"
+                if [ -d "$SPM_BUNDLE/Contents/Resources" ]; then
+                  echo "Mirroring resources from $SPM_BUNDLE to $framework/Versions/Current/Resources"
+                  rsync -a "$SPM_BUNDLE/Contents/Resources/" "$framework/Versions/Current/Resources/" 2>/dev/null || \
+                    cp -R "$SPM_BUNDLE/Contents/Resources/" "$framework/Versions/Current/Resources/" 2>/dev/null || true
+                  # 也保留一份在 PackageFrameworks（Debug 构建用）
+                  PKG_FW="${BUILT_PRODUCTS_DIR}/PackageFrameworks/${fw_name}.framework/Versions/Current/Resources"
+                  if [ -d "$PKG_FW" ]; then
+                    rsync -a "$SPM_BUNDLE/Contents/Resources/" "$PKG_FW/" 2>/dev/null || true
+                  fi
+                  # 移除 App 资源里多余的 .bundle（已复制进 framework）
+                  rm -rf "$APP_RES/${fw_name}_${fw_name}.bundle" 2>/dev/null || true
+                fi
+
                 execName=$(basename "$framework" .framework)
                 if [ -f "$framework/$execName" ] && [ ! -L "$framework/$execName" ]; then
                   mv "$framework/$execName" "$framework/Versions/Current/$execName"
@@ -233,7 +254,7 @@ targets:
       base:
         PRODUCT_NAME: WaifuXWallpaperExtension
         PRODUCT_BUNDLE_IDENTIFIER: com.waifux.app.wallpaperextension
-        MARKETING_VERSION: 38.0.128
+        MARKETING_VERSION: 38.0.129
         CURRENT_PROJECT_VERSION: 38
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.4"
