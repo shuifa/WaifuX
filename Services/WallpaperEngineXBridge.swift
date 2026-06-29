@@ -8,6 +8,11 @@ private let webDeskCapturePath0 = "/tmp/wallpaperengine-web-desk-0.png"
 private let webDeskCapturePath1 = "/tmp/wallpaperengine-web-desk-1.png"
 private let legacyCLIWebCapturePath = "/tmp/wallpaperengine-cli-capture.png"
 
+/// CLI daemon 的 per-screen 截图路径（与 wallpaperengine-cli.swift 中 primaryCapturePath(for:) 保持一致）
+private func legacyCLICapturePath(for screen: Int) -> String {
+    return "/tmp/wallpaperengine-cli-capture-s\(screen).png"
+}
+
 private struct SavedOriginalWallpaperState: Codable {
     let configs: [ScreenWallpaperConfig]
     let savedAt: Date
@@ -1241,7 +1246,11 @@ final class WallpaperEngineXBridge: ObservableObject {
         }
 
         print("[WallpaperEngineXBridge] 使用旧 wallpaperengine-cli 设置 Web 壁纸: \(path) screenIdx=\(screenIndex.map(String.init) ?? "all")")
+        // 清理旧的 legacy 路径和 per-screen 路径（CLI daemon 写入 per-screen 路径）
         try? FileManager.default.removeItem(atPath: legacyCLIWebCapturePath)
+        for i in 0..<NSScreen.screens.count {
+            try? FileManager.default.removeItem(atPath: legacyCLICapturePath(for: i))
+        }
         let status = try await Self.runLegacyCLIClientCommand(args)
         guard status == 0 else {
             throw WallpaperEngineError.executionFailed("wallpaperengine-cli set 失败 (exit=\(status))")

@@ -1393,7 +1393,7 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         web.autoresizingMask = [.width, .height]
         web.navigationDelegate = self
         web.wantsLayer = true
-        web.layer?.backgroundColor = NSColor.black.cgColor
+        web.layer?.backgroundColor = NSColor.clear.cgColor
         web.layer?.contentsScale = targetScreen.backingScaleFactor
 
         w.contentView?.addSubview(web)
@@ -1674,12 +1674,23 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
     private func runWebWallpaperBootstrap(screen: Int, completion: (() -> Void)? = nil) {
         guard let state = screenStates[screen], let webView = state.webView else { completion?(); return }
         var propsBlock = ""
+        var b64Props = ""
         if let json = state.injectedPropertiesJSON, let data = json.data(using: .utf8) {
-            let b64 = data.base64EncodedString()
-            propsBlock = "try{var props=JSON.parse(atob(\"" + b64 + "\"));if(window.wallpaperPropertyListener&&typeof window.wallpaperPropertyListener.applyUserProperties==='function'){window.wallpaperPropertyListener.applyUserProperties(props);}}catch(e){}"
+            b64Props = data.base64EncodedString()
+            propsBlock = "try{var props=JSON.parse(atob(\"" + b64Props + "\"));if(window.wallpaperPropertyListener&&typeof window.wallpaperPropertyListener.applyUserProperties==='function'){window.wallpaperPropertyListener.applyUserProperties(props);}}catch(e){}"
         }
-        let source = "(function(){" + propsBlock + "try{document.documentElement.style.cssText='width:100%;height:100%;margin:0;padding:0;background:transparent;overflow:hidden;';document.body.style.setProperty('background-image','none');document.body.style.setProperty('width','100%');document.body.style.setProperty('height','100%');window.dispatchEvent(new Event('resize'));}catch(e2){}return true;})();"
-        webView.evaluateJavaScript(source) { _, _ in
+        // 先重置样式，再执行 propsBlock（applyUserProperties 可能会设置 background-image 等样式）
+        // 如果顺序反过来，bootstrap 的 background-image:none 会清掉 applyUserProperties 设置的背景图
+        let source = "(function(){try{document.documentElement.style.cssText='width:100%;height:100%;margin:0;padding:0;background:transparent;overflow:hidden;';document.body.style.setProperty('width','100%');document.body.style.setProperty('height','100%');window.dispatchEvent(new Event('resize'));}catch(e2){}" + propsBlock + "return true;})();"
+        webView.evaluateJavaScript(source) { [weak self] _, _ in
+            // 延迟重新应用属性：部分壁纸（如 Spine 动画壁纸）异步初始化可能覆盖首次 applyUserProperties 设置的样式
+            // 500ms 后再次调用 applyUserProperties 确保 background-image 等属性在异步初始化完成后仍然生效
+            if !b64Props.isEmpty, let webView = self?.screenStates[screen]?.webView {
+                let reapply = "(function(){try{var props=JSON.parse(atob(\"" + b64Props + "\"));if(window.wallpaperPropertyListener&&typeof window.wallpaperPropertyListener.applyUserProperties==='function'){window.wallpaperPropertyListener.applyUserProperties(props);}}catch(e){}})();"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    webView.evaluateJavaScript(reapply) { _, _ in }
+                }
+            }
             DispatchQueue.main.async { completion?() }
         }
     }
