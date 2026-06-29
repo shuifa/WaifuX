@@ -6,18 +6,18 @@
     <description>WaifuX Updates</description>
     <language>zh</language>
     <item>
-      <title>Version 38.0.126</title>
-      <sparkle:version>38.0.126</sparkle:version>
-      <sparkle:shortVersionString>38.0.126</sparkle:shortVersionString>
+      <title>Version 38.0.125</title>
+      <sparkle:version>38.0.125</sparkle:version>
+      <sparkle:shortVersionString>38.0.125</sparkle:shortVersionString>
       <pubDate>Mon, 29 Jun 2026 13:40:55 +0800</pubDate>
       <description><![CDATA[
-        <h3>WaifuX 38.0.126</h3>
+        <h3>WaifuX 38.0.125</h3>
         <ul>
           <li>Migrate AX window coverage path (51365b3)</li>
         </ul>
       ]]></description>
       <enclosure
-        url="https://github.com/jipika/WaifuX/releases/download/v38.0.126/WaifuX.dmg"
+        url="https://github.com/jipika/WaifuX/releases/download/v38.0.125/WaifuX.dmg"
         type="application/octet-stream"
         length="0"
       />
