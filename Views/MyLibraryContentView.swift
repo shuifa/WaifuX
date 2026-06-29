@@ -580,10 +580,12 @@ struct MyLibraryContentView: View {
             : offset < showThreshold
         guard shouldBeVisible != isLibraryHeaderContentVisible else { return }
 
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            isLibraryHeaderContentVisible = shouldBeVisible
+        DispatchQueue.main.async {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                isLibraryHeaderContentVisible = shouldBeVisible
+            }
         }
     }
 
@@ -2751,7 +2753,7 @@ struct MyLibraryContentView: View {
         isSyncingSubscriptions = true
 
         let mediaItems = mediaViewModel.workshopService.convertToMediaItems(items)
-        
+
         // 并发提交所有下载任务，SteamCMD 下载限制器会自动控制并发（最多 2 个同时下载）
         let results = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
             for item in mediaItems {
@@ -2766,14 +2768,14 @@ struct MyLibraryContentView: View {
                     }
                 }
             }
-            
+
             var results: [Bool] = []
             for await success in group {
                 results.append(success)
             }
             return results
         }
-        
+
         let successCount = results.filter { $0 }.count
         let failCount = results.filter { !$0 }.count
 
