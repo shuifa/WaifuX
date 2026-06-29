@@ -149,6 +149,11 @@ final class StatusBarController: NSObject {
     // 各屏幕独立暂停/关闭菜单项
     private var wallpaperControlItems: [NSMenuItem] = []
 
+    // MARK: - 下载进度状态栏显示
+    private var originalButtonImage: NSImage?
+    private var downloadMenuItems: [NSMenuItem] = []
+    private var lastDownloadMenuUpdate: Date = .distantPast
+
     // 标记是否已配置，防止重复配置
     private var isConfigured = false
 
@@ -156,6 +161,7 @@ final class StatusBarController: NSObject {
         super.init()
         configureStatusItem()
         bindWallpaperState()
+        bindDownloadState()
         refreshMenuState()
     }
 
@@ -245,6 +251,142 @@ final class StatusBarController: NSObject {
                 self?.refreshMenuState()
             }
             .store(in: &cancellables)
+    }
+
+    // MARK: - 下载进度状态栏
+
+    private func bindDownloadState() {
+        originalButtonImage = statusItem.button?.image
+
+        let runningTasksPublisher = DownloadTaskService.shared.$tasks
+            .map { tasks -> [DownloadTask] in tasks.filter(\.isRunning) }
+
+        let throttled = runningTasksPublisher
+            .throttle(for: .milliseconds(500), scheduler: DispatchQueue.main, latest: true)
+
+        let deduped = throttled.removeDuplicates { (lhs: [DownloadTask], rhs: [DownloadTask]) -> Bool in
+            guard lhs.count == rhs.count else { return false }
+            for (l, r) in zip(lhs, rhs) {
+                if l.id != r.id || abs(l.progress - r.progress) >= 0.01 {
+                    return false
+                }
+            }
+            return true
+        }
+
+        deduped
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] (runningTasks: [DownloadTask]) in
+                guard let self else { return }
+                self.updateDownloadButtonState(runningTasks: runningTasks)
+                self.updateDownloadMenuItems(runningTasks: runningTasks)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func updateDownloadButtonState(runningTasks: [DownloadTask]) {
+        guard let button = statusItem.button else { return }
+
+        if runningTasks.isEmpty {
+            if let originalImage = originalButtonImage {
+                button.image = originalImage
+                button.title = ""
+                button.toolTip = "WaifuX"
+            }
+            return
+        }
+
+        let progress = combinedProgress(for: runningTasks)
+        let count = runningTasks.count
+        let percent = Int((progress * 100).rounded())
+
+        button.image = nil
+        button.title = "\(percent)% · \(count)"
+        button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        button.toolTip = "WaifuX — \(t("wallpaper.downloads")) \(count)"
+    }
+
+    private func updateDownloadMenuItems(runningTasks: [DownloadTask]) {
+        // 移除旧的下载菜单项
+        for item in downloadMenuItems {
+            menu.removeItem(item)
+        }
+        downloadMenuItems.removeAll()
+
+        // 下载全部完成时，恢复原始图标并退出（不受节流限制）
+        if runningTasks.isEmpty {
+            updateDownloadButtonState(runningTasks: [])
+            return
+        }
+
+        // 有下载时做节流，避免频繁重建菜单
+        let now = Date()
+        guard now.timeIntervalSince(lastDownloadMenuUpdate) > 0.4 else { return }
+        lastDownloadMenuUpdate = now
+
+        // 更新状态栏按钮
+        updateDownloadButtonState(runningTasks: runningTasks)
+
+        let progress = combinedProgress(for: runningTasks)
+        let count = runningTasks.count
+        let percent = Int((progress * 100).rounded())
+
+        // 汇总项（图标 + 进度百分比 + 队列数）
+        let summaryItem = NSMenuItem()
+        let summaryAttr = NSAttributedString(
+            string: "  ⬇  \(percent)%  ·  \(count) \(t("wallpaper.downloads"))",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.labelColor
+            ]
+        )
+        summaryItem.attributedTitle = summaryAttr
+        summaryItem.isEnabled = false
+        menu.insertItem(summaryItem, at: 0)
+        downloadMenuItems.append(summaryItem)
+
+        // 分隔线
+        let sep = NSMenuItem.separator()
+        menu.insertItem(sep, at: downloadMenuItems.count)
+        downloadMenuItems.append(sep)
+
+        // 每个任务一行（最多显示 5 条）
+        let displayTasks = runningTasks.prefix(5)
+        for task in displayTasks {
+            let taskItem = NSMenuItem()
+            let taskPercent = Int((task.progress * 100).rounded())
+            let title = task.title
+            let displayTitle = title.count > 28
+                ? String(title.prefix(28)) + "…"
+                : title
+            let taskAttr = NSAttributedString(
+                string: "    \(displayTitle)  \(taskPercent)%",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 12),
+                    .foregroundColor: NSColor.secondaryLabelColor
+                ]
+            )
+            taskItem.attributedTitle = taskAttr
+            taskItem.isEnabled = false
+            menu.insertItem(taskItem, at: downloadMenuItems.count)
+            downloadMenuItems.append(taskItem)
+        }
+
+        if runningTasks.count > 5 {
+            let moreItem = NSMenuItem(
+                title: "    …\(runningTasks.count - 5) \(t("wallpaper.downloads"))",
+                action: nil,
+                keyEquivalent: ""
+            )
+            moreItem.isEnabled = false
+            menu.insertItem(moreItem, at: downloadMenuItems.count)
+            downloadMenuItems.append(moreItem)
+        }
+    }
+
+    private func combinedProgress(for tasks: [DownloadTask]) -> Double {
+        guard !tasks.isEmpty else { return 0 }
+        return tasks.reduce(0.0) { $0 + $1.progress } / Double(tasks.count)
     }
 
     /// 为指定屏幕构建音量滑块菜单项
@@ -707,7 +849,7 @@ final class StatusBarController: NSObject {
             NSSound.beep()
             return
         }
-        SceneConfigOverridePanelController.shared.present(for: wallpaperPath)
+        WebPropertyEditorPanelController.shared.presentSceneConfig(for: wallpaperPath)
     }
 
     @objc private func openWebWallpaperDesignPanel() {
@@ -721,13 +863,13 @@ final class StatusBarController: NSObject {
             return
         }
         if weBridge.isCurrentWallpaperWeb {
-            WebWallpaperDesignPanelController.shared.present(for: wallpaperPath)
+            WebPropertyEditorPanelController.shared.presentWeb(for: wallpaperPath)
             return
         }
         if weBridge.isCurrentWallpaperScene {
             // 实时渲染模式下，显示属性编辑面板；否则显示文本设计面板
             if UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled") {
-                SceneWallpaperPropertiesPanelController.shared.present(for: wallpaperPath)
+                WebPropertyEditorPanelController.shared.presentScene(for: wallpaperPath)
             } else {
                 SceneWallpaperDesignPanelController.shared.present(for: wallpaperPath)
             }

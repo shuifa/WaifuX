@@ -108,7 +108,7 @@ struct GuessYouLikeCardView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.down.to.line")
                             .font(.system(size: 11, weight: .semibold))
-                        Text("Download")
+                        Text(t("download"))
                             .font(.system(size: 13, weight: .semibold))
                     }
                     .foregroundStyle(.white)

@@ -63,6 +63,8 @@ struct WallpaperDetailSheet: View {
     @State private var cachedAuthorUploader: Wallpaper.Uploader?
     /// 从作者面板切换时使用淡入淡出过渡（而非滑动）
     @State private var isAuthorPanelFade = false
+    /// 作者壁纸批量下载中状态
+    @State private var isDownloadingAllAuthor = false
 
     private var prefetchNamespace: String {
         "wallpaper-detail-\(initialWallpaper.id)"
@@ -1589,7 +1591,11 @@ struct WallpaperDetailSheet: View {
                 },
                 onLoadMore: {
                     self.loadMoreAuthorWallpapers()
-                }
+                },
+                onDownloadAll: { wallpapers in
+                    downloadAllByAuthor(uploader: uploader, wallpapers: wallpapers)
+                },
+                isDownloadingAll: $isDownloadingAllAuthor
             )
             .transition(.identity)
             .zIndex(100)
@@ -1639,6 +1645,60 @@ struct WallpaperDetailSheet: View {
         isLoadingAuthorWallpapers = false
         authorLoadedUploaderName = nil
         cachedAuthorUploader = nil
+    }
+
+    /// 批量下载作者所有已加载壁纸，并自动归入以作者名命名的虚拟文件夹
+    private func downloadAllByAuthor(uploader: Wallpaper.Uploader, wallpapers: [Wallpaper]) {
+        let folderStore = LibraryFolderStore.shared
+        let libraryService = WallpaperLibraryService.shared
+        let authorName = uploader.username
+
+        Task { @MainActor in
+            // 查找或创建以作者名为名的虚拟文件夹
+            let existingFolders = folderStore.folders(for: .wallpaper, parentID: nil, collection: .downloads)
+            let folder: LibraryFolder
+            if let existing = existingFolders.first(where: { $0.name == authorName }) {
+                folder = existing
+            } else {
+                folder = folderStore.createFolder(
+                    name: authorName,
+                    contentType: .wallpaper,
+                    parentID: nil,
+                    collection: .downloads
+                )
+            }
+
+            // 已下载的项直接归入文件夹，过滤出需要下载的
+            var pendingWallpapers: [Wallpaper] = []
+            for wallpaper in wallpapers {
+                if libraryService.isDownloaded(wallpaper) {
+                    folderStore.moveWallpaperToFolder(wallpaperID: wallpaper.id, folderID: folder.id)
+                } else {
+                    pendingWallpapers.append(wallpaper)
+                }
+            }
+
+            // 并发提交所有下载任务
+            let vm = viewModel
+            await withTaskGroup(of: Void.self) { group in
+                for wallpaper in pendingWallpapers {
+                    group.addTask {
+                        do {
+                            try await vm.downloadWallpaper(wallpaper)
+                            await MainActor.run {
+                                folderStore.moveWallpaperToFolder(wallpaperID: wallpaper.id, folderID: folder.id)
+                            }
+                        } catch {
+                            AppLogger.error(.download, "作者壁纸批量下载失败",
+                                metadata: ["wallpaperID": wallpaper.id, "author": authorName,
+                                           "error": error.localizedDescription])
+                        }
+                    }
+                }
+            }
+
+            isDownloadingAllAuthor = false
+        }
     }
 
     /// 加载更多作者壁纸（分页），防止重复触发

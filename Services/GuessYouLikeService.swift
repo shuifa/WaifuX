@@ -14,16 +14,14 @@ final class GuessYouLikeService {
     private let currentCacheVersion = 3
     private let targetCount = 12
     private let primaryItemsPerSource = 2
-    private let sourceFetchCount = 4
+    private let sourceFetchCount = 8
 
     private init() {}
 
     // MARK: - 公开接口
 
     func getRecommendations() async -> [GuessYouLikeItem] {
-        if shouldRefresh() { return await refresh() }
-        if let cached = loadCached() { return cached }
-        return await refresh()
+        await refresh()
     }
 
     func forceRefresh() async -> [GuessYouLikeItem] { await refresh() }
@@ -37,13 +35,7 @@ final class GuessYouLikeService {
     }
 
     private func refresh() async -> [GuessYouLikeItem] {
-        let items = await generate()
-        defaults.set(Date(), forKey: lastUpdateKey)
-        defaults.set(currentCacheVersion, forKey: cacheVersionKey)
-        if let data = try? JSONEncoder().encode(items) {
-            defaults.set(data, forKey: cachedItemsKey)
-        }
-        return items
+        await generate()
     }
 
     private func loadCached() -> [GuessYouLikeItem]? {
@@ -89,7 +81,7 @@ final class GuessYouLikeService {
             selected = mergeUnique(selected, balancedSelection(from: fallback, targetCount: missing), limit: targetCount)
         }
 
-        return Array(selected.prefix(targetCount))
+        return Array(selected.prefix(targetCount)).shuffled()
     }
 
     private func balancedSelection(from buckets: [SourceBucket], targetCount: Int) -> [GuessYouLikeItem] {
@@ -105,13 +97,14 @@ final class GuessYouLikeService {
             return true
         }
 
+        // 每个桶内随机打乱，使每次选取的条目不同
         for bucket in buckets {
-            for item in bucket.items.prefix(primaryItemsPerSource) {
+            for item in bucket.items.shuffled().prefix(primaryItemsPerSource) {
                 appendUnique(item)
             }
         }
 
-        var remainders = buckets.map { Array($0.items.dropFirst(primaryItemsPerSource)) }
+        var remainders = buckets.map { Array($0.items.shuffled().dropFirst(primaryItemsPerSource)) }
         while selected.count < targetCount {
             var added = false
             for index in remainders.indices where !remainders[index].isEmpty {
@@ -314,8 +307,12 @@ final class GuessYouLikeService {
     private func wallhavenQuery(for preferences: PreferenceSnapshot) -> String {
         let usefulTags = preferences.staticTags
             .filter(isUsefulWallhavenTag)
-            .prefix(2)
-        return usefulTags.joined(separator: " ")
+        guard !usefulTags.isEmpty else { return "" }
+        // 随机选择 1-2 个标签，起点随机，使每次查询不同
+        let maxStart = max(0, usefulTags.count - 2)
+        let start = Int.random(in: 0...maxStart)
+        let take = min(Int.random(in: 1...2), usefulTags.count - start)
+        return Array(usefulTags[start..<start + take]).joined(separator: " ")
     }
 
     private func isUsefulWallhavenTag(_ tag: String) -> Bool {
@@ -466,16 +463,23 @@ final class GuessYouLikeService {
     }
 
     private func fetchWallhavenCandidates(count: Int, preferences: PreferenceSnapshot) async throws -> [Wallpaper] {
+        let sortingOptions = ["toplist", "random", "favorites", "date_added"]
+        let topRangeOptions = ["1d", "3d", "1w", "1M"]
+        let randomSorting = sortingOptions.randomElement() ?? "toplist"
+        let randomTopRange = topRangeOptions.randomElement() ?? "1M"
+        let randomPage = Int.random(in: 1...5)
+
         var params = WallhavenAPI.SearchParameters(
             categories: preferences.wallhavenCategoryMask,
             purity: preferences.wallhavenPurityMask,
-            sorting: SortingOption.toplist.rawValue,
+            sorting: randomSorting,
             order: "desc",
-            topRange: TopRange.oneMonth.rawValue,
+            topRange: randomTopRange,
             ratios: preferences.wallhavenRatios,
             colors: preferences.wallhavenColors
         )
         params.perPage = max(count * 4, 12)
+        params.page = randomPage
         params.query = wallhavenQuery(for: preferences)
 
         var list = try await fetchWallhavenList(params, excluding: preferences.excludedWallpaperIDs)
@@ -525,14 +529,15 @@ final class GuessYouLikeService {
     private func fetch4K(count: Int, preferences: PreferenceSnapshot) async -> [GuessYouLikeItem] {
         guard count > 0 else { return [] }
         do {
+            let randomPage = Int.random(in: 1...3)
             let list: [Wallpaper]
             if let cat = fourKCategoryID(for: preferences) {
-                let resp = try await FourKWallpapersService.shared.fetchCategory(cat, page: 1)
+                let resp = try await FourKWallpapersService.shared.fetchCategory(cat, page: randomPage)
                 list = resp.data
             } else {
                 list = try await FourKWallpapersService.shared.fetchFeatured(limit: count + 4)
             }
-            return list.prefix(count).map { w in
+            return list.shuffled().prefix(count).map { w in
                 GuessYouLikeItem(
                     id: w.id,
                     title: w.primaryTagName ?? w.categoryDisplayName,
@@ -554,16 +559,17 @@ final class GuessYouLikeService {
     private func fetchMotionBG(count: Int, preferences: PreferenceSnapshot) async -> [GuessYouLikeItem] {
         guard count > 0 else { return [] }
         do {
+            let useTag = Bool.random()
             let page = try await MediaService.shared.fetchPage(source: .home)
             var items = page.items
-            if let tag = motionBGTag(for: preferences) {
+            if useTag, let tag = motionBGTag(for: preferences) {
                 let filtered = items.filter { item in
                     item.tags.contains { $0.localizedCaseInsensitiveContains(tag) }
                     || (item.collectionTitle?.localizedCaseInsensitiveContains(tag) ?? false)
                 }
                 if !filtered.isEmpty { items = filtered }
             }
-            return items.prefix(count).map { m in
+            return items.shuffled().prefix(count).map { m in
                 GuessYouLikeItem(
                     id: m.slug,
                     title: m.title,
@@ -585,12 +591,13 @@ final class GuessYouLikeService {
     private func fetchWorkshop(count: Int, preferences: PreferenceSnapshot) async -> [GuessYouLikeItem] {
         guard count > 0 else { return [] }
         do {
+            let randomPage = Int.random(in: 1...3)
             let params = WorkshopSearchParams(
-                sortBy: .ranked, pageSize: count + 4,
+                sortBy: .ranked, page: randomPage, pageSize: count + 4,
                 tags: workshopTags(for: preferences)
             )
             let result = try await WorkshopService.shared.search(params: params)
-            return result.items.prefix(count).map { w in
+            return result.items.shuffled().prefix(count).map { w in
                 GuessYouLikeItem(
                     id: w.id,
                     title: w.title,
@@ -614,12 +621,15 @@ final class GuessYouLikeService {
         let service = DynamicWallpaperService.shared
         if !service.isDataReady { _ = await service.loadData() }
         guard service.isDataReady else { return [] }
+        let sortOptions: [DynamicWallpaperSortOption] = [.popular, .newest]
+        let randomSort = sortOptions.randomElement() ?? .popular
+        let randomPage = Int.random(in: 1...3)
         let params = DynamicWallpaperSearchParams(
             categories: dongtaiCategories(for: preferences),
-            sortBy: .popular, pageSize: count + 2
+            sortBy: randomSort, page: randomPage, pageSize: count + 2
         )
         let result = service.queryItems(params: params)
-        return result.items.prefix(count).map { m in
+        return result.items.shuffled().prefix(count).map { m in
             GuessYouLikeItem(
                 id: m.slug,
                 title: m.title,
@@ -637,20 +647,22 @@ final class GuessYouLikeService {
     private func fetchWallsflow(count: Int, preferences: PreferenceSnapshot) async -> [GuessYouLikeItem] {
         guard count > 0 else { return [] }
         do {
+            let randomPage = Int.random(in: 1...3)
+            let useCategory = Bool.random()
             let preferredPage: WallsflowListPage
-            if let slug = wallsflowCategorySlug(for: preferences) {
-                preferredPage = try await WallsflowService.shared.fetchCategory(slug: slug, page: 1)
+            if useCategory, let slug = wallsflowCategorySlug(for: preferences) {
+                preferredPage = try await WallsflowService.shared.fetchCategory(slug: slug, page: randomPage)
             } else if let query = preferences.videoTags.first ?? preferences.allTags.first {
-                preferredPage = try await WallsflowService.shared.search(query: query, page: 1)
+                preferredPage = try await WallsflowService.shared.search(query: query, page: randomPage)
             } else {
-                preferredPage = try await WallsflowService.shared.fetchHome(page: 1)
+                preferredPage = try await WallsflowService.shared.fetchHome(page: randomPage)
             }
 
             let page = preferredPage.items.isEmpty
-                ? try await WallsflowService.shared.fetchHome(page: 1)
+                ? try await WallsflowService.shared.fetchHome(page: randomPage)
                 : preferredPage
 
-            return page.items.prefix(count).map { m in
+            return page.items.shuffled().prefix(count).map { m in
                 GuessYouLikeItem(
                     id: m.slug,
                     title: m.title,

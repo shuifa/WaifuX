@@ -10,8 +10,10 @@ struct AuthorWallpaperSheet: View {
     let onSelectWallpaper: (Wallpaper) -> Void
     let onDismiss: () -> Void
     let onLoadMore: (() -> Void)?
+    let onDownloadAll: (([Wallpaper]) -> Void)?
 
     @State private var isVisible = false
+    @Binding var isDownloadingAll: Bool
 
     private let panelWidth: CGFloat = 360
     private let cardSpacing: CGFloat = 12
@@ -97,6 +99,21 @@ struct AuthorWallpaperSheet: View {
                 Label("wallhaven", systemImage: "photo.stack")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(LiquidGlassColors.textTertiary)
+            }
+
+            // 下载全部按钮
+            if !wallpapers.isEmpty, let onDownloadAll {
+                Button {
+                    isDownloadingAll = true
+                    onDownloadAll(wallpapers)
+                } label: {
+                    Image(systemName: isDownloadingAll ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(isDownloadingAll ? Color.accentColor : LiquidGlassColors.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help(t("downloadAllByAuthor"))
+                .disabled(isDownloadingAll)
             }
 
             Spacer()

@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CFNetwork
 import SwiftSoup
+import WebKit
 
 // MARK: - SteamCMD 并发下载限制器
 /// SteamCMD 虽无明确的 CLI 并发限制，但 Steam 后端会对同一账号的
@@ -236,10 +237,6 @@ class WorkshopService: ObservableObject {
     ///   - page: 页码（从 1 开始）
     /// - Returns: 壁纸列表
     func fetchSubscriptions(steamID: String, page: Int = 1) async throws -> [WorkshopWallpaper] {
-        await WebViewCookieSync.syncWKWebsiteDataStoreToSharedHTTPCookieStorage(
-            matchingDomains: ["steamcommunity.com", "steampowered.com", "steamcdn.com"]
-        )
-
         let profilePath = steamProfilePath(for: steamID)
         var components = URLComponents(string: "https://steamcommunity.com\(profilePath)/myworkshopfiles/")
         components?.queryItems = [
@@ -259,7 +256,17 @@ class WorkshopService: ObservableObject {
         request.setValue(steamCommunityUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-        applySteamCookies(to: &request)
+        // 直接从 WKWebsiteDataStore 读取 cookie（绕过 HTTPCookieStorage.shared 同步链路，避免同步失败）
+        if let cookies = await steamCookiesFromWKDataStore(), !cookies.isEmpty {
+            let cookieHeader = HTTPCookie.requestHeaderFields(with: cookies)["Cookie"]
+            if let cookieHeader, !cookieHeader.isEmpty {
+                request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+                AppLogger.info(.media, "Applied Steam cookies from WKWebsiteDataStore", metadata: ["count": "\(cookies.count)"])
+            }
+        } else {
+            // 降级：从 HTTPCookieStorage.shared 读（兼容无 WKWebView 的场景）
+            applySteamCookies(to: &request)
+        }
 
         let data = try await NetworkService.shared.fetchData(request: request)
         guard let html = String(data: data, encoding: .utf8) else {
@@ -300,6 +307,22 @@ class WorkshopService: ObservableObject {
             AppLogger.error(.media, "fetchSubscriptions HTML API enrichment failed", metadata: ["steamID": steamID, "error": "\(error)"])
         }
         return parsed
+    }
+
+    /// 从 WKWebsiteDataStore（WKWebView 的持久 cookie 存储）获取 Steam 域名下的 cookie
+    /// 这是最可靠的 cookie 来源——WKWebView 中的 Steam 登录会话始终在此存储中，
+    /// 不需要经过 WebViewCookieSync 的中转同步步骤。
+    private func steamCookiesFromWKDataStore() async -> [HTTPCookie]? {
+        await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                let filtered = cookies.filter { cookie in
+                    ["steamcommunity.com", "steampowered.com", "steamcdn.com"].contains(where: { domain in
+                        cookie.domain.contains(domain)
+                    })
+                }
+                continuation.resume(returning: filtered.isEmpty ? nil : filtered)
+            }
+        }
     }
 
     private func applySteamCookies(to request: inout URLRequest) {
@@ -353,6 +376,13 @@ class WorkshopService: ObservableObject {
 
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+        // 带上 WebView 会话 cookie 才能正确检测登录状态
+        if let cookies = await steamCookiesFromWKDataStore(), !cookies.isEmpty {
+            let cookieHeader = HTTPCookie.requestHeaderFields(with: cookies)["Cookie"]
+            if let cookieHeader, !cookieHeader.isEmpty {
+                request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            }
+        }
 
         do {
             let data = try await NetworkService.shared.fetchData(request: request)

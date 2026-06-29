@@ -13,8 +13,10 @@ struct AuthorMediaSheet: View {
     let onSelectItem: (MediaItem) -> Void
     let onDismiss: () -> Void
     let onLoadMore: (() -> Void)?
+    let onDownloadAll: (([MediaItem]) -> Void)?
 
     @State private var isVisible = false
+    @Binding var isDownloadingAll: Bool
 
     private let panelWidth: CGFloat = 360
     private let cardSpacing: CGFloat = 12
@@ -100,6 +102,21 @@ struct AuthorMediaSheet: View {
                 Label("Steam Workshop", systemImage: "person.2.crop.square.stack")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(LiquidGlassColors.textTertiary)
+            }
+
+            // 下载全部按钮
+            if !items.isEmpty, let onDownloadAll {
+                Button {
+                    isDownloadingAll = true
+                    onDownloadAll(items)
+                } label: {
+                    Image(systemName: isDownloadingAll ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(isDownloadingAll ? Color.accentColor : LiquidGlassColors.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help(t("downloadAllByAuthor"))
+                .disabled(isDownloadingAll)
             }
 
             Spacer()

@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wallpaper Property Editor</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root {
+    --bg-primary: #1a1d2e;
+    --bg-secondary: #252840;
+    --bg-card: #2a2d45;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --accent-dim: rgba(59, 130, 246, 0.15);
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: rgba(255, 255, 255, 0.08);
+    --toggle-off: #374151;
+    --slider-track: #374151;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+  .header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .header-icon {
+    width: 28px; height: 28px;
+    background: var(--accent-dim);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent);
+    font-size: 14px;
+  }
+
+  .property-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0 2px;
+  }
+  .section-bar {
+    width: 3px; height: 14px;
+    background: var(--accent);
+    border-radius: 1.5px;
+    opacity: 0.7;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .prop-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    transition: border-color 0.15s;
+  }
+  .prop-card:hover {
+    border-color: var(--accent-dim);
+  }
+  .prop-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .prop-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    min-width: 88px;
+    flex-shrink: 0;
+  }
+  .prop-control {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .toggle-wrap {
+    position: relative;
+    width: 36px; height: 20px;
+    cursor: pointer;
+  }
+  .toggle-wrap input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle-slider {
+    position: absolute; inset: 0;
+    background: var(--toggle-off);
+    border-radius: 10px;
+    transition: background 0.2s;
+  }
+  .toggle-slider::after {
+    content: '';
+    position: absolute;
+    left: 2px; top: 2px;
+    width: 16px; height: 16px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .toggle-wrap input:checked + .toggle-slider {
+    background: var(--accent);
+  }
+  .toggle-wrap input:checked + .toggle-slider::after {
+    transform: translateX(16px);
+  }
+
+  .slider-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .slider-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .slider-value {
+    font-size: 10px;
+    font-weight: 600;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 2px 8px;
+    border-radius: 5px;
+    min-width: 40px;
+    text-align: center;
+  }
+  .range-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+    background: var(--slider-track);
+  }
+  .range-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg-card);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    transition: transform 0.1s;
+  }
+  .range-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+  }
+
+  .color-picker-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .color-swatch {
+    width: 44px; height: 24px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.15);
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+  }
+  .color-swatch input[type="color"] {
+    position: absolute;
+    inset: -8px;
+    width: calc(100% + 16px);
+    height: calc(100% + 16px);
+    border: none;
+    cursor: pointer;
+    opacity: 0;
+  }
+  .color-hex {
+    font-size: 10px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.05);
+    padding: 3px 8px;
+    border-radius: 5px;
+    min-width: 70px;
+    text-align: center;
+  }
+
+  .custom-select {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    padding: 5px 28px 5px 10px;
+    outline: none;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    min-width: 120px;
+  }
+  .custom-select:focus { border-color: var(--accent); }
+  .custom-select option { background: var(--bg-secondary); color: var(--text-primary); }
+
+  .text-input {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    padding: 5px 10px;
+    outline: none;
+    width: 100%;
+    max-width: 180px;
+  }
+  .text-input:focus { border-color: var(--accent); }
+
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+  }
+  .file-name {
+    flex: 1;
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.04);
+    padding: 4px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .file-btn {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: none;
+    border-radius: 14px;
+    padding: 4px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+  }
+  .file-btn:hover { background: var(--accent-dim); }
+
+  .desc-text {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    word-break: break-word;
+  }
+  .desc-text a { color: var(--accent); text-decoration: none; }
+  .desc-text a:hover { text-decoration: underline; }
+  .desc-text img { max-width: 100%; border-radius: 6px; }
+  .desc-text hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
+
+  .footer {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .reset-btn {
+    width: 100%;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: var(--accent-dim);
+    border: none;
+    border-radius: 10px;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .reset-btn:hover { background: var(--accent-dim); }
+
+  .hidden-prop { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="flex items-start gap-3">
+    <div class="header-icon">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+    </div>
+    <div class="flex-1 min-w-0">
+      <div id="panelTitle" class="text-[15px] font-bold leading-tight">设计场景</div>
+      <div id="wallpaperName" class="text-[10px] text-[var(--text-muted)] mt-1 truncate">Loading...</div>
+    </div>
+    <button onclick="window.webkit.messageHandlers.closePanel.postMessage(null)" class="w-[22px] h-[22px] rounded-md bg-white/[0.06] flex items-center justify-center hover:bg-white/[0.12] transition-colors">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+</div>
+
+<div class="property-list" id="propertyList"></div>
+
+<div class="footer">
+  <button class="reset-btn" onclick="handleReset()">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+    重置为默认值
+  </button>
+</div>
+
+<script>
+let properties = [];
+let currentValues = {};
+let wallpaperTitle = '';
+
+const i18nMap = {
+  // ===== 通用属性标签 =====
+  'ui_browse_properties_scheme_color': '主题配色',
+  'ui_browse_properties_background_color': '背景色',
+  'ui_browse_properties_playback_rate': '播放速度',
+  'ui_browse_properties_audio_recording': '音频监听',
+  'ui_browse_properties_alignment': '对齐方式',
+  'ui_browse_properties_alignment_cover': '覆盖',
+  'ui_browse_properties_alignment_fill': '填充',
+  'ui_browse_properties_alignment_free': '自由',
+  'ui_browse_properties_alignment_center': '居中',
+  'ui_browse_properties_alignment_stretch': '拉伸',
+  'ui_browse_properties_alignment_horizontal': '水平',
+  'ui_browse_properties_alignment_vertical': '垂直',
+  'ui_browse_properties_alignment_zoom': '缩放',
+  'ui_browse_properties_alignment_position': '位置',
+  'ui_browse_properties_alignment_flip_horizontally': '翻转',
+  'ui_browse_properties_parallax': '对运动作出反应',
+  'ui_browse_properties_parallax_strength': '运动强度',
+  'ui_browse_properties_parallax_disabled': '已禁用',
+  'ui_browse_properties_parallax_gyro': '设备运动',
+  'ui_browse_properties_parallax_scroll': '主屏幕滚动',
+  'ui_browse_properties_brightness': '亮度',
+  'ui_browse_properties_contrast': '对比度',
+  'ui_browse_properties_saturation': '饱和度',
+  'ui_browse_properties_hue_shift': '色调偏移',
+  'ui_browse_properties_show_color_options': '显示颜色选项',
+  'ui_browse_properties_pixel_art_optimization': '像素画优化',
+  'ui_browse_properties_volume': '音量',
+  'ui_browse_properties_mouse_parallax': '鼠标视差',
+  'ui_browse_properties_image_filter': '图片筛选器',
+  'ui_browse_properties_filter_strength': '筛选器强度',
+  'ui_browse_properties_accent_color': '强调色',
+  'ui_browse_properties_clouds': '云朵',
+  'ui_browse_properties_sun_bottom': '太阳底部',
+  'ui_browse_properties_sun_top': '太阳顶部',
+  'ui_browse_properties_grid_background': '网格（背景）',
+  'ui_browse_properties_grid_far': '网格（远处）',
+  'ui_browse_properties_grid_near': '网格（近处）',
+  'ui_browse_properties_horizon': '地平线',
+  'ui_browse_properties_mountain_scale': '山脉比例',
+  'ui_browse_properties_noise_fx': '噪声效果',
+  'ui_browse_properties_shading': '着色',
+  'ui_browse_properties_count': '计数',
+  'ui_browse_properties_glow': '发光',
+  'ui_browse_properties_style': '风格',
+  'ui_browse_properties_large': '大',
+  'ui_browse_properties_small': '小',
+
+  // ===== 编辑器属性标签 =====
+  'ui_editor_properties_text': '文本',
+  'ui_editor_properties_size': '大小',
+  'ui_editor_properties_pivot_offset_x': '轴偏移 X 轴',
+  'ui_editor_properties_pivot_offset_y': '轴偏移 Y 轴',
+  'ui_editor_properties_font': '字体',
+  'ui_editor_properties_background': '背景',
+  'ui_editor_properties_alignment': '对齐方式',
+  'ui_editor_properties_opacity': '不透明度',
+  'ui_editor_properties_scale': '缩放',
+  'ui_editor_properties_rotation': '旋转角度',
+  'ui_editor_user_properties_type_color': '颜色',
+  'ui_editor_preset_lightning_title': '闪电',
+  'ui_editor_filemenu_help_particle_effects': '粒子效果',
+  'ui_editor_layer_solid': '纯色',
+  'ui_editor_script_snippet_rotation': '旋转',
+
+  // ===== 播放列表/过渡 =====
+  'ui_browse_playlist_modal_settings_transition_glass_shatter': '玻璃碎裂',
+  'ui_browse_playlist_modal_settings_order_random': '随机',
+  'ui_browse_playlist_modal_settings_order_sorted': '排序',
+};
+
+// Combo 选项的特殊映射（当 project.json 未提供 options 时使用）
+const comboOptionMaps = {
+  'mobileparallax': [
+    { value: '0', label: '已禁用' },
+    { value: '1', label: '设备运动' },
+    { value: '2', label: '主屏幕滚动' },
+    { value: '3', label: '设备运动（自由）' },
+  ],
+  'alignment': [
+    { value: '0', label: '覆盖' },
+    { value: '1', label: '填充' },
+    { value: '2', label: '自由' },
+  ],
+  'alignmentorientation': [
+    { value: 'portrait', label: '竖屏' },
+    { value: 'landscape', label: '横屏' },
+  ],
+};
+
+function translateLabel(raw) {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  if (i18nMap[trimmed]) return i18nMap[trimmed];
+  if (/<[a-zA-Z]/.test(trimmed)) return trimmed;
+  return trimmed;
+}
+
+function evaluateCondition(expr, values) {
+  if (!expr || expr.trim() === '') return true;
+  try {
+    const tokens = tokenize(expr);
+    let idx = { v: 0 };
+    const result = parseOr(tokens, idx, values);
+    return truthy(result);
+  } catch(e) { return true; }
+}
+
+function tokenize(input) {
+  const tokens = [];
+  let i = 0;
+  while (i < input.length) {
+    const ch = input[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    const two = input.substring(i, i + 2);
+    if (['&&','||','==','!=','>=','<='].includes(two)) {
+      tokens.push({ type: 'op', value: two }); i += 2; continue;
+    }
+    if ('><!'.includes(ch)) { tokens.push({ type: 'op', value: ch }); i++; continue; }
+    if (ch === '(' || ch === ')') { tokens.push({ type: 'paren', value: ch }); i++; continue; }
+    if (ch === "'" || ch === '"') {
+      const quote = ch; i++;
+      let s = '';
+      while (i < input.length && input[i] !== quote) { s += input[i]; i++; }
+      if (i < input.length) i++;
+      tokens.push({ type: 'string', value: s }); continue;
+    }
+    if (/[0-9.\-]/.test(ch)) {
+      let num = '';
+      if (ch === '-') { num += '-'; i++; }
+      while (i < input.length && /[0-9.]/.test(input[i])) { num += input[i]; i++; }
+      tokens.push({ type: 'number', value: parseFloat(num) }); continue;
+    }
+    if (/[a-zA-Z_]/.test(ch)) {
+      let id = '';
+      while (i < input.length && /[a-zA-Z0-9_.]/.test(input[i])) { id += input[i]; i++; }
+      if (id === 'true') tokens.push({ type: 'bool', value: true });
+      else if (id === 'false') tokens.push({ type: 'bool', value: false });
+      else tokens.push({ type: 'id', value: id });
+      continue;
+    }
+    i++;
+  }
+  return tokens;
+}
+
+function parsePrimary(tokens, idx, values) {
+  if (idx.v >= tokens.length) return null;
+  const t = tokens[idx.v];
+  if (t.type === 'op' && t.value === '!') {
+    idx.v++;
+    return { type: 'bool', value: !truthy(parsePrimary(tokens, idx, values)) };
+  }
+  if (t.type === 'paren' && t.value === '(') {
+    idx.v++;
+    const val = parseOr(tokens, idx, values);
+    if (idx.v < tokens.length && tokens[idx.v].type === 'paren' && tokens[idx.v].value === ')') idx.v++;
+    return val;
+  }
+  idx.v++;
+  if (t.type === 'bool') return { type: 'bool', value: t.value };
+  if (t.type === 'number') return { type: 'number', value: t.value };
+  if (t.type === 'string') return { type: 'string', value: t.value };
+  if (t.type === 'id') {
+    const key = t.value.endsWith('.value') ? t.value.slice(0, -6) : t.value;
+    const val = values[key];
+    if (val === undefined || val === null) return { type: 'null' };
+    if (typeof val === 'boolean') return { type: 'bool', value: val };
+    if (typeof val === 'number') return { type: 'number', value: val };
+    if (typeof val === 'string') return { type: 'string', value: val };
+    return { type: 'null' };
+  }
+  return { type: 'null' };
+}
+
+function parseComparison(tokens, idx, values) {
+  let left = parsePrimary(tokens, idx, values);
+  while (idx.v < tokens.length && tokens[idx.v].type === 'op' && ['==','!=','>','>=','<','<='].includes(tokens[idx.v].value)) {
+    const op = tokens[idx.v].value; idx.v++;
+    const right = parsePrimary(tokens, idx, values);
+    switch(op) {
+      case '==': left = { type: 'bool', value: valuesEqual(left, right) }; break;
+      case '!=': left = { type: 'bool', value: !valuesEqual(left, right) }; break;
+      case '>':  left = { type: 'bool', value: toNum(left) > toNum(right) }; break;
+      case '>=': left = { type: 'bool', value: toNum(left) >= toNum(right) }; break;
+      case '<':  left = { type: 'bool', value: toNum(left) < toNum(right) }; break;
+      case '<=': left = { type: 'bool', value: toNum(left) <= toNum(right) }; break;
+    }
+  }
+  return left;
+}
+
+function parseAnd(tokens, idx, values) {
+  let left = parseComparison(tokens, idx, values);
+  while (idx.v < tokens.length && tokens[idx.v].type === 'op' && tokens[idx.v].value === '&&') {
+    idx.v++;
+    const right = parseComparison(tokens, idx, values);
+    left = { type: 'bool', value: truthy(left) && truthy(right) };
+  }
+  return left;
+}
+
+function parseOr(tokens, idx, values) {
+  let left = parseAnd(tokens, idx, values);
+  while (idx.v < tokens.length && tokens[idx.v].type === 'op' && tokens[idx.v].value === '||') {
+    idx.v++;
+    const right = parseAnd(tokens, idx, values);
+    left = { type: 'bool', value: truthy(left) || truthy(right) };
+  }
+  return left;
+}
+
+function toNum(v) {
+  if (!v) return 0;
+  if (v.type === 'number') return v.value;
+  if (v.type === 'bool') return v.value ? 1 : 0;
+  if (v.type === 'string') return parseFloat(v.value) || 0;
+  return 0;
+}
+
+function valuesEqual(a, b) {
+  if (!a || !b) return false;
+  if (a.type === 'bool' && b.type === 'bool') return a.value === b.value;
+  if (a.type === 'number' && b.type === 'number') return Math.abs(a.value - b.value) < 0.0001;
+  if (a.type === 'string' && b.type === 'string') return a.value === b.value;
+  return Math.abs(toNum(a) - toNum(b)) < 0.0001;
+}
+
+function truthy(v) {
+  if (!v) return false;
+  if (v.type === 'bool') return v.value;
+  if (v.type === 'number') return v.value !== 0;
+  if (v.type === 'string') return v.value !== '' && v.value !== '0';
+  return false;
+}
+
+function weColorToHex(str) {
+  if (!str) return '#ffffff';
+  const parts = str.trim().split(/\s+/).map(Number);
+  if (parts.length < 3) return '#ffffff';
+  const r = Math.round(Math.max(0, Math.min(1, parts[0])) * 255);
+  const g = Math.round(Math.max(0, Math.min(1, parts[1])) * 255);
+  const b = Math.round(Math.max(0, Math.min(1, parts[2])) * 255);
+  return '#' + [r,g,b].map(c => c.toString(16).padStart(2,'0')).join('');
+}
+
+function hexToWeColor(hex) {
+  const r = parseInt(hex.slice(1,3), 16) / 255;
+  const g = parseInt(hex.slice(3,5), 16) / 255;
+  const b = parseInt(hex.slice(5,7), 16) / 255;
+  return r.toFixed(5) + ' ' + g.toFixed(5) + ' ' + b.toFixed(5);
+}
+
+function updateSliderFill(slider) {
+  const min = parseFloat(slider.min) || 0;
+  const max = parseFloat(slider.max) || 100;
+  const val = parseFloat(slider.value) || 0;
+  const pct = ((val - min) / (max - min)) * 100;
+  slider.style.background = 'linear-gradient(to right, var(--accent) 0%, var(--accent) ' + pct + '%, var(--slider-track) ' + pct + '%, var(--slider-track) 100%)';
+}
+
+function renderProperties() {
+  const list = document.getElementById('propertyList');
+  list.innerHTML = '';
+  const sorted = properties.slice().sort((a, b) => {
+    const oa = a.order !== undefined ? a.order : 9999;
+    const ob = b.order !== undefined ? b.order : 9999;
+    return oa - ob || a.key.localeCompare(b.key);
+  });
+  for (const prop of sorted) {
+    const visible = evaluateCondition(prop.condition, currentValues);
+    const el = createPropertyElement(prop, visible);
+    if (el) list.appendChild(el);
+  }
+}
+
+function createPropertyElement(prop, visible) {
+  const container = document.createElement('div');
+  container.dataset.propKey = prop.key;
+  if (!visible) container.classList.add('hidden-prop');
+
+  const type = (prop.type || '').toLowerCase();
+  const label = translateLabel(prop.text || prop.key);
+
+  // Text/group/description types: render as HTML or display text (never as input controls)
+  if (type === 'group' || type === 'description' || type === 'label' || type === 'text') {
+    if (/<[a-zA-Z]/.test(label)) {
+      // HTML content: render as section header or rich content
+      if (type === 'group') {
+        container.className = 'section-header';
+        container.innerHTML = '<div class="section-bar"></div><div class="section-title">' + label + '</div>';
+      } else {
+        container.className = 'desc-text px-1';
+        container.innerHTML = label;
+      }
+      return container;
+    }
+    // Plain text (no HTML): render as display-only text
+    if (label) {
+      container.className = 'desc-text px-1';
+      container.textContent = label;
+      return container;
+    }
+    // Empty text: skip rendering
+    return null;
+  }
+
+  const card = document.createElement('div');
+  card.className = 'prop-card';
+  const row = document.createElement('div');
+  row.className = 'prop-row';
+
+  const labelEl = document.createElement('div');
+  labelEl.className = 'prop-label';
+  labelEl.textContent = label;
+
+  const controlWrap = document.createElement('div');
+  controlWrap.className = 'prop-control';
+
+  switch(type) {
+    case 'bool': renderBoolControl(prop, controlWrap); break;
+    case 'slider': renderSliderControl(prop, controlWrap); break;
+    case 'color': renderColorControl(prop, controlWrap); break;
+    case 'combo': renderComboControl(prop, controlWrap); break;
+    case 'textinput': renderTextInputControl(prop, controlWrap); break;
+    case 'file': case 'directory': case 'scenetexture': case 'replacetexture':
+      renderFileControl(prop, controlWrap, type); break;
+    default: renderTextInputControl(prop, controlWrap);
+  }
+
+  row.appendChild(labelEl);
+  row.appendChild(controlWrap);
+  card.appendChild(row);
+  container.appendChild(card);
+  return container;
+}
+
+function getCurrentValue(prop) {
+  if (currentValues[prop.key] !== undefined) return currentValues[prop.key];
+  return prop.defaultValue;
+}
+
+function renderBoolControl(prop, wrap) {
+  const val = getCurrentValue(prop);
+  const checked = (val === true || val === 'true' || val === 1);
+  const label = document.createElement('label');
+  label.className = 'toggle-wrap';
+  label.innerHTML = '<input type="checkbox" ' + (checked ? 'checked' : '') + '><span class="toggle-slider"></span>';
+  label.querySelector('input').addEventListener('change', function(e) {
+    currentValues[prop.key] = e.target.checked;
+    notifyChange(prop.key, e.target.checked);
+    reevaluateVisibility();
+  });
+  wrap.appendChild(label);
+}
+
+function renderSliderControl(prop, wrap) {
+  const val = getCurrentValue(prop);
+  const numVal = typeof val === 'number' ? val : (parseFloat(val) || (prop.min || 0));
+  const min = prop.min !== undefined ? prop.min : 0;
+  const max = prop.max !== undefined ? prop.max : 100;
+  const step = prop.step !== undefined ? prop.step : (prop.fraction ? 0.01 : 1);
+  const precision = prop.precision !== undefined ? prop.precision : (prop.fraction ? 2 : 0);
+
+  const container = document.createElement('div');
+  container.className = 'slider-container';
+
+  const header = document.createElement('div');
+  header.className = 'slider-header';
+  const valueDisplay = document.createElement('span');
+  valueDisplay.className = 'slider-value';
+  valueDisplay.textContent = precision > 0 ? numVal.toFixed(precision) : String(Math.round(numVal));
+  const spacer = document.createElement('div');
+  spacer.className = 'flex-1';
+  header.appendChild(spacer);
+  header.appendChild(valueDisplay);
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.className = 'range-slider';
+  slider.min = String(min);
+  slider.max = String(max);
+  slider.step = String(step);
+  slider.value = String(numVal);
+  updateSliderFill(slider);
+
+  slider.addEventListener('input', function() {
+    const v = parseFloat(this.value);
+    valueDisplay.textContent = precision > 0 ? v.toFixed(precision) : String(Math.round(v));
+    updateSliderFill(this);
+  });
+  slider.addEventListener('change', function() {
+    const v = parseFloat(this.value);
+    currentValues[prop.key] = v;
+    notifyChange(prop.key, v);
+    reevaluateVisibility();
+  });
+
+  container.appendChild(header);
+  container.appendChild(slider);
+  wrap.appendChild(container);
+}
+
+function renderColorControl(prop, wrap) {
+  const val = getCurrentValue(prop);
+  const hex = weColorToHex(typeof val === 'string' ? val : String(val));
+
+  const colorWrap = document.createElement('div');
+  colorWrap.className = 'color-picker-wrap';
+
+  const swatch = document.createElement('div');
+  swatch.className = 'color-swatch';
+  swatch.style.backgroundColor = hex;
+
+  const colorInput = document.createElement('input');
+  colorInput.type = 'color';
+  colorInput.value = hex;
+  colorInput.addEventListener('input', function(e) {
+    swatch.style.backgroundColor = e.target.value;
+    hexDisplay.textContent = e.target.value.toUpperCase();
+  });
+  colorInput.addEventListener('change', function(e) {
+    const weVal = hexToWeColor(e.target.value);
+    currentValues[prop.key] = weVal;
+    notifyChange(prop.key, weVal);
+  });
+
+  swatch.appendChild(colorInput);
+
+  const hexDisplay = document.createElement('span');
+  hexDisplay.className = 'color-hex';
+  hexDisplay.textContent = hex.toUpperCase();
+
+  colorWrap.appendChild(swatch);
+  colorWrap.appendChild(hexDisplay);
+  wrap.appendChild(colorWrap);
+}
+
+function renderComboControl(prop, wrap) {
+  const val = getCurrentValue(prop);
+  const currentStr = String(val !== undefined && val !== null ? val : '');
+
+  const select = document.createElement('select');
+  select.className = 'custom-select';
+
+  // Get options: from project.json first, then fallback to built-in maps
+  let options = prop.options || [];
+  if (options.length === 0 && comboOptionMaps[prop.key]) {
+    options = comboOptionMaps[prop.key].map(function(o) {
+      return { value: o.value, label: o.label };
+    });
+  }
+
+  for (const opt of options) {
+    const option = document.createElement('option');
+    const optVal = String(opt.value !== undefined ? opt.value : (opt.label || ''));
+    // Translate option label if it's an i18n key
+    let displayLabel = opt.label || optVal;
+    if (i18nMap[displayLabel]) displayLabel = i18nMap[displayLabel];
+    option.value = optVal;
+    option.textContent = displayLabel;
+    if (optVal === currentStr) option.selected = true;
+    select.appendChild(option);
+  }
+
+  select.addEventListener('change', function(e) {
+    currentValues[prop.key] = e.target.value;
+    notifyChange(prop.key, e.target.value);
+    reevaluateVisibility();
+  });
+
+  wrap.appendChild(select);
+}
+
+function renderTextInputControl(prop, wrap) {
+  const val = getCurrentValue(prop);
+  const text = typeof val === 'string' ? val : String(val !== undefined && val !== null ? val : '');
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'text-input';
+  input.value = text;
+  input.addEventListener('change', function(e) {
+    currentValues[prop.key] = e.target.value;
+    notifyChange(prop.key, e.target.value);
+  });
+  wrap.appendChild(input);
+}
+
+function renderFileControl(prop, wrap, fileType) {
+  const val = getCurrentValue(prop);
+  const path = typeof val === 'string' ? val : '';
+  const fileName = path ? (path.split('/').pop() || path) : '未选择';
+
+  const fileRow = document.createElement('div');
+  fileRow.className = 'file-row';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'file-name';
+  nameEl.textContent = fileName;
+  nameEl.title = path;
+
+  const chooseBtn = document.createElement('button');
+  chooseBtn.className = 'file-btn';
+  chooseBtn.textContent = '选择';
+  chooseBtn.addEventListener('click', function() {
+    window.webkit.messageHandlers.selectFile.postMessage({
+      key: prop.key,
+      isDirectory: fileType === 'directory'
+    });
+  });
+
+  fileRow.appendChild(nameEl);
+  fileRow.appendChild(chooseBtn);
+
+  if (path) {
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'file-btn';
+    clearBtn.textContent = '清除';
+    clearBtn.addEventListener('click', function() {
+      currentValues[prop.key] = '';
+      nameEl.textContent = '未选择';
+      notifyChange(prop.key, '');
+    });
+    fileRow.appendChild(clearBtn);
+  }
+
+  wrap.appendChild(fileRow);
+}
+
+function reevaluateVisibility() {
+  const elements = document.querySelectorAll('[data-prop-key]');
+  for (const el of elements) {
+    const key = el.dataset.propKey;
+    const prop = properties.find(function(p) { return p.key === key; });
+    if (!prop) continue;
+    const visible = evaluateCondition(prop.condition, currentValues);
+    if (visible) el.classList.remove('hidden-prop');
+    else el.classList.add('hidden-prop');
+  }
+}
+
+function notifyChange(key, value) {
+  window.webkit.messageHandlers.propertyChanged.postMessage({ key: key, value: value });
+}
+
+function handleReset() {
+  for (const prop of properties) {
+    if (prop.defaultValue !== undefined && prop.defaultValue !== null) {
+      currentValues[prop.key] = prop.defaultValue;
+    }
+  }
+  window.webkit.messageHandlers.resetAll.postMessage(null);
+  renderProperties();
+}
+
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return { r, g, b };
+}
+
+function applyAccentColor(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const root = document.documentElement.style;
+  root.setProperty('--accent', hex);
+  // Hover: 15% darker
+  const dr = Math.round(r * 0.85);
+  const dg = Math.round(g * 0.85);
+  const db = Math.round(b * 0.85);
+  root.setProperty('--accent-hover', '#' + [dr,dg,db].map(c => c.toString(16).padStart(2,'0')).join(''));
+  // Dim: accent at ~15% opacity
+  root.setProperty('--accent-dim', 'rgba(' + r + ',' + g + ',' + b + ',0.15)');
+}
+
+function initFromData() {
+  if (typeof window.wallpaperProperties !== 'undefined') properties = window.wallpaperProperties;
+  if (typeof window.currentValues !== 'undefined') currentValues = window.currentValues;
+  if (typeof window.wallpaperTitle !== 'undefined') {
+    wallpaperTitle = window.wallpaperTitle;
+    document.getElementById('wallpaperName').textContent = wallpaperTitle;
+  }
+  if (typeof window.accentColor !== 'undefined') {
+    applyAccentColor(window.accentColor);
+  }
+  renderProperties();
+}
+
+if (typeof window.wallpaperProperties !== 'undefined') {
+  initFromData();
+} else {
+  var checkInterval = setInterval(function() {
+    if (typeof window.wallpaperProperties !== 'undefined') {
+      clearInterval(checkInterval);
+      initFromData();
+    }
+  }, 50);
+  setTimeout(function() { clearInterval(checkInterval); }, 5000);
+}
+</script>
+</body>
+</html>

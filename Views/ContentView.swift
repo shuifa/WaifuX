@@ -570,8 +570,13 @@ struct ContentView: View {
 
     /// 将 GuessYouLikeItem 映射到 MediaItem（用于详情）
     private func resolveMediaItem(from item: GuessYouLikeItem) -> MediaItem {
-        MediaItem(
-            slug: item.id,
+        // Wallpaper Engine 需要 workshop_ 前缀，否则详情页无法识别为 Workshop 物品
+        let isWorkshop = item.sourceName == "Wallpaper Engine"
+        let slug = isWorkshop ? "workshop_\(item.id)" : item.id
+        let sourceName = isWorkshop ? t("wallpaperEngine") : item.sourceName
+
+        return MediaItem(
+            slug: slug,
             title: item.title,
             pageURL: URL(string: item.destination)
                 ?? URL(string: "https://example.com")!,
@@ -586,7 +591,7 @@ struct ContentView: View {
             exactResolution: nil,
             durationSeconds: nil,
             downloadOptions: [],
-            sourceName: item.sourceName,
+            sourceName: sourceName,
             isAnimatedImage: nil
         )
     }
@@ -696,7 +701,7 @@ struct ContentView: View {
     }
 
     private func handleDownloadToastDismiss(_ snapshot: DownloadToastSnapshot) {
-        DownloadTaskService.shared.markToastSuppressed(for: snapshot.id)
+        DownloadTaskService.shared.suppressAllRunningToasts()
     }
 
     private func handleDownloadToastCancel(_ snapshot: DownloadToastSnapshot) {

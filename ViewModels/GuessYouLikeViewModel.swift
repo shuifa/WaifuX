@@ -44,42 +44,23 @@ final class GuessYouLikeViewModel: ObservableObject {
         dealingProgress = 0.0
         isShowing = true
 
-        if items.isEmpty {
-            // 无预加载数据 → 异步加载
-            items = []
-            let shouldAwaitPreload = preloadTask != nil
-
-            Task { @MainActor in
-                // 如果预加载 task 仍在执行，先等待它完成，避免重复请求
-                if shouldAwaitPreload, let task = preloadTask {
-                    _ = await task.value
-                    // 预加载完成后 items 可能已非空
-                    if !items.isEmpty {
-                        try? await Task.sleep(nanoseconds: 200_000_000)
-                        dealingProgress = 1.0
-                        return
-                    }
-                }
-
-                var recommendations = await GuessYouLikeService.shared.getRecommendations()
-                if recommendations.isEmpty {
-                    print("[GYL] Service returned empty, using fallback mock data")
-                    recommendations = await GuessYouLikeService.shared.forceRefresh()
-                }
-                if recommendations.isEmpty {
-                    print("[GYL] Still empty after retry, using mock data")
-                    recommendations = GuessYouLikeItem.mockItems()
-                }
-                items = recommendations
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                dealingProgress = 1.0
+        // 每次点击都重新拉取推荐数据，保证结果不同
+        preloadTask?.cancel()
+        preloadTask = Task { @MainActor in
+            var recommendations = await GuessYouLikeService.shared.forceRefresh()
+            if recommendations.isEmpty {
+                print("[GYL] Service returned empty, retrying with fresh fetch")
+                recommendations = await GuessYouLikeService.shared.forceRefresh()
             }
-        } else {
-            // 已有预加载数据 → 直接发牌，用户无感知等待
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                dealingProgress = 1.0
+            if recommendations.isEmpty {
+                print("[GYL] Still empty after retry, using mock data")
+                recommendations = GuessYouLikeItem.mockItems()
             }
+            guard !Task.isCancelled else { return }
+            items = recommendations
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            dealingProgress = 1.0
+            preloadTask = nil
         }
     }
 

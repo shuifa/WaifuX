@@ -51,6 +51,7 @@ struct TopNavigationBar: View {
     let onMaximize: () -> Void
     let onZoom: () -> Void
 
+    @State private var showHelpPopover = false
     private let controlHeight: CGFloat = 34
 
     var body: some View {
@@ -75,16 +76,22 @@ struct TopNavigationBar: View {
             Spacer()
 
             // 右侧按钮组
-            HStack(spacing: 4) {
+            HStack(spacing: 8) {
                 // 猜你喜欢按钮
                 GuessYouLikeNavButton(action: onGuessYouLike)
-                    .frame(height: controlHeight, alignment: .center)
+
+                // 帮助按钮（操作手册）
+                TopBarCircleButton(icon: "questionmark", size: controlHeight) {
+                    showHelpPopover.toggle()
+                }
+                .popover(isPresented: $showHelpPopover, arrowEdge: .bottom) {
+                    HelpPopoverView(isPresented: $showHelpPopover)
+                }
 
                 // 设置按钮
                 TopBarCircleButton(icon: "gearshape", size: controlHeight) {
                     onOpenSettings()
                 }
-                .frame(width: 48, height: controlHeight, alignment: .center)
             }
         }
         .padding(.leading, 12)
@@ -170,17 +177,11 @@ private struct TopBarCircleButton: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.88))
                 .frame(width: size, height: size)
-                .background(
-                    Circle()
-                        .fill(Color.clear)
-                        .frame(width: size + 16, height: size + 16)
-                )
                 .contentShape(Circle())
                 .detailGlassCircleChrome()
         }
         .buttonStyle(.plain)
-        .contentShape(Circle())
-        .frame(width: size + 16, height: size + 16)
+        .contentShape(Rectangle())
         .preferredColorScheme(.dark)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.16)) {
@@ -216,6 +217,175 @@ struct GuessYouLikeNavButton: View {
                 isHovered = hovering
             }
         }
+    }
+}
+
+// MARK: - 帮助/操作手册弹窗
+
+struct HelpPopoverView: View {
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // 顶部标题栏
+            HStack(spacing: 8) {
+                Image(systemName: "book.closed.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text("使用教程")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Spacer()
+                Button {
+                    isPresented = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    if hovering { NSCursor.pointingHand.push(); return }
+                    NSCursor.pop()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+                .background(Color.white.opacity(0.08))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // 第1节：网络与数据源
+                    tutorialSection(
+                        icon: "globe",
+                        title: "网络与数据源",
+                        lines: [
+                            "中国大陆地区需要科学上网才能正常访问。",
+                            "壁纸探索页 = 静态壁纸数据。",
+                            "媒体探索页 = 动态壁纸数据。",
+                            "点击地球仪旁边的源名称可切换数据源。"
+                        ]
+                    )
+
+                    // 第2节：壁纸引擎
+                    tutorialSection(
+                        icon: "rectangle.and.text.magnifyingglass",
+                        title: "壁纸引擎",
+                        lines: [
+                            "需在 设置 > 壁纸引擎 登录自己的 Steam 账号。",
+                            "必须入库壁纸引擎软件，否则无法下载。"
+                        ]
+                    )
+
+                    // 第3节：设置功能
+                    tutorialSection(
+                        icon: "gearshape.2",
+                        title: "设置功能",
+                        lines: [
+                            "设置内有自动切换、锁屏壁纸同步等开关，",
+                            "请自行摸索，建议完整查看设置里所有功能。"
+                        ]
+                    )
+
+                    // 第4节：我的库与导入
+                    tutorialSection(
+                        icon: "tray.and.arrow.down.fill",
+                        title: "我的库与导入",
+                        lines: [
+                            "自己的资源（含壁纸引擎资源）可在「我的库」导入。",
+                            "同步订阅：我的库 > 点击更多按钮 > 同步订阅，",
+                            "需额外登录 Web Steam，",
+                            "点击右下角按钮前往订阅页并确认同步，",
+                            "等待获取订阅数据后勾选需要同步的数据。",
+                            "如需知道源文件储存在哪里，点击打开文件夹即可。"
+                        ]
+                    )
+
+                    // 第5节：壁纸详情
+                    tutorialSection(
+                        icon: "doc.text.magnifyingglass",
+                        title: "壁纸 / 媒体详情",
+                        lines: [
+                            "详情页作者标签可点击，弹出该作者作品列表",
+                            "（WallHaven 与壁纸引擎源均支持）。",
+                            "点击更多（…）按钮有更多操作选项。",
+                            "如有壁纸渲染问题，复制链接反馈即可。"
+                        ]
+                    )
+
+                    // 第6节：场景/Web壁纸编辑
+                    tutorialSection(
+                        icon: "pencil.and.outline",
+                        title: "场景 / Web 壁纸",
+                        lines: [
+                            "在菜单栏操作编辑场景与 Web 壁纸。",
+                            "可控制壁纸静音、比例设置等功能。",
+                            "请按照显示器实际情况调整参数。"
+                        ]
+                    )
+
+                    // 第7节：动态锁屏
+                    tutorialSection(
+                        icon: "lock.display",
+                        title: "动态锁屏",
+                        lines: [
+                            "仅支持 macOS 26 及以上版本，以下版本不支持。",
+                            "后续是否支持取决于苹果是否保留此私有 API。"
+                        ]
+                    )
+                }
+                .frame(maxWidth: .infinity)
+                .padding(16)
+            }
+            .frame(width: 340, height: 400)
+
+            // 底部提示
+            VStack(spacing: 4) {
+                Text("点击外部任意区域关闭")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    @ViewBuilder
+    private func tutorialSection(icon: String, title: String, lines: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(hex: "7C8DFF").opacity(0.9))
+                    .frame(width: 20, alignment: .center)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(lines, id: \.self) { line in
+                    Text(line)
+                        .font(.system(size: 11.5, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.leading, 28)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+        )
     }
 }
 

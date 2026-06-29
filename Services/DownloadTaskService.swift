@@ -228,6 +228,13 @@ class DownloadTaskService: ObservableObject {
         suppressedToastTaskIDs.insert(id)
     }
 
+    /// 批量抑制所有正在运行的下载任务的 toast（"后台继续"按钮使用）
+    func suppressAllRunningToasts() {
+        for task in tasks where task.isRunning {
+            suppressedToastTaskIDs.insert(task.id)
+        }
+    }
+
     func clearToastSuppression(for id: String) {
         suppressedToastTaskIDs.remove(id)
     }

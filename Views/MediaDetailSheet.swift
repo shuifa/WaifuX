@@ -61,6 +61,8 @@ struct MediaDetailSheet: View {
     @State private var isNavigating = false
     /// 从作者面板切换时使用淡入淡出过渡（而非滑动）
     @State private var isAuthorPanelFade = false
+    /// 作者媒体批量下载中状态
+    @State private var isDownloadingAllAuthor = false
 
     private enum SlideDirection {
         case up, down
@@ -3431,7 +3433,11 @@ struct MediaDetailSheet: View {
                 },
                 onLoadMore: {
                     self.loadMoreAuthorMedia()
-                }
+                },
+                onDownloadAll: { items in
+                    downloadAllByAuthor(authorName: resolvedItem.authorName ?? t("unknown"), items: items)
+                },
+                isDownloadingAll: $isDownloadingAllAuthor
             )
             .transition(.identity)
             .zIndex(100)
@@ -3484,6 +3490,66 @@ struct MediaDetailSheet: View {
         hasMoreAuthorItems = true
         isLoadingAuthorItems = false
         authorLoadedSteamID = nil
+    }
+
+    /// 批量下载作者所有已加载媒体，并自动归入以作者名命名的虚拟文件夹
+    private func downloadAllByAuthor(authorName: String, items: [MediaItem]) {
+        let folderStore = LibraryFolderStore.shared
+        let libraryService = MediaLibraryService.shared
+
+        Task { @MainActor in
+            // 查找或创建以作者名为名的虚拟文件夹
+            let existingFolders = folderStore.folders(for: .media, parentID: nil, collection: .downloads)
+            let folder: LibraryFolder
+            if let existing = existingFolders.first(where: { $0.name == authorName }) {
+                folder = existing
+            } else {
+                folder = folderStore.createFolder(
+                    name: authorName,
+                    contentType: .media,
+                    parentID: nil,
+                    collection: .downloads
+                )
+            }
+
+            // 已下载的项直接归入文件夹，过滤出需要下载的
+            var pendingItems: [MediaItem] = []
+            for item in items {
+                if libraryService.isDownloaded(item) {
+                    folderStore.moveMediaToFolder(mediaID: item.id, folderID: folder.id)
+                } else {
+                    pendingItems.append(item)
+                }
+            }
+
+            // 并发提交所有下载任务
+            let vm = viewModel
+            await withTaskGroup(of: Void.self) { group in
+                for item in pendingItems {
+                    group.addTask {
+                        do {
+                            if item.id.hasPrefix("workshop_") {
+                                try await vm.downloadWorkshopWallpaper(item)
+                            } else {
+                                guard let bestOption = item.downloadOptions.max(by: {
+                                    $0.qualityRank < $1.qualityRank
+                                }) else { return }
+                                _ = try await vm.downloadMedia(item, option: bestOption)
+                            }
+                            await MainActor.run {
+                                folderStore.moveMediaToFolder(mediaID: item.id, folderID: folder.id)
+                            }
+                        } catch {
+                            AppLogger.error(.download, "作者媒体批量下载失败",
+                                metadata: ["itemID": item.id, "author": authorName,
+                                           "error": error.localizedDescription])
+                        }
+                    }
+                }
+            }
+
+            isDownloadingAllAuthor = false
+        }
     }
 
     /// 加载更多作者壁纸（分页）

@@ -754,6 +754,14 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "folder.items.count.one": "1 ITEM",
         "move.to.folder": "MOVE TO FOLDER",
         "remove.from.folder": "REMOVE FROM FOLDER",
+        "add.to.folder": "ADD TO FOLDER",
+        "add": "ADD",
+        "items.not.in.folder": "%d items not in any folder",
+        "no.items.to.add": "No items available to add",
+        "selected.count": "%d selected",
+        "add.n.items": "Add %d",
+        "search.no.results": "No results found",
+        "delete.folder.with.contents": "DELETE FOLDER & CONTENTS",
         "disband.folder": "DISBAND FOLDER",
         "folder.rename": "RENAME FOLDER",
         "folder.lock": "ENCRYPT FOLDER",
@@ -1207,6 +1215,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "wallpapers": "Wallpapers",
         "media": "Media",
         "authorWallpapers": "Wallpapers by Author",
+        "downloadAllByAuthor": "Download All",
         "totalWallpapers": "wallpapers",
         "noWallpapers": "No wallpapers found",
         // Rule Market
@@ -1270,6 +1279,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "common.gotIt": "Got it",
         "common.allSources": "All Sources",
         "common.youMayLike": "You May Like",
+        "common.helpManual": "Help Manual",
         // Common - Enter URL
         "common.enterURL": "Please enter a URL",
         // LiquidGlass
@@ -2006,6 +2016,14 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "folder.items.count.one": "1 个项目",
         "move.to.folder": "移动到文件夹",
         "remove.from.folder": "从文件夹移除",
+        "add.to.folder": "添加到文件夹",
+        "add": "添加",
+        "items.not.in.folder": "%d 个未归类的项",
+        "no.items.to.add": "没有可添加的项",
+        "selected.count": "已选择 %d 个",
+        "add.n.items": "添加 %d",
+        "search.no.results": "未找到结果",
+        "delete.folder.with.contents": "删除文件夹及内容",
         "disband.folder": "解散文件夹",
         "folder.rename": "重命名文件夹",
         "folder.lock": "加密文件夹",
@@ -2460,6 +2478,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "wallpapers": "壁纸",
         "media": "媒体",
         "authorWallpapers": "作者壁纸",
+        "downloadAllByAuthor": "下载全部",
         "totalWallpapers": "张壁纸",
         "noWallpapers": "暂无壁纸",
         // Rule Market
@@ -2523,6 +2542,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "common.gotIt": "知道了",
         "common.allSources": "全部源",
         "common.youMayLike": "猜你喜欢",
+        "common.helpManual": "使用教程",
         // Common - Enter URL
         "common.enterURL": "请输入链接",
         // LiquidGlass
@@ -3250,6 +3270,14 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "folder.items.count.one": "1 項目",
         "move.to.folder": "フォルダに移動",
         "remove.from.folder": "フォルダから削除",
+        "add.to.folder": "フォルダに追加",
+        "add": "追加",
+        "items.not.in.folder": "%d 個の未分類アイテム",
+        "no.items.to.add": "追加可能なアイテムがありません",
+        "selected.count": "%d 個選択中",
+        "add.n.items": "%d を追加",
+        "search.no.results": "結果が見つかりません",
+        "delete.folder.with.contents": "フォルダと内容を削除",
         "disband.folder": "フォルダを解散",
         "folder.rename": "フォルダ名を変更",
         "folder.lock": "フォルダを暗号化",
@@ -3703,6 +3731,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "wallpapers": "壁紙",
         "media": "メディア",
         "authorWallpapers": "作者の壁紙",
+        "downloadAllByAuthor": "すべてダウンロード",
         "totalWallpapers": "枚の壁紙",
         "noWallpapers": "壁紙が見つかりません",
         // Rule Market
@@ -3766,6 +3795,7 @@ private let translations: [LocalizationService.Language: [String: String]] = [
         "common.gotIt": "了解",
         "common.allSources": "すべてのソース",
         "common.youMayLike": "おすすめ",
+        "common.helpManual": "ヘルプマニュアル",
         // Common - Enter URL
         "common.enterURL": "URLを入力してください",
         // LiquidGlass

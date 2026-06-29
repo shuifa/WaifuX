@@ -198,6 +198,9 @@ struct MyLibraryContentView: View {
     @State private var renamingFolder: LibraryFolder?
     @State private var renameFolderName = ""
 
+    // 添加壁纸到文件夹
+    @State private var showAddToFolderSheet = false
+
     // 拖拽排序 UI 状态
     /// 当前 hover 中的插入位置：插入到该 entry ID 之前。nil = 未 hover 任何插入条。
     @State private var hoveredInsertionID: String? = nil
@@ -464,6 +467,9 @@ struct MyLibraryContentView: View {
                 }
             )
         }
+        .sheet(isPresented: $showAddToFolderSheet) {
+            addToFolderSheetContent
+        }
         .sheet(isPresented: $showSyncProfileSheet) {
             syncProfileSheet
         }
@@ -692,7 +698,8 @@ struct MyLibraryContentView: View {
                 folderStack: wallpaperFolderStack,
                 isInFolder: currentWallpaperFolderID != nil,
                 onBack: popWallpaperFolder,
-                onRoot: { navigateToWallpaperFolder(nil) }
+                onRoot: { navigateToWallpaperFolder(nil) },
+                onAdd: { showAddToFolderSheet = true }
             )
 
             if wallpaperItems.isEmpty && currentWallpaperFolders.isEmpty {
@@ -750,6 +757,9 @@ struct MyLibraryContentView: View {
                 folderStore.deleteFolder(id: folder.id, contentType: .wallpaper)
                 gridOrderStore.removeIDs(["folder_\(folder.id)"], from: currentGridOrderScope)
                 updateWallpaperItems()
+            },
+            onDelete: {
+                deleteFolderWithContents(folderID: folder.id, contentType: .wallpaper)
             },
             onRename: { startRenamingFolder(folder) },
             onToggleLock: {
@@ -899,6 +909,48 @@ struct MyLibraryContentView: View {
         return folders.filter { matchesLibrarySearch(for: $0, query: query) }
     }
 
+    /// 可添加到文件夹的壁纸（不在任何文件夹中的根目录壁纸）
+    private var availableWallpapersForFolder: [(id: String, name: String, thumbURL: URL?, localFileURL: URL?)] {
+        switch selectedSubTab {
+        case .favorites:
+            return WallpaperLibraryService.shared.favoriteWallpapers(inFolder: nil).map {
+                (id: $0.id, name: $0.id, thumbURL: $0.thumbURL, localFileURL: nil)
+            }
+        case .downloads:
+            let downloads = WallpaperLibraryService.shared.downloadedWallpapers(inFolder: nil)
+            let scanned = viewModel.allLocalWallpapers.filter { $0.downloadRecord == nil }
+            var result = downloads.map {
+                (id: $0.wallpaper.id, name: $0.wallpaper.id, thumbURL: $0.wallpaper.thumbURL, localFileURL: $0.localFileURL)
+            }
+            for s in scanned {
+                guard !result.contains(where: { $0.id == s.id }) else { continue }
+                result.append((id: s.id, name: s.wallpaper.id, thumbURL: s.wallpaper.thumbURL, localFileURL: s.fileURL))
+            }
+            return result
+        }
+    }
+
+    /// 可添加到文件夹的媒体（不在任何文件夹中的根目录媒体）
+    private var availableMediaForFolder: [(id: String, name: String, thumbURL: URL?)] {
+        switch selectedSubTab {
+        case .favorites:
+            return MediaLibraryService.shared.favoriteItems(inFolder: nil).map {
+                (id: $0.id, name: $0.title, thumbURL: $0.libraryGridThumbnailURL(localFileURL: nil))
+            }
+        case .downloads:
+            let downloads = MediaLibraryService.shared.downloadedItems(inFolder: nil)
+            let scanned = mediaViewModel.allLocalMedia.filter { $0.downloadRecord == nil }
+            var result = downloads.map {
+                (id: $0.item.id, name: $0.item.title, thumbURL: $0.item.libraryGridThumbnailURL(localFileURL: $0.localFileURL))
+            }
+            for s in scanned {
+                guard !result.contains(where: { $0.id == s.id }) else { continue }
+                result.append((id: s.id, name: s.mediaItem.title, thumbURL: s.mediaItem.libraryGridThumbnailURL(localFileURL: s.fileURL)))
+            }
+            return result
+        }
+    }
+
     private func updateMediaItems() {
         lastMediaPrefetchBucket = nil
         let baseItems: [AnyMediaItem]
@@ -1004,7 +1056,8 @@ struct MyLibraryContentView: View {
                 folderStack: mediaFolderStack,
                 isInFolder: currentMediaFolderID != nil,
                 onBack: popMediaFolder,
-                onRoot: { navigateToMediaFolder(nil) }
+                onRoot: { navigateToMediaFolder(nil) },
+                onAdd: { showAddToFolderSheet = true }
             )
 
             if mediaItems.isEmpty && currentMediaFolders.isEmpty {
@@ -1062,6 +1115,9 @@ struct MyLibraryContentView: View {
                 folderStore.deleteFolder(id: folder.id, contentType: .media)
                 gridOrderStore.removeIDs(["folder_\(folder.id)"], from: currentGridOrderScope)
                 updateMediaItems()
+            },
+            onDelete: {
+                deleteFolderWithContents(folderID: folder.id, contentType: .media)
             },
             onRename: { startRenamingFolder(folder) },
             onToggleLock: {
@@ -1764,6 +1820,35 @@ struct MyLibraryContentView: View {
         return "\(count)"
     }
 
+    // MARK: - 添加到文件夹弹窗
+
+    private var addToFolderSheetContent: some View {
+        AddToFolderSheetView(
+            contentType: selectedContentType,
+            subTab: selectedSubTab,
+            availableWallpapers: availableWallpapersForFolder,
+            availableMedia: availableMediaForFolder,
+            onAdd: { selectedIDs in
+                addSelectedItemsToFolder(ids: selectedIDs)
+            },
+            onDismiss: {
+                showAddToFolderSheet = false
+            }
+        )
+    }
+
+    private func addSelectedItemsToFolder(ids: [String]) {
+        switch selectedContentType {
+        case .wallpaper:
+            moveWallpapersToFolder(ids: ids, folderID: currentWallpaperFolderID ?? "")
+        case .video:
+            moveMediasToFolder(ids: ids, folderID: currentMediaFolderID ?? "")
+        case .anime:
+            break
+        }
+        showAddToFolderSheet = false
+    }
+
     private var librarySearchControl: some View {
         HStack(spacing: 0) {
             if isLibrarySearchExpanded {
@@ -2089,7 +2174,8 @@ struct MyLibraryContentView: View {
         folderStack: [String],
         isInFolder: Bool,
         onBack: @escaping () -> Void,
-        onRoot: @escaping () -> Void
+        onRoot: @escaping () -> Void,
+        onAdd: @escaping () -> Void
     ) -> some View {
         if isInFolder {
             HStack(spacing: 6) {
@@ -2135,6 +2221,29 @@ struct MyLibraryContentView: View {
                 .pointingHandCursor()
 
                 Spacer()
+
+                Button(action: onAdd) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(t("add"))
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(.white.opacity(0.92))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(.regularMaterial)
+                            .opacity(0.5)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .pointingHandCursor()
             }
             .padding(.horizontal, 4)
         }
@@ -2323,6 +2432,59 @@ struct MyLibraryContentView: View {
         }
         selectedItems.removeAll()
         isEditing = false
+        updateWallpaperItems()
+        updateMediaItems()
+    }
+
+    /// 删除文件夹及其所有内容（包括子文件夹中的项目）
+    private func deleteFolderWithContents(folderID: String, contentType: LibraryFolder.FolderContentType) {
+        // 收集该文件夹及所有子文件夹的 ID
+        var allFolderIDs = [folderID]
+        func collectSubfolders(_ parentID: String) {
+            let children = folderStore.subfolders(of: parentID, contentType: contentType)
+            for child in children {
+                allFolderIDs.append(child.id)
+                collectSubfolders(child.id)
+            }
+        }
+        collectSubfolders(folderID)
+
+        // 收集所有项目 ID 并删除
+        var allItemIDs = Set<String>()
+        if contentType == .wallpaper {
+            for fid in allFolderIDs {
+                let favs = WallpaperLibraryService.shared.favoriteWallpapers(inFolder: fid)
+                allItemIDs.formUnion(favs.map(\.id))
+                let dls = WallpaperLibraryService.shared.downloadedWallpapers(inFolder: fid)
+                allItemIDs.formUnion(dls.map(\.wallpaper.id))
+            }
+            // 删除项目
+            if selectedSubTab == .favorites {
+                let favIDs = Set(viewModel.favorites.map(\.id)).intersection(allItemIDs)
+                if !favIDs.isEmpty { viewModel.removeWallpaperFavorites(withIDs: favIDs) }
+            } else {
+                let allLocal = viewModel.allLocalWallpapers.filter { allItemIDs.contains($0.id) }
+                if !allLocal.isEmpty { deleteLocalWallpapers(allLocal) }
+            }
+        } else {
+            for fid in allFolderIDs {
+                let favs = MediaLibraryService.shared.favoriteItems(inFolder: fid)
+                allItemIDs.formUnion(favs.map(\.id))
+                let dls = MediaLibraryService.shared.downloadedItems(inFolder: fid)
+                allItemIDs.formUnion(dls.map(\.item.id))
+            }
+            if selectedSubTab == .favorites {
+                let favIDs = Set(mediaViewModel.favoriteItems.map(\.id)).intersection(allItemIDs)
+                if !favIDs.isEmpty { mediaViewModel.removeFavorites(withIDs: favIDs) }
+            } else {
+                let allLocal = mediaViewModel.allLocalMedia.filter { allItemIDs.contains($0.id) }
+                if !allLocal.isEmpty { deleteLocalMedias(allLocal) }
+            }
+        }
+
+        // 删除文件夹本身
+        folderStore.deleteFolder(id: folderID, contentType: contentType)
+        gridOrderStore.removeIDs(["folder_\(folderID)"], from: currentGridOrderScope)
         updateWallpaperItems()
         updateMediaItems()
     }

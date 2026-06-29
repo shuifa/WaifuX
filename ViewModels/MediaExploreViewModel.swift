@@ -372,6 +372,10 @@ final class MediaExploreViewModel: ObservableObject {
 
         guard !Task.isCancelled else { return }
         cachedAllLocalMedia = result
+        // 缓存重建完成后递增版本号，触发 MyLibraryContentView 的
+        // .onChange → debouncedUpdateMediaItems()，让依赖缓存的
+        // 标签页（如「下载」）在拖拽入库等操作后能读到新鲜数据。
+        libraryContentRevision &+= 1
     }
 
     /// 显式清理无效下载记录（文件不存在的记录），不应在 computed property 中自动调用

@@ -69,6 +69,7 @@ struct LibraryFolderCard: View {
     let onTap: () -> Void
     let onDrop: ([String]) -> Void
     let onDisband: () -> Void
+    let onDelete: (() -> Void)?
     let onRename: () -> Void
     let onToggleLock: (() -> Void)?
     let onRelock: (() -> Void)?
@@ -196,6 +197,11 @@ struct LibraryFolderCard: View {
             }
             Button(role: .destructive, action: onDisband) {
                 Label(t("disband.folder"), systemImage: "folder.badge.minus")
+            }
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Label(t("delete.folder.with.contents"), systemImage: "trash")
+                }
             }
         }
     }
