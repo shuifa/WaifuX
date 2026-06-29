@@ -300,6 +300,20 @@ struct MediaDetailSheet: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showCopyLinkToast)
                 }
+                if isTranscodingVideo {
+                    Text("转码中 \(Int(transcodeVideoProgress * 100))%")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(
+                            Capsule()
+                                .fill(.ultraThinMaterial)
+                                .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 0.5))
+                        )
+                        .padding(.bottom, 48)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
         }
         .ignoresSafeArea()
@@ -1427,20 +1441,24 @@ struct MediaDetailSheet: View {
             // 视频转码（检测到 B 帧+高码率时显示，转码后自动消失）
             if isAlreadyDownloaded,
                let localURL = currentDownloadRecord?.localFileURL,
-               localURL.isFileURL,
-               ["mp4", "mov", "m4v"].contains(localURL.pathExtension.lowercased()),
-               VideoTranscodeService.needsTranscode(localURL) {
+               let videoURL = MediaItem.resolveLocalVideoFile(from: localURL),
+               VideoTranscodeService.needsTranscode(videoURL) {
                 Button {
                     showMoreOptionsPopover = false
                     Task {
                         isTranscodingVideo = true
                         transcodeVideoProgress = 0
-                        _ = await VideoTranscodeService.ensureSeekFriendly(localURL) { progress in
+                        _ = await VideoTranscodeService.ensureSeekFriendly(videoURL) { progress in
                             Task { @MainActor in
                                 transcodeVideoProgress = progress
                             }
                         }
                         isTranscodingVideo = false
+                        sceneBakeStatusFlash = "完成了"
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            sceneBakeStatusFlash = nil
+                        }
                     }
                 } label: {
                     HStack {
@@ -1712,6 +1730,9 @@ struct MediaDetailSheet: View {
         }
         if isSettingWallpaper {
             return t(applyingWallpaperStatusKey)
+        }
+        if isTranscodingVideo {
+            return "转码中 \(Int(transcodeVideoProgress * 100))%"
         }
         if isDownloading {
             return t("downloadingMedia")

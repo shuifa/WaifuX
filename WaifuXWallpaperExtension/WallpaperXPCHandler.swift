@@ -376,14 +376,19 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
             extLog("[acquire] ⚠️ request 未提供有效目标尺寸，使用 display metrics: display=\(did) size=\(Int(destSize.width))x\(Int(destSize.height)) scale=\(scaleFactor)")
         }
 
-        // 记录当前激活的实例 ID（display instance），供状态同步和日志使用。
-        if let instanceID = choiceConfiguration, !instanceID.isEmpty {
-            let previousID = WallpaperState.shared.currentVideoID
-            if previousID != instanceID {
-                extLog("  Instance changed: \(previousID ?? "nil") → \(instanceID)")
-                WallpaperState.shared.currentVideoID = instanceID
-                WallpaperPrefs.shared.updateCurrentVideo()
-            }
+        // Seed currentVideoID only on first launch when UserDefaults has no value yet,
+        // so the menu-bar UI has something sensible to show before the user picks anything.
+        // Each acquire's choiceConfiguration is authoritative for *this* display's context.
+        // Do NOT mutate the process-wide currentVideoID here based on a diff — concurrent
+        // acquires for different displays would race and a renderer can end up initialized
+        // with the wrong monitor's video (multi-monitor bug: after one loop, all monitors
+        // play the same video). The global tracks the last user-picked choice (via
+        // selectedChoicesDidChange); we only seed it on first launch.
+        if WallpaperState.shared.currentVideoID == nil,
+           let instanceID = choiceConfiguration, !instanceID.isEmpty {
+            extLog("  Seeding currentVideoID (first launch): \(instanceID)")
+            WallpaperState.shared.currentVideoID = instanceID
+            WallpaperPrefs.shared.updateCurrentVideo()
         }
 
         // Create remote CAContext
@@ -656,8 +661,13 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                 return url
             }
             extLog("[prefsVideoURL] ⚠️ per-display 路径不存在: display=\(displayID) path=\(perDisplay)")
+            // 多显示器模式下（currentVideoPaths 有条目），不回退到 legacy 全局路径，
+            // 否则会把另一个显示器的视频错放到当前显示器。
+            if let paths = prefs.currentVideoPaths, !paths.isEmpty {
+                return nil
+            }
         }
-        // 回退：legacy 全局路径
+        // 回退：legacy 全局路径（仅在单显示器/旧模式下）
         guard let path = prefs.currentVideoPath, !path.isEmpty else {
             return nil
         }
@@ -691,8 +701,12 @@ final class WallpaperXPCHandler: NSObject, WallpaperExtensionXPCProtocol {
                 return url
             }
             extLog("[prefsImageURL] ⚠️ per-display 路径不存在: display=\(displayID) path=\(perDisplay)")
+            // 多显示器模式下（currentImagePaths 有条目），不回退到 legacy 全局路径。
+            if let paths = prefs.currentImagePaths, !paths.isEmpty {
+                return nil
+            }
         }
-        // 回退：legacy 全局路径
+        // 回退：legacy 全局路径（仅在单显示器/旧模式下）
         guard let path = prefs.currentImagePath, !path.isEmpty else {
             return nil
         }

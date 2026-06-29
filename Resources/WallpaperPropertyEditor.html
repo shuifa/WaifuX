@@ -959,17 +959,10 @@ function initFromData() {
   renderProperties();
 }
 
-if (typeof window.wallpaperProperties !== 'undefined') {
-  initFromData();
-} else {
-  var checkInterval = setInterval(function() {
-    if (typeof window.wallpaperProperties !== 'undefined') {
-      clearInterval(checkInterval);
-      initFromData();
-    }
-  }, 50);
-  setTimeout(function() { clearInterval(checkInterval); }, 5000);
-}
+// Signal Swift that DOM is ready for data injection
+try {
+  window.webkit.messageHandlers.editorReady.postMessage(null);
+} catch(e) {}
 </script>
 </body>
 </html>

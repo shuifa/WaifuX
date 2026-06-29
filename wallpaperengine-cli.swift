@@ -30,6 +30,14 @@ private let PRIMARY_CAPTURE_PATH = "/tmp/wallpaperengine-cli-capture.png"
 private let DESK_CAPTURE_PATH_0 = "/tmp/wallpaperengine-cli-desk-0.png"
 private let DESK_CAPTURE_PATH_1 = "/tmp/wallpaperengine-cli-desk-1.png"
 
+/// Per-screen capture paths（多屏并行壁纸避免共享文件竞争）
+private func primaryCapturePath(for screen: Int) -> String {
+    return "/tmp/wallpaperengine-cli-capture-s\(screen).png"
+}
+private func deskCapturePath(for screen: Int, slot: Int) -> String {
+    return "/tmp/wallpaperengine-cli-desk-s\(screen)-\(slot).png"
+}
+
 private func isDynamicLockScreenEnabledForCurrentLaunch() -> Bool {
     let rawValue = ProcessInfo.processInfo.environment["WAIFUX_DYNAMIC_LOCK_SCREEN_ENABLED"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -123,18 +131,22 @@ private struct IPCMessage: Codable {
     }
 }
 
-// MARK: - RendererBridge (from Wallpaper Engine X)
+// MARK: - RendererBridge (from Wallpaper Engine X) — per-screen multi-handle
 private final class RendererBridge {
     static let shared = RendererBridge()
 
-    private var handle: UnsafeMutableRawPointer?
-    /// Bumped on stop/cancel so in-flight `asyncAfter` tick chains exit without piling up work.
-    private var tickGeneration: UInt64 = 0
+    /// 每个屏幕独立的渲染状态
+    private struct ScreenState {
+        var handle: UnsafeMutableRawPointer?
+        var tickGeneration: UInt64 = 0
+        var isLoaded: Bool = false
+        var closeHandler: (() -> Void)?
+    }
+
+    private var screenStates: [Int: ScreenState] = [:]
     private let tickQueue = DispatchQueue(label: "com.wallpaperenginex.renderer.tick", qos: .utility)
     private let rendererLock = NSLock()
-    private var isLoaded = false
     private var lastAssetsPath: String? = nil
-    private var closeHandler: (() -> Void)?
 
     private init() {}
 
@@ -179,34 +191,34 @@ private final class RendererBridge {
     }
 
     deinit {
-        cancelTickTimer()
-        _ = drainTickQueue(timeout: 2.0)
         rendererLock.lock()
-        if let h = handle {
-            lw_renderer_destroy(h)
-        }
+        let screens = screenStates.keys
         rendererLock.unlock()
+        for s in screens {
+            destroy(screen: s)
+        }
     }
 
-    func recreateWithAssets(path: String) {
-        cancelTickTimer()
-        _ = drainTickQueue(timeout: 2.0)
+    func recreateWithAssets(path: String, screen: Int = 0) {
         rendererLock.lock()
-        if let h = handle {
+        var state = screenStates[screen] ?? ScreenState()
+        if let h = state.handle {
             lw_renderer_destroy(h)
         }
         if !path.isEmpty {
-            handle = lw_renderer_create_with_assets(path)
+            state.handle = lw_renderer_create_with_assets(path)
         } else {
-            handle = lw_renderer_create()
+            state.handle = lw_renderer_create()
         }
+        state.tickGeneration &+= 1
+        screenStates[screen] = state
         rendererLock.unlock()
     }
 
-    func setAssetsPath(path: String) {
+    func setAssetsPath(path: String, screen: Int = 0) {
         lastAssetsPath = path
         rendererLock.lock()
-        guard let h = handle else {
+        guard var state = screenStates[screen], let h = state.handle else {
             rendererLock.unlock()
             return
         }
@@ -214,65 +226,63 @@ private final class RendererBridge {
         rendererLock.unlock()
     }
 
-    func loadWallpaper(path: String, width: Int, height: Int, autoStartTicking: Bool = true) {
+    func loadWallpaper(path: String, width: Int, height: Int, screen: Int = 0, autoStartTicking: Bool = true) {
         // 预检 Scene parent 循环引用，避免 C++ 渲染器陷入不可恢复的无限递归
         if let validationError = validateSceneParentGraph(sceneRoot: path) {
             dlog("[RendererBridge] Scene validation failed: \(validationError)")
             rendererLock.lock()
-            isLoaded = false
+            screenStates[screen]?.isLoaded = false
             rendererLock.unlock()
             return
         }
 
         rendererLock.lock()
-        if isLoaded {
-            rendererLock.unlock()
-            cancelTickTimer()
-            _ = drainTickQueue(timeout: 2.0)
-            rendererLock.lock()
-            if let h = handle {
-                lw_renderer_destroy(h)
-            }
-            handle = nil
-            isLoaded = false
+        // 清理该屏幕上的旧状态
+        var state = screenStates[screen] ?? ScreenState()
+        state.tickGeneration &+= 1 // 取消旧 tick 链
+        if let h = state.handle {
+            lw_renderer_destroy(h)
         }
+        state.handle = nil
+        state.isLoaded = false
 
         let assets = lastAssetsPath ?? defaultAssetsPath()
-        dlog("[RendererBridge] Creating renderer assets=\(assets) ...")
+        dlog("[RendererBridge] Creating renderer for screen \(screen) assets=\(assets) ...")
         if !assets.isEmpty {
-            handle = autoreleasepool { lw_renderer_create_with_assets(assets) }
+            state.handle = autoreleasepool { lw_renderer_create_with_assets(assets) }
         } else {
-            handle = autoreleasepool { lw_renderer_create() }
+            state.handle = autoreleasepool { lw_renderer_create() }
         }
-        dlog("[RendererBridge] Renderer handle=\(String(describing: handle))")
+        dlog("[RendererBridge] Renderer screen=\(screen) handle=\(String(describing: state.handle))")
 
-        guard let h = handle else {
+        guard let h = state.handle else {
+            dlog("[RendererBridge] ERROR: lw_renderer_create returned nil for screen \(screen)")
             rendererLock.unlock()
-            dlog("[RendererBridge] ERROR: lw_renderer_create returned nil")
             return
         }
-        dlog("[RendererBridge] Loading wallpaper: \(path) \(width)x\(height)")
+        dlog("[RendererBridge] Loading wallpaper: \(path) \(width)x\(height) screen=\(screen)")
         autoreleasepool { lw_renderer_load(h, path, Int32(width), Int32(height)) }
         dlog("[RendererBridge] lw_renderer_load returned")
-        isLoaded = true
+        state.isLoaded = true
+        screenStates[screen] = state
         rendererLock.unlock()
         if autoStartTicking {
-            startTicking(fps: effectiveTargetFPS())
+            startTicking(fps: effectiveTargetFPS(), screen: screen)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 guard let self = self else { return }
-                let w = self.renderWidth
-                let h = self.renderHeight
+                let w = self.renderWidth(screen: screen)
+                let h = self.renderHeight(screen: screen)
                 if w <= 0 || h <= 0 {
-                    dlog("[RendererBridge] ERROR: Wallpaper load failed for \(path). Render size is \(w)x\(h).")
+                    dlog("[RendererBridge] ERROR: Wallpaper load failed for \(path) on screen \(screen). Render size is \(w)x\(h).")
                 }
             }
         }
     }
 
     /// 单步 tick（离线烘焙）；返回 false 表示应停止（close_requested 或无效状态）
-    func tickOnce() -> Bool {
+    func tickOnce(screen: Int = 0) -> Bool {
         rendererLock.lock()
-        guard let h = handle, isLoaded else {
+        guard let state = screenStates[screen], let h = state.handle, state.isLoaded else {
             rendererLock.unlock()
             return false
         }
@@ -280,14 +290,13 @@ private final class RendererBridge {
         let close = lw_renderer_close_requested(h) != 0
         rendererLock.unlock()
         if close {
-            cancelTickTimer()
             let handler: (() -> Void)?
             rendererLock.lock()
-            if let hh = handle {
+            if let hh = screenStates[screen]?.handle {
                 lw_renderer_hide_window(hh)
             }
-            isLoaded = false
-            handler = closeHandler
+            screenStates[screen]?.isLoaded = false
+            handler = screenStates[screen]?.closeHandler
             rendererLock.unlock()
             handler?()
             return false
@@ -295,48 +304,52 @@ private final class RendererBridge {
         return true
     }
 
-    func startTicking(fps: Double? = nil) {
-        cancelTickTimer()
-        _ = drainTickQueue(timeout: 2.0)
+    func startTicking(fps: Double? = nil, screen: Int = 0) {
+        rendererLock.lock()
+        screenStates[screen]?.tickGeneration &+= 1
+        let generation = screenStates[screen]?.tickGeneration ?? 0
+        rendererLock.unlock()
 
         let targetFps = fps ?? effectiveTargetFPS()
         let period = 1.0 / max(1.0, min(120.0, targetFps))
-        tickGeneration &+= 1
-        let generation = tickGeneration
 
         func scheduleNext() {
             tickQueue.async { [weak self] in
                 guard let self else { return }
-                guard generation == self.tickGeneration else { return }
-                let frameStart = CFAbsoluteTimeGetCurrent()
                 self.rendererLock.lock()
-                guard generation == self.tickGeneration, let h = self.handle else {
+                guard let state = self.screenStates[screen],
+                      generation == state.tickGeneration,
+                      let h = state.handle else {
                     self.rendererLock.unlock()
                     return
                 }
+                let frameStart = CFAbsoluteTimeGetCurrent()
                 lw_renderer_tick(h)
                 let close = lw_renderer_close_requested(h) != 0
                 self.rendererLock.unlock()
 
                 if close {
-                    self.cancelTickTimer()
-                    let handler: (() -> Void)?
+                    // 取消该屏幕的 tick 链
                     self.rendererLock.lock()
-                    if let hh = self.handle {
+                    self.screenStates[screen]?.tickGeneration &+= 1
+                    let handler = self.screenStates[screen]?.closeHandler
+                    if let hh = self.screenStates[screen]?.handle {
                         lw_renderer_hide_window(hh)
                     }
-                    self.isLoaded = false
-                    handler = self.closeHandler
+                    self.screenStates[screen]?.isLoaded = false
                     self.rendererLock.unlock()
                     handler?()
                     return
                 }
 
-                guard generation == self.tickGeneration else { return }
+                self.rendererLock.lock()
+                let stillValid = self.screenStates[screen]?.tickGeneration == generation
+                self.rendererLock.unlock()
+                guard stillValid else { return }
                 let elapsed = CFAbsoluteTimeGetCurrent() - frameStart
                 let delay = max(0.002, period - elapsed)
                 self.tickQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-                    guard let self, generation == self.tickGeneration else { return }
+                    guard let self, self.screenStates[screen]?.tickGeneration == generation else { return }
                     scheduleNext()
                 }
             }
@@ -344,66 +357,88 @@ private final class RendererBridge {
         scheduleNext()
     }
 
-    func stop() {
-        cancelTickTimer()
-        _ = drainTickQueue(timeout: 2.0)
+    func stop(screen: Int = 0) {
+        rendererLock.lock()
+        screenStates[screen]?.tickGeneration &+= 1
+        rendererLock.unlock()
+        // drain tick queue
+        let semaphore = DispatchSemaphore(value: 0)
+        tickQueue.async { semaphore.signal() }
+        _ = semaphore.wait(timeout: .now() + 2.0)
     }
 
-    func setCloseHandler(_ handler: (() -> Void)?) {
+    func stopAll() {
         rendererLock.lock()
-        closeHandler = handler
+        for key in screenStates.keys {
+            screenStates[key]?.tickGeneration &+= 1
+        }
+        rendererLock.unlock()
+        let semaphore = DispatchSemaphore(value: 0)
+        tickQueue.async { semaphore.signal() }
+        _ = semaphore.wait(timeout: .now() + 2.0)
+    }
+
+    func setCloseHandler(_ handler: (() -> Void)?, screen: Int = 0) {
+        rendererLock.lock()
+        screenStates[screen]?.closeHandler = handler
         rendererLock.unlock()
     }
 
     /// Scene 动态壁纸暂停：只停渲染 tick，**不** `hideWindow()`。
-    /// 隐藏 GL 窗口在部分环境下会触发 close 语义，恢复后首帧 tick 即认为需退出，表现为「像退出且无法恢复」。
-    /// 不 tick 时画面已静止；与彻底 `destroy` 的「停止壁纸」不同。
-    func pauseSceneRendering() {
-        cancelTickTimer()
-        _ = drainTickQueue(timeout: 2.0)
+    func pauseSceneRendering(screen: Int = 0) {
+        rendererLock.lock()
+        screenStates[screen]?.tickGeneration &+= 1
+        rendererLock.unlock()
+        let semaphore = DispatchSemaphore(value: 0)
+        tickQueue.async { semaphore.signal() }
+        _ = semaphore.wait(timeout: .now() + 2.0)
     }
 
     /// 从暂停恢复：确保 `isLoaded` 与窗口状态正确后重启 tick
-    func resumeSceneRendering() {
-        showWindow()
+    func resumeSceneRendering(screen: Int = 0) {
+        showWindow(screen: screen)
         rendererLock.lock()
-        if handle != nil {
-            isLoaded = true
+        if screenStates[screen]?.handle != nil {
+            screenStates[screen]?.isLoaded = true
         }
         rendererLock.unlock()
-        startTicking(fps: effectiveTargetFPS())
+        startTicking(fps: effectiveTargetFPS(), screen: screen)
     }
 
-    private func cancelTickTimer() {
-        tickGeneration &+= 1
-    }
-
-    private func drainTickQueue(timeout: TimeInterval) -> Bool {
-        let semaphore = DispatchSemaphore(value: 0)
-        tickQueue.async {
-            semaphore.signal()
-        }
-        let result = semaphore.wait(timeout: .now() + timeout)
-        return result == .success
-    }
-
-    func destroy() {
-        cancelTickTimer()
-        _ = drainTickQueue(timeout: 2.0)
+    func destroy(screen: Int = 0) {
         rendererLock.lock()
-        if let h = handle {
+        screenStates[screen]?.tickGeneration &+= 1
+        if let h = screenStates[screen]?.handle {
             lw_renderer_destroy(h)
-            handle = nil
         }
-        isLoaded = false
-        closeHandler = nil
-        lastAssetsPath = nil
+        screenStates[screen]?.handle = nil
+        screenStates[screen]?.isLoaded = false
+        screenStates[screen]?.closeHandler = nil
         rendererLock.unlock()
+        let semaphore = DispatchSemaphore(value: 0)
+        tickQueue.async { semaphore.signal() }
+        _ = semaphore.wait(timeout: .now() + 2.0)
     }
 
-    func resize(width: Int, height: Int) {
+    func destroyAll() {
         rendererLock.lock()
-        guard let h = handle else {
+        let keys = Array(screenStates.keys)
+        for key in keys {
+            screenStates[key]?.tickGeneration &+= 1
+            if let h = screenStates[key]?.handle {
+                lw_renderer_destroy(h)
+            }
+            screenStates[key] = nil
+        }
+        rendererLock.unlock()
+        let semaphore = DispatchSemaphore(value: 0)
+        tickQueue.async { semaphore.signal() }
+        _ = semaphore.wait(timeout: .now() + 2.0)
+    }
+
+    func resize(width: Int, height: Int, screen: Int = 0) {
+        rendererLock.lock()
+        guard let h = screenStates[screen]?.handle else {
             rendererLock.unlock()
             return
         }
@@ -411,9 +446,9 @@ private final class RendererBridge {
         rendererLock.unlock()
     }
 
-    func showWindow() {
+    func showWindow(screen: Int = 0) {
         rendererLock.lock()
-        guard let h = handle else {
+        guard let h = screenStates[screen]?.handle else {
             rendererLock.unlock()
             return
         }
@@ -421,9 +456,9 @@ private final class RendererBridge {
         rendererLock.unlock()
     }
 
-    func hideWindow() {
+    func hideWindow(screen: Int = 0) {
         rendererLock.lock()
-        guard let h = handle else {
+        guard let h = screenStates[screen]?.handle else {
             rendererLock.unlock()
             return
         }
@@ -431,9 +466,9 @@ private final class RendererBridge {
         rendererLock.unlock()
     }
 
-    func setDesktopWindow(_ desktop: Bool) {
+    func setDesktopWindow(_ desktop: Bool, screen: Int = 0) {
         rendererLock.lock()
-        guard let h = handle else {
+        guard let h = screenStates[screen]?.handle else {
             rendererLock.unlock()
             return
         }
@@ -441,47 +476,46 @@ private final class RendererBridge {
         rendererLock.unlock()
     }
 
-    var textureID: UInt32 {
+    func textureID(screen: Int = 0) -> UInt32 {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return 0 }
+        guard let h = screenStates[screen]?.handle else { return 0 }
         return lw_renderer_get_texture(h)
     }
 
-    var renderWidth: Int {
+    func renderWidth(screen: Int = 0) -> Int {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return 0 }
+        guard let h = screenStates[screen]?.handle else { return 0 }
         return Int(lw_renderer_get_width(h))
     }
 
-    var renderHeight: Int {
+    func renderHeight(screen: Int = 0) -> Int {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return 0 }
+        guard let h = screenStates[screen]?.handle else { return 0 }
         return Int(lw_renderer_get_height(h))
     }
 
-    func setScreen(_ index: Int) {
+    func setScreen(_ index: Int, screen: Int = 0) {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return }
+        guard let h = screenStates[screen]?.handle else { return }
         lw_renderer_set_screen(h, Int32(index))
     }
 
-    /// 透传 dylib 的 set_property 接口。对齐 Wallpaper Engine X：
-    /// `setProperty("showDynamicText", "0")` 等同于上游 CLI 的 `--no-dynamic-text`。
-    func setProperty(_ name: String, _ value: String) {
+    /// 透传 dylib 的 set_property 接口。
+    func setProperty(_ name: String, _ value: String, screen: Int = 0) {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return }
+        guard let h = screenStates[screen]?.handle else { return }
         lw_renderer_set_property(h, name, value)
     }
 
-    func captureFrame() -> CGImage? {
+    func captureFrame(screen: Int = 0) -> CGImage? {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return nil }
+        guard let h = screenStates[screen]?.handle else { return nil }
         var buffer: UnsafeMutablePointer<UInt8>?
         var w: Int32 = 0
         var h32: Int32 = 0
@@ -490,7 +524,6 @@ private final class RendererBridge {
         let height = Int(h32)
         let bytesPerRow = width * 4
 
-        // OpenGL framebuffer is bottom-up; flip vertically for CGImage (top-down)
         let flippedBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bytesPerRow * height)
         for row in 0..<height {
             let src = buffer!.advanced(by: row * bytesPerRow)
@@ -523,8 +556,8 @@ private final class RendererBridge {
         return cgImage
     }
 
-    func saveCapture(to url: URL) -> Bool {
-        guard let cgImage = captureFrame() else { return false }
+    func saveCapture(to url: URL, screen: Int = 0) -> Bool {
+        guard let cgImage = captureFrame(screen: screen) else { return false }
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { return false }
         CGImageDestinationAddImage(destination, cgImage, nil)
         return CGImageDestinationFinalize(destination)
@@ -532,38 +565,38 @@ private final class RendererBridge {
 
     // MARK: - Built-in Baking API (delegates to dylib)
 
-    func startBake(outputPath: String, duration: Int32, fps: Int32, bitRate: Int32, width: Int32, height: Int32) -> Bool {
+    func startBake(outputPath: String, duration: Int32, fps: Int32, bitRate: Int32, width: Int32, height: Int32, screen: Int = 0) -> Bool {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return false }
+        guard let h = screenStates[screen]?.handle else { return false }
         return lw_renderer_start_bake(h, outputPath, duration, fps, bitRate, width, height, nil, nil) != 0
     }
 
-    var isBaking: Bool {
+    func isBaking(screen: Int = 0) -> Bool {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return false }
+        guard let h = screenStates[screen]?.handle else { return false }
         return lw_renderer_is_baking(h) != 0
     }
 
-    var bakeProgress: Float {
+    func bakeProgress(screen: Int = 0) -> Float {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return 0 }
+        guard let h = screenStates[screen]?.handle else { return 0 }
         return lw_renderer_get_bake_progress(h)
     }
 
-    func cancelBake() {
+    func cancelBake(screen: Int = 0) {
         rendererLock.lock()
         defer { rendererLock.unlock() }
-        guard let h = handle else { return }
+        guard let h = screenStates[screen]?.handle else { return }
         lw_renderer_cancel_bake(h)
     }
 
     /// 获取动态文本 JSON（dlsym 弱引用，渲染器未实现时返回 nil）
-    func getDynamicTextsJson() -> String? {
+    func getDynamicTextsJson(screen: Int = 0) -> String? {
         rendererLock.lock()
-        guard let h = handle else {
+        guard let h = screenStates[screen]?.handle else {
             rendererLock.unlock()
             return nil
         }
@@ -571,9 +604,8 @@ private final class RendererBridge {
 
         typealias FuncType = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
         let symName = "lw_renderer_get_dynamic_texts_json"
-        // RTLD_DEFAULT = -2（搜索所有已加载的 dylib）
         guard let ptr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), symName) else {
-            dlog("[RendererBridge] Symbol \(symName) not available in dylib (renderer may not support dynamic texts yet)")
+            dlog("[RendererBridge] Symbol \(symName) not available in dylib")
             return nil
         }
         let fn = unsafeBitCast(ptr, to: FuncType.self)
@@ -583,6 +615,13 @@ private final class RendererBridge {
         }
         defer { lw_renderer_free_buffer(cStr) }
         return String(cString: cStr)
+    }
+
+    /// 返回当前有活跃渲染的屏幕索引列表
+    var activeScreens: [Int] {
+        rendererLock.lock()
+        defer { rendererLock.unlock() }
+        return screenStates.filter { $0.value.isLoaded && $0.value.handle != nil }.map { $0.key }
     }
 }
 
@@ -1244,20 +1283,21 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         forMainFrameOnly: false
     )
 
-    private var window: NSWindow?
-    private var webView: WKWebView?
-    private var pendingCompletion: ((Bool) -> Void)?
-    private var extractedPKGDir: URL?
-    /// 依赖合并产生的临时目录，stop 时需清理
-    private var mergedDependencyDir: URL?
-    /// `project.json` → `general.properties` 的 JSON 文本，加载完成后注入 JS
-    private var injectedPropertiesJSON: String?
-    /// 递增以取消进行中的首帧采样（stop / 重新加载）
-    private var firstFrameSettleGeneration: UInt64 = 0
-    private(set) var isLoaded = false
-    /// 全局鼠标事件监听器句柄（事件桥）
-    private var mouseEventMonitors: [Any] = []
-    private var lastMouseMoveTime: TimeInterval = 0
+    /// 每个屏幕独立的 Web 渲染状态
+    private struct ScreenState {
+        var window: NSWindow?
+        var webView: WKWebView?
+        var pendingCompletion: ((Bool) -> Void)?
+        var extractedPKGDir: URL?
+        var mergedDependencyDir: URL?
+        var injectedPropertiesJSON: String?
+        var firstFrameSettleGeneration: UInt64 = 0
+        var isLoaded: Bool = false
+        var mouseEventMonitors: [Any] = []
+        var lastMouseMoveTime: TimeInterval = 0
+    }
+
+    private var screenStates: [Int: ScreenState] = [:]
     private let mouseMoveThrottle: TimeInterval = 1.0 / 30.0
 
     private enum FirstFramePolicy {
@@ -1274,9 +1314,20 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
     }
 
     func loadWallpaper(path: String, width: Int, height: Int, screen: Int? = nil, completion: ((Bool) -> Void)? = nil) {
-        stop() // 清理旧的（包括临时目录）
-        pendingCompletion = completion
-        injectedPropertiesJSON = nil
+        // 解析目标屏幕索引
+        let screens = NSScreen.screens
+        let screenIdx: Int
+        if let s = screen, s >= 0, s < screens.count {
+            screenIdx = s
+        } else if let main = NSScreen.main, let mainIdx = screens.firstIndex(of: main) {
+            screenIdx = mainIdx
+        } else {
+            screenIdx = 0
+        }
+
+        stop(screen: screenIdx) // 只清理目标屏幕的旧状态
+        screenStates[screenIdx] = ScreenState()
+        screenStates[screenIdx]?.pendingCompletion = completion
 
         guard let (baseURL, indexFile) = resolveWebWallpaperEntry(path: path) else {
             dlog("[WebRendererBridge] Failed to resolve web wallpaper entry for \(path)")
@@ -1284,22 +1335,21 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
             return
         }
 
-        injectedPropertiesJSON = readWebWallpaperUserPropertiesJSON(contentDir: baseURL)
-        if injectedPropertiesJSON != nil {
+        screenStates[screenIdx]?.injectedPropertiesJSON = readWebWallpaperUserPropertiesJSON(contentDir: baseURL)
+        if screenStates[screenIdx]?.injectedPropertiesJSON != nil {
             dlog("[WebRendererBridge] Loaded user properties from project.json for injection")
         }
 
         // 记录临时目录以便 stop 时清理
         if URL(fileURLWithPath: path).pathExtension.lowercased() == "pkg" {
-            extractedPKGDir = baseURL
+            screenStates[screenIdx]?.extractedPKGDir = baseURL
         } else if baseURL.path.contains("wallpaperengine_merged_") {
-            mergedDependencyDir = baseURL
+            screenStates[screenIdx]?.mergedDependencyDir = baseURL
         }
 
-        let screens = NSScreen.screens
         let targetScreen: NSScreen
-        if let s = screen, s >= 0, s < screens.count {
-            targetScreen = screens[s]
+        if screenIdx >= 0 && screenIdx < screens.count {
+            targetScreen = screens[screenIdx]
         } else if let main = NSScreen.main {
             targetScreen = main
         } else {
@@ -1321,16 +1371,12 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         w.backgroundColor = .clear
         w.hasShadow = false
         w.setFrame(targetScreen.frame, display: true)
-        // 允许交互式 Web 壁纸接收鼠标；桌面图标层仍高于 desktopWindow，一般仍可点到图标。
-        // acceptsMouseMovedEvents 必须为 true：否则窗口不生成 mouseMoved 事件，
-        // local monitor 收不到鼠标移动，依赖 pointermove 的壁纸 hover 永远无法建立。
         w.acceptsMouseMovedEvents = true
         w.ignoresMouseEvents = false
         w.isReleasedWhenClosed = false
 
         // 配置 WKWebView
         let config = WKWebViewConfiguration()
-        // 允许本地 HTML 引用同目录资源（Workshop web 壁纸依赖）
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         let ucc = WKUserContentController()
         ucc.addUserScript(Self.wallpaperEngineWebAPIShim)
@@ -1343,7 +1389,6 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         }
         config.mediaTypesRequiringUserActionForPlayback = []
 
-        // 允许本地文件访问
         let web = WKWebView(frame: w.contentView!.bounds, configuration: config)
         web.autoresizingMask = [.width, .height]
         web.navigationDelegate = self
@@ -1353,8 +1398,8 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
 
         w.contentView?.addSubview(web)
 
-        self.window = w
-        self.webView = web
+        screenStates[screenIdx]?.window = w
+        screenStates[screenIdx]?.webView = web
 
         let fileURL = baseURL.appendingPathComponent(indexFile)
         let readAccessURL = webWallpaperFileReadAccessURL(projectContentDir: baseURL, cliWallpaperPath: path)
@@ -1365,7 +1410,7 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         web.loadFileURL(fileURL, allowingReadAccessTo: readAccessURL)
         w.orderBack(nil)
 
-        dlog("[WebRendererBridge] Loading web wallpaper: \(fileURL.path) on screen \(targetScreen.localizedName)")
+        dlog("[WebRendererBridge] Loading web wallpaper: \(fileURL.path) on screen \(screenIdx) (\(targetScreen.localizedName))")
     }
 
     /// 自动检测并修复 Spine 动画壁纸缺失的 .config.json。
@@ -1414,50 +1459,55 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         }
     }
 
+    /// 根据 webView 实例查找所属屏幕索引
+    private func screenIndex(for webView: WKWebView) -> Int? {
+        for (idx, state) in screenStates {
+            if state.webView === webView { return idx }
+        }
+        return nil
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        dlog("[WebRendererBridge] didFinish")
-        isLoaded = true
-        // 对齐 Wallpaper Engine：注入 project 属性 + 修正缺失背景图与全屏布局，再稍等 Spine 应用相机/缩放
-        runWebWallpaperBootstrap { [weak self] in
+        guard let s = screenIndex(for: webView) else { return }
+        dlog("[WebRendererBridge] didFinish screen=\(s)")
+        screenStates[s]?.isLoaded = true
+        runWebWallpaperBootstrap(screen: s) { [weak self] in
             guard let self = self else { return }
-            if isDynamicLockScreenEnabledForCurrentLaunch() {
-                dlog("[WebRendererBridge] Dynamic lock screen enabled; capture first frame for fallback only")
-                self.beginSettlingFirstFrame()
-            } else {
-                self.beginSettlingFirstFrame()
-            }
-            self.startMouseEventBridge()
+            self.beginSettlingFirstFrame(screen: s)
+            self.startMouseEventBridge(for: s)
         }
         NSApp.setActivationPolicy(.prohibited)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        dlog("[WebRendererBridge] didFail: \(error)")
-        firstFrameSettleGeneration += 1
-        pendingCompletion?(false)
-        pendingCompletion = nil
+        guard let s = screenIndex(for: webView) else { return }
+        dlog("[WebRendererBridge] didFail screen=\(s): \(error)")
+        screenStates[s]?.firstFrameSettleGeneration &+= 1
+        screenStates[s]?.pendingCompletion?(false)
+        screenStates[s]?.pendingCompletion = nil
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        dlog("[WebRendererBridge] didFailProvisional: \(error)")
-        firstFrameSettleGeneration += 1
-        pendingCompletion?(false)
-        pendingCompletion = nil
+        guard let s = screenIndex(for: webView) else { return }
+        dlog("[WebRendererBridge] didFailProvisional screen=\(s): \(error)")
+        screenStates[s]?.firstFrameSettleGeneration &+= 1
+        screenStates[s]?.pendingCompletion?(false)
+        screenStates[s]?.pendingCompletion = nil
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        dlog("[WebRendererBridge] WebContent process terminated")
-        firstFrameSettleGeneration += 1
-        pendingCompletion?(false)
-        pendingCompletion = nil
-        isLoaded = false
+        guard let s = screenIndex(for: webView) else { return }
+        dlog("[WebRendererBridge] WebContent terminated screen=\(s)")
+        screenStates[s]?.firstFrameSettleGeneration &+= 1
+        screenStates[s]?.pendingCompletion?(false)
+        screenStates[s]?.pendingCompletion = nil
+        screenStates[s]?.isLoaded = false
     }
 
-    func pause() {
-        window?.orderOut(nil)
-        stopMouseEventBridge()
-        // 暂停页面内所有媒体与 CSS 动画，避免后台继续消耗资源
-        webView?.evaluateJavaScript("""
+    func pause(screen: Int = 0) {
+        guard let state = screenStates[screen] else { return }
+        state.window?.orderOut(nil)
+        state.webView?.evaluateJavaScript("""
             document.querySelectorAll('video, audio').forEach(m => m.pause());
             document.querySelectorAll('*').forEach(el => {
                 const st = window.getComputedStyle(el);
@@ -1466,468 +1516,267 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         """) { _, _ in }
     }
 
-    func resume() {
-        guard isLoaded else { return }
-        window?.orderBack(nil)
-        // 恢复媒体与动画
-        webView?.evaluateJavaScript("""
+    func pauseAll() { for s in screenStates.keys { pause(screen: s) } }
+
+    func resume(screen: Int = 0) {
+        guard let state = screenStates[screen], state.isLoaded else { return }
+        state.window?.orderBack(nil)
+        state.webView?.evaluateJavaScript("""
             document.querySelectorAll('video, audio').forEach(m => { if(m.paused) m.play().catch(()=>{}); });
             document.querySelectorAll('*').forEach(el => {
                 if (el.style.animationPlayState === 'paused') el.style.animationPlayState = 'running';
             });
             window.dispatchEvent(new Event('resize'));
         """) { _, _ in }
-        startMouseEventBridge()
+        startMouseEventBridge(for: screen)
         NSApp.setActivationPolicy(.prohibited)
     }
 
-    /// 设置音频控制（静音/音量），由 daemon IPC 触发。
-    ///
-    /// - 静音走 WKWebView 私有 SPI `_setPageMuted:`（直接发 selector，不走 KVC）。
-    ///   这是 page-level 静音，作用到整个 WKWebView 的 WebContent 进程，覆盖 Web Audio /
-    ///   <audio> / <video> / WebRTC / 跨域 iframe，几乎等价于"对进程做音量操作"。
-    ///   不能用 setValue:forKey:"_pageMuted"——WebKit 把 setter 名声明为 `setter=_setPageMuted:`，
-    ///   KVC 的 setValue:forKey: 按 `set<Key>:` 约定找 `set_PageMuted:` 找不到，会抛
-    ///   NSUnknownKeyException 把 daemon 弄崩（之前被踩过）。所以这里走 method_getImplementation
-    ///   + 类型化函数指针直接调 setter。
-    ///
-    /// - 音量走 documentStart 注入的 audioWrapperScript（见同文件 Self.audioWrapperScript），
-    ///   通过 master GainNode 控 Web Audio + 给 <video>/<audio>.volume 兜底。
-    ///   completion 加 dlog 错误，方便诊断壁纸侧 wrapper 失效。
-    func setAudioControl(muted: Bool?, volume: Double?) {
-        guard isLoaded, let webView else { return }
+    func resumeAll() { for s in screenStates.keys { resume(screen: s) } }
 
+    func setAudioControl(muted: Bool?, volume: Double?, screen: Int = 0) {
+        guard let state = screenStates[screen], state.isLoaded, let webView = state.webView else { return }
         if let muted {
             let sel = NSSelectorFromString("_setPageMuted:")
             if let method = class_getInstanceMethod(type(of: webView), sel) {
                 typealias SetPageMutedFn = @convention(c) (NSObject, Selector, UInt) -> Void
                 let imp = method_getImplementation(method)
                 let fn = unsafeBitCast(imp, to: SetPageMutedFn.self)
-                // WKMediaMutedState 位掩码：noneMuted=0, audioMuted=1<<0, captureMuted=1<<1
                 fn(webView, sel, muted ? UInt(1) : UInt(0))
-                dlog("[WebRendererBridge] setAudioControl muted=\(muted) via SPI _setPageMuted:")
             } else {
-                // SPI 在新 macOS 失效 → 退到 wrapper
-                let js = "if(window.__waifuxSetAudio)window.__waifuxSetAudio({muted: \(muted)});"
-                webView.evaluateJavaScript(js) { _, error in
-                    if let error {
-                        dlog("[WebRendererBridge] setAudioControl muted fallback JS error: \(error)")
-                    }
-                }
-                dlog("[WebRendererBridge] setAudioControl muted=\(muted) via wrapper fallback (SPI not found)")
+                webView.evaluateJavaScript("if(window.__waifuxSetAudio)window.__waifuxSetAudio({muted:\(muted)});")
             }
         }
-
         if let volume {
             let v = max(0.0, min(1.0, volume))
-            let js = """
-            (function(){
-                var v = \(v);
-                if (window.__waifuxSetAudio) {
-                    window.__waifuxSetAudio({volume: v});
-                    return '__waifuxSetAudio';
-                } else {
-                    try {
-                        var n = document.querySelectorAll('video,audio').length;
-                        document.querySelectorAll('video,audio').forEach(function(e){ e.volume = v; });
-                        return 'fallback:' + n;
-                    } catch (e) { return 'error:' + (e && e.message); }
-                }
-            })();
-            """
-            webView.evaluateJavaScript(js) { result, error in
-                if let error {
-                    dlog("[WebRendererBridge] setAudioControl volume=\(v) JS error: \(error)")
-                } else {
-                    dlog("[WebRendererBridge] setAudioControl volume=\(v) result=\(result ?? "nil")")
-                }
-            }
+            let js = "if(window.__waifuxSetAudio){window.__waifuxSetAudio({volume:\(v)});}else{document.querySelectorAll('video,audio').forEach(function(e){e.volume=\(v);});}"
+            webView.evaluateJavaScript(js)
         }
     }
 
-    /// 把 WE 标准 128 frame 浮点频谱注入到 webView，
-    /// 触发壁纸侧 `wallpaperRegisterAudioListener` 回调链（与 shim 中 `__wxUpdateAudioBuf` 对接）。
-    /// fire-and-forget：失败仅 dlog；JS 异常不影响后续帧。
-    /// 调用频率上限 30fps，~1KB JS 字符串，主线程开销可忽略。
     func pushAudioFrame(_ floats: [Float]) {
         guard floats.count == 128 else { return }
-        guard isLoaded, let webView else { return }
         var sb = "if(window.__wxUpdateAudioBuf)window.__wxUpdateAudioBuf(["
         sb.reserveCapacity(1200)
-        for i in 0..<128 {
-            if i > 0 { sb.append(",") }
-            sb.append(String(format: "%.4f", floats[i]))
-        }
+        for i in 0..<128 { if i > 0 { sb.append(",") }; sb.append(String(format: "%.4f", floats[i])) }
         sb.append("]);")
         let js = sb
-        DispatchQueue.main.async { [weak webView] in
-            webView?.evaluateJavaScript(js) { _, error in
-                if let error {
-                    dlog("[WebRendererBridge] pushAudioFrame JS error: \(error)")
+        for (_, state) in screenStates where state.isLoaded {
+            guard let webView = state.webView else { continue }
+            DispatchQueue.main.async { [weak webView] in
+                webView?.evaluateJavaScript(js) { _, error in
+                    if let error { dlog("[WebRendererBridge] pushAudioFrame JS error: \(error)") }
                 }
             }
         }
     }
 
     @discardableResult
-    func applyUserProperties(jsonString: String) -> Bool {
-        injectedPropertiesJSON = jsonString
-        guard isLoaded, webView != nil else { return false }
+    func applyUserProperties(jsonString: String, screen: Int = 0) -> Bool {
+        screenStates[screen]?.injectedPropertiesJSON = jsonString
+        guard let state = screenStates[screen], state.isLoaded, let webView = state.webView else { return false }
         let encoded = Data(jsonString.utf8).base64EncodedString()
-        let source = """
-        (function() {
-          try {
-            var props = JSON.parse(atob("\(encoded)"));
-            if (window.wallpaperPropertyListener && typeof window.wallpaperPropertyListener.applyUserProperties === 'function') {
-              window.wallpaperPropertyListener.applyUserProperties(props);
-              return true;
-            }
-          } catch (e) {
-            console.error('weweb: applyUserProperties runtime patch failed:', e);
-          }
-          return false;
-        })();
-        """
-        webView?.evaluateJavaScript(source) { result, _ in
-            dlog("[WebRendererBridge] applyUserProperties runtime patch result=\(String(describing: result))")
+        let source = "(function(){try{var props=JSON.parse(atob(\"\(encoded)\"));if(window.wallpaperPropertyListener&&typeof window.wallpaperPropertyListener.applyUserProperties==='function'){window.wallpaperPropertyListener.applyUserProperties(props);return true;}}catch(e){}return false;})();"
+        webView.evaluateJavaScript(source) { result, _ in
+            dlog("[WebRendererBridge] applyUserProperties screen=\(screen) result=\(String(describing: result))")
         }
         return true
     }
 
-    func stop() {
-        firstFrameSettleGeneration += 1
-        stopMouseEventBridge()
-        // 中断可能还在等待的 completion
-        pendingCompletion = nil
-        webView?.stopLoading()
-        webView?.navigationDelegate = nil
-        webView?.removeFromSuperview()
-        webView = nil
-        window?.close()
-        window = nil
-        isLoaded = false
-        // 清理 .pkg 解压与依赖合并产生的临时目录
-        if let dir = extractedPKGDir {
-            try? FileManager.default.removeItem(at: dir)
-            extractedPKGDir = nil
-        }
-        if let dir = mergedDependencyDir {
-            try? FileManager.default.removeItem(at: dir)
-            mergedDependencyDir = nil
-        }
-        injectedPropertiesJSON = nil
+    func stop(screen: Int = 0) {
+        guard var state = screenStates[screen] else { return }
+        state.firstFrameSettleGeneration &+= 1
+        state.pendingCompletion = nil
+        state.webView?.stopLoading()
+        state.webView?.navigationDelegate = nil
+        state.webView?.removeFromSuperview()
+        state.webView = nil
+        state.window?.close()
+        state.window = nil
+        state.isLoaded = false
+        if let dir = state.extractedPKGDir { try? FileManager.default.removeItem(at: dir); state.extractedPKGDir = nil }
+        if let dir = state.mergedDependencyDir { try? FileManager.default.removeItem(at: dir); state.mergedDependencyDir = nil }
+        state.injectedPropertiesJSON = nil
+        screenStates[screen] = state
     }
 
-    // MARK: - Mouse Event Bridge
-
-    /// 启动鼠标事件监听，将事件转发给 WebView。
-    ///
-    /// 需要同时注册 global + local monitor：
-    /// - global monitor 只收「发送给其他 app」的事件（被 Finder 桌面图标层拦截的情况）；
-    /// - local monitor 收「发送给本 app」的事件（ignoresMouseEvents=false 时点击穿透到 daemon 窗口）。
-    /// 之前只有 global monitor，导致到达 daemon 自身窗口的点击/移动无人转发，WebView 收不到交互。
-    private func startMouseEventBridge() {
+    func stopAll() {
+        for s in Array(screenStates.keys) { stop(screen: s) }
         stopMouseEventBridge()
-        guard window != nil, webView != nil else { return }
+        screenStates.removeAll()
+    }
 
+    var loadedScreens: [Int] { screenStates.filter { $0.value.isLoaded }.map { $0.key } }
+
+    // MARK: - Mouse Event Bridge (全局一组 monitor，分发到所有屏幕的 webView)
+
+    private var globalMouseMonitors: [Any] = []
+    private var lastGlobalMouseMoveTime: TimeInterval = 0
+
+    private func startMouseEventBridge(for screen: Int) {
+        guard screenStates[screen]?.window != nil, screenStates[screen]?.webView != nil else { return }
+        if !globalMouseMonitors.isEmpty { return }
         let eventTypes: [(NSEvent.EventTypeMask, String)] = [
-            (.leftMouseDown, "mousedown"),
-            (.leftMouseUp, "mouseup"),
-            (.mouseMoved, "mousemove"),
-            (.scrollWheel, "wheel")
+            (.leftMouseDown, "mousedown"), (.leftMouseUp, "mouseup"),
+            (.mouseMoved, "mousemove"), (.scrollWheel, "wheel")
         ]
-
         for (eventType, type) in eventTypes {
-            // global：捕获被 Finder 桌面层拦截、分发给其他 app 的事件
             if let g = NSEvent.addGlobalMonitorForEvents(matching: eventType) { [weak self] event in
-                self?.handleGlobalMouseEvent(event, type: type)
-            } {
-                mouseEventMonitors.append(g)
-            }
-            // local：捕获穿透到 daemon 自身窗口的事件（desktopWindow 层级 WKWebView 非 key window，原生收不到）
+                self?.dispatchMouseEvent(event, type: type)
+            } { globalMouseMonitors.append(g) }
             if let l = NSEvent.addLocalMonitorForEvents(matching: eventType) { [weak self] event -> NSEvent? in
-                self?.handleGlobalMouseEvent(event, type: type)
+                self?.dispatchMouseEvent(event, type: type)
                 return event
-            } {
-                mouseEventMonitors.append(l)
-            }
+            } { globalMouseMonitors.append(l) }
         }
-
-        dlog("[WebRendererBridge] Mouse event bridge started with \(mouseEventMonitors.count) monitors")
     }
 
     private func stopMouseEventBridge() {
-        for monitor in mouseEventMonitors {
-            NSEvent.removeMonitor(monitor)
-        }
-        mouseEventMonitors.removeAll()
-        lastMouseMoveTime = 0
+        for monitor in globalMouseMonitors { NSEvent.removeMonitor(monitor) }
+        globalMouseMonitors.removeAll()
+        lastGlobalMouseMoveTime = 0
     }
 
-    private func handleGlobalMouseEvent(_ event: NSEvent, type: String) {
-        guard let window = self.window, let webView = self.webView else { return }
-
-        // mousemove 统一节流（global + local 共用），避免高频 evaluateJavaScript 开销
+    private func dispatchMouseEvent(_ event: NSEvent, type: String) {
         if type == "mousemove" {
             let now = CFAbsoluteTimeGetCurrent()
-            if now - lastMouseMoveTime < mouseMoveThrottle { return }
-            lastMouseMoveTime = now
+            if now - lastGlobalMouseMoveTime < mouseMoveThrottle { return }
+            lastGlobalMouseMoveTime = now
         }
-
         let mouseLocation = NSEvent.mouseLocation
-        // 检查鼠标是否在 WebView 窗口范围内
-        guard window.frame.contains(mouseLocation) else { return }
-
-        // 转换为 WebView 内部坐标（macOS 屏幕坐标原点在左下角，Web/CSS 原点在左上角）
-        let relX = mouseLocation.x - window.frame.origin.x
-        let relY = mouseLocation.y - window.frame.origin.y
-        let webViewX = relX
-        let webViewY = window.frame.height - relY
-
-        // 边界检查
-        guard webViewX >= 0, webViewX <= webView.bounds.width,
-              webViewY >= 0, webViewY <= webView.bounds.height else { return }
-
-        var script = "if(window.__wxMouseBridge){window.__wxMouseBridge.dispatch('\(type)',\(webViewX),\(webViewY),0"
-        if type == "wheel" {
-            script += ",\(event.scrollingDeltaX),\(event.scrollingDeltaY)"
-        } else {
-            script += ",0,0"
-        }
-        script += ");}"
-
-        DispatchQueue.main.async { [weak self] in
-            guard self?.webView != nil else { return }
-            webView.evaluateJavaScript(script) { _, _ in }
+        for (_, state) in screenStates {
+            guard state.isLoaded, let window = state.window, let webView = state.webView else { continue }
+            guard window.frame.contains(mouseLocation) else { continue }
+            let relX = mouseLocation.x - window.frame.origin.x
+            let relY = mouseLocation.y - window.frame.origin.y
+            let webViewX = relX
+            let webViewY = window.frame.height - relY
+            guard webViewX >= 0, webViewX <= webView.bounds.width,
+                  webViewY >= 0, webViewY <= webView.bounds.height else { continue }
+            let xStr = String(Double(webViewX))
+            let yStr = String(Double(webViewY))
+            var script = "if(window.__wxMouseBridge){window.__wxMouseBridge.dispatch('" + type + "'," + xStr + "," + yStr + ",0"
+            if type == "wheel" {
+                let dxStr = String(Double(event.scrollingDeltaX))
+                let dyStr = String(Double(event.scrollingDeltaY))
+                script += "," + dxStr + "," + dyStr
+            } else {
+                script += ",0,0"
+            }
+            script += ");}"
+            DispatchQueue.main.async { [weak webView] in
+                webView?.evaluateJavaScript(script)
+            }
+            break
         }
     }
 
-    /// 注入 WE 用户属性、去掉常见坏掉的 `background.png`、铺满视口并触发 resize（供 Spine/Canvas 重算）
-    private func runWebWallpaperBootstrap(completion: (() -> Void)? = nil) {
+    private func runWebWallpaperBootstrap(screen: Int, completion: (() -> Void)? = nil) {
+        guard let state = screenStates[screen], let webView = state.webView else { completion?(); return }
         var propsBlock = ""
-        if let json = injectedPropertiesJSON,
-           let data = json.data(using: .utf8) {
+        if let json = state.injectedPropertiesJSON, let data = json.data(using: .utf8) {
             let b64 = data.base64EncodedString()
-            propsBlock = """
-            try {
-              var props = JSON.parse(atob("\(b64)"));
-              if (window.wallpaperPropertyListener && typeof window.wallpaperPropertyListener.applyUserProperties === 'function') {
-                window.wallpaperPropertyListener.applyUserProperties(props);
-              }
-            } catch(e) {}
-            """
+            propsBlock = "try{var props=JSON.parse(atob(\"" + b64 + "\"));if(window.wallpaperPropertyListener&&typeof window.wallpaperPropertyListener.applyUserProperties==='function'){window.wallpaperPropertyListener.applyUserProperties(props);}}catch(e){}"
         }
-        let generalPropsBlock = """
-        try {
-          if (window.wallpaperPropertyListener && typeof window.wallpaperPropertyListener.applyGeneralProperties === 'function') {
-            window.wallpaperPropertyListener.applyGeneralProperties({ fps: { value: 30, type: 'slider' } });
-          }
-        } catch(eGP) {}
-        """
-        let layoutBlock = """
-        try {
-          document.documentElement.style.cssText = 'width:100%;height:100%;margin:0;padding:0;background:transparent;overflow:hidden;';
-          document.body.style.setProperty('background-image', 'none', 'important');
-          document.body.style.setProperty('width', '100%');
-          document.body.style.setProperty('height', '100%');
-          document.body.style.setProperty('margin', '0');
-          document.body.style.setProperty('overflow', 'hidden');
-          var pc = document.getElementById('player-container');
-          if (pc) { pc.style.width = '100%'; pc.style.height = '100%'; }
-          window.dispatchEvent(new Event('resize'));
-        } catch(e2) {}
-        """
-        let source = "(function(){\(propsBlock)\(generalPropsBlock)\(layoutBlock); return true;})();"
-        webView?.evaluateJavaScript(source) { _, _ in
+        let source = "(function(){" + propsBlock + "try{document.documentElement.style.cssText='width:100%;height:100%;margin:0;padding:0;background:transparent;overflow:hidden;';document.body.style.setProperty('background-image','none');document.body.style.setProperty('width','100%');document.body.style.setProperty('height','100%');window.dispatchEvent(new Event('resize'));}catch(e2){}return true;})();"
+        webView.evaluateJavaScript(source) { _, _ in
             DispatchQueue.main.async { completion?() }
         }
     }
 
-    /// 轮询截图直到画面连续稳定（加载动画结束）或超时，避免把 Loading 当首帧
-    private func beginSettlingFirstFrame() {
-        firstFrameSettleGeneration += 1
-        let gen = firstFrameSettleGeneration
+    private func beginSettlingFirstFrame(screen: Int) {
+        screenStates[screen]?.firstFrameSettleGeneration &+= 1
+        let gen = screenStates[screen]?.firstFrameSettleGeneration ?? 0
         let t0 = Date()
-
-        final class SettleState {
-            var lastThumb: [UInt8]?
-            var stablePasses = 0
-            var lastImage: NSImage?
-        }
-        let state = SettleState()
-
+        final class SettleState { var lastThumb: [UInt8]?; var stablePasses = 0; var lastImage: NSImage? }
+        let ss = SettleState()
         func finish(_ image: NSImage?, reason: String) {
-            guard gen == firstFrameSettleGeneration else { return }
-            let ok: Bool
-            if let image = image {
-                ok = saveImage(image)
-            } else {
-                ok = false
-            }
-            dlog("[WebRendererBridge] First frame settle: \(reason), saveOk=\(ok)")
-            pendingCompletion?(ok)
-            pendingCompletion = nil
-            // 不再持续截图：首帧已保存到 PRIMARY_CAPTURE_PATH，由 DesktopWallpaperManager 负责推系统桌面
+            guard self.screenStates[screen]?.firstFrameSettleGeneration == gen else { return }
+            let ok = image.map { self.saveImage($0, screen: screen) } ?? false
+            self.screenStates[screen]?.pendingCompletion?(ok)
+            self.screenStates[screen]?.pendingCompletion = nil
         }
-
         func scheduleStep() {
-            guard gen == firstFrameSettleGeneration, webView != nil else { return }
+            guard self.screenStates[screen]?.firstFrameSettleGeneration == gen,
+                  self.screenStates[screen]?.webView != nil else { return }
             let elapsed = Date().timeIntervalSince(t0)
-            if elapsed >= FirstFramePolicy.maxElapsed {
-                finish(state.lastImage, reason: "timeout_elapsed=\(String(format: "%.2f", elapsed))s")
-                return
-            }
-
-            snapshotWebView { [weak self] image in
-                guard let self = self, gen == self.firstFrameSettleGeneration else { return }
+            if elapsed >= FirstFramePolicy.maxElapsed { finish(ss.lastImage, reason: "timeout"); return }
+            self.snapshotWebView(screen: screen) { image in
+                guard self.screenStates[screen]?.firstFrameSettleGeneration == gen else { return }
                 guard let image = image else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + FirstFramePolicy.pollInterval) { scheduleStep() }
-                    return
+                    DispatchQueue.main.asyncAfter(deadline: .now() + FirstFramePolicy.pollInterval) { scheduleStep() }; return
                 }
-                state.lastImage = image
+                ss.lastImage = image
                 let thumb = self.grayscaleThumb(from: image, dimension: FirstFramePolicy.thumbDimension)
-                defer {
-                    if let t = thumb { state.lastThumb = t }
-                }
-                if let prev = state.lastThumb, let curr = thumb {
+                defer { if let t = thumb { ss.lastThumb = t } }
+                if let prev = ss.lastThumb, let curr = thumb {
                     let diff = Self.meanAbsDiffGrayscale(prev, curr)
-                    if diff < FirstFramePolicy.diffThreshold, elapsed >= FirstFramePolicy.minElapsed {
-                        state.stablePasses += 1
-                    } else {
-                        state.stablePasses = 0
-                    }
-                    if state.stablePasses >= FirstFramePolicy.stablePassesRequired {
-                        finish(image, reason: "stable_diff=\(String(format: "%.4f", diff)) elapsed=\(String(format: "%.2f", elapsed))s")
-                        return
-                    }
+                    if diff < FirstFramePolicy.diffThreshold, elapsed >= FirstFramePolicy.minElapsed { ss.stablePasses += 1 }
+                    else { ss.stablePasses = 0 }
+                    if ss.stablePasses >= FirstFramePolicy.stablePassesRequired { finish(image, reason: "stable"); return }
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + FirstFramePolicy.pollInterval) { scheduleStep() }
             }
         }
-
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { scheduleStep() }
     }
 
-    private func snapshotWebView(completion: @escaping (NSImage?) -> Void) {
-        guard let webView = webView else {
-            completion(nil)
-            return
-        }
+    private func snapshotWebView(screen: Int, completion: @escaping (NSImage?) -> Void) {
+        guard let webView = screenStates[screen]?.webView else { completion(nil); return }
         if #available(macOS 11.0, *) {
             let config = WKSnapshotConfiguration()
             config.rect = CGRect(origin: .zero, size: webView.bounds.size)
-            webView.takeSnapshot(with: config) { image, error in
-                if image == nil {
-                    dlog("[WebRendererBridge] snapshotWebView failed: \(error?.localizedDescription ?? "unknown")")
-                }
-                DispatchQueue.main.async {
-                    completion(image)
-                }
-            }
+            webView.takeSnapshot(with: config) { image, _ in DispatchQueue.main.async { completion(image) } }
         } else {
-            DispatchQueue.main.async { [weak webView] in
-                guard let webView = webView else { completion(nil); return }
-                guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil,
-                                                     pixelsWide: max(1, Int(webView.bounds.width)),
-                                                     pixelsHigh: max(1, Int(webView.bounds.height)),
-                                                     bitsPerSample: 8,
-                                                     samplesPerPixel: 4,
-                                                     hasAlpha: true,
-                                                     isPlanar: false,
-                                                     colorSpaceName: .deviceRGB,
-                                                     bytesPerRow: 0,
-                                                     bitsPerPixel: 0) else {
-                    completion(nil)
-                    return
-                }
-                NSGraphicsContext.saveGraphicsState()
-                let ctx = NSGraphicsContext(bitmapImageRep: bitmap)
-                NSGraphicsContext.current = ctx
-                webView.layer?.render(in: ctx!.cgContext)
-                NSGraphicsContext.restoreGraphicsState()
-                let img = NSImage(size: bitmap.size)
-                img.addRepresentation(bitmap)
-                completion(img)
-            }
+            completion(nil)
         }
     }
 
     private func grayscaleThumb(from image: NSImage, dimension: Int) -> [UInt8]? {
         guard dimension > 0 else { return nil }
         let target = NSSize(width: dimension, height: dimension)
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
-                                         pixelsWide: dimension,
-                                         pixelsHigh: dimension,
-                                         bitsPerSample: 8,
-                                         samplesPerPixel: 4,
-                                         hasAlpha: true,
-                                         isPlanar: false,
-                                         colorSpaceName: .deviceRGB,
-                                         bytesPerRow: 0,
-                                         bitsPerPixel: 0) else { return nil }
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: dimension, pixelsHigh: dimension,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        NSColor.clear.set()
-        NSRect(origin: .zero, size: target).fill()
-        image.draw(in: NSRect(origin: .zero, size: target),
-                   from: NSRect(origin: .zero, size: image.size),
-                   operation: .copy,
-                   fraction: 1.0,
-                   respectFlipped: false,
-                   hints: [.interpolation: NSImageInterpolation.low])
+        NSColor.clear.set(); NSRect(origin: .zero, size: target).fill()
+        image.draw(in: NSRect(origin: .zero, size: target), from: NSRect(origin: .zero, size: image.size),
+                   operation: .copy, fraction: 1.0, respectFlipped: false, hints: [.interpolation: NSImageInterpolation.low])
         NSGraphicsContext.restoreGraphicsState()
         var out = [UInt8](repeating: 0, count: dimension * dimension)
-        for y in 0..<dimension {
-            for x in 0..<dimension {
-                guard let c = rep.colorAt(x: x, y: y) else { continue }
-                let g = UInt8(min(255, max(0, (c.redComponent * 0.299 + c.greenComponent * 0.587 + c.blueComponent * 0.114) * 255.0)))
-                out[y * dimension + x] = g
-            }
-        }
+        for y in 0..<dimension { for x in 0..<dimension {
+            guard let c = rep.colorAt(x: x, y: y) else { continue }
+            out[y * dimension + x] = UInt8(min(255, max(0, (c.redComponent * 0.299 + c.greenComponent * 0.587 + c.blueComponent * 0.114) * 255.0)))
+        } }
         return out
     }
 
     private static func meanAbsDiffGrayscale(_ a: [UInt8], _ b: [UInt8]) -> Double {
         guard a.count == b.count, !a.isEmpty else { return 1 }
-        var sum: Int = 0
-        for i in 0..<a.count {
-            sum += abs(Int(a[i]) - Int(b[i]))
-        }
+        var sum = 0; for i in 0..<a.count { sum += abs(Int(a[i]) - Int(b[i])) }
         return Double(sum) / Double(a.count * 255)
     }
 
-    private func saveImage(_ image: NSImage) -> Bool {
-        guard let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
+    private func saveImage(_ image: NSImage, screen: Int = 0) -> Bool {
+        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
               let png = bitmap.representation(using: .png, properties: [:]) else { return false }
-        do {
-            try png.write(to: URL(fileURLWithPath: PRIMARY_CAPTURE_PATH), options: .atomic)
-            return true
-        } catch {
-            dlog("[WebRendererBridge] saveImage failed: \(error)")
-            return false
-        }
+        let path = primaryCapturePath(for: screen)
+        do { try png.write(to: URL(fileURLWithPath: path), options: .atomic); return true }
+        catch { return false }
     }
 
-    private func saveBitmap(_ bitmap: NSBitmapImageRep) -> Bool {
+    private func saveBitmap(_ bitmap: NSBitmapImageRep, screen: Int = 0) -> Bool {
         guard let png = bitmap.representation(using: .png, properties: [:]) else { return false }
-        do {
-            try png.write(to: URL(fileURLWithPath: PRIMARY_CAPTURE_PATH), options: .atomic)
-            return true
-        } catch {
-            return false
-        }
+        let path = primaryCapturePath(for: screen)
+        do { try png.write(to: URL(fileURLWithPath: path), options: .atomic); return true }
+        catch { return false }
     }
 
-    /// 截图一帧并保存到 PRIMARY_CAPTURE_PATH（供 DesktopWallpaperManager 在暂停时推送桌面）
-    func captureFrame(completion: ((Bool) -> Void)? = nil) {
-        snapshotWebView { [weak self] image in
-            guard let image = image else {
-                completion?(false)
-                return
-            }
-            let success = self?.saveImage(image) ?? false
-            completion?(success)
+    func captureFrame(screen: Int = 0, completion: ((Bool) -> Void)? = nil) {
+        snapshotWebView(screen: screen) { [weak self] image in
+            guard let image = image else { completion?(false); return }
+            completion?(self?.saveImage(image, screen: screen) ?? false)
         }
     }
 }
@@ -1936,13 +1785,20 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
 private final class DesktopWallpaperManager {
     static let shared = DesktopWallpaperManager()
 
-    private var currentWallpaperPath: String?
-    private var isRunning = false
-    private var isPaused = false
-    private var isWebMode = false
-    private var desktopCaptureSlot = 0
-    /// scene 切换时作废尚未触发的首次截图延迟任务，避免旧 completion 与新壁纸错乱
-    private var sceneLoadGeneration: UInt64 = 0
+    /// 每个屏幕独立的壁纸状态
+    private struct ScreenState {
+        var wallpaperPath: String?
+        var isWebMode: Bool = false
+        var isRunning: Bool = false
+        var isPaused: Bool = false
+        var sceneLoadGeneration: UInt64 = 0
+        var desktopCaptureSlot: Int = 0
+    }
+
+    private var screenStates: [Int: ScreenState] = [:]
+
+    /// 所有屏幕共享的原始壁纸备份（首次设置时保存，全部停止后恢复）
+    private var activeScreenCount: Int = 0
 
     /// Scene 首帧：不再固定等 5s；轮询直到渲染尺寸就绪、画面非黑且略稳定（或超时兜底）
     private enum SceneFirstFramePolicy {
@@ -1962,19 +1818,19 @@ private final class DesktopWallpaperManager {
 
     private let originalWallpaperKey = "renderer_original_wallpaper_v1"
     private(set) var lastErrorMessage: String?
-    private var currentScreen: Int? = nil
 
     private init() {}
 
     func setWallpaper(path: String, width: Int = 1920, height: Int = 1080, screen: Int? = nil, completion: ((Bool) -> Void)? = nil) {
         let path = resolveSteamWorkshopDirectoryIfNeeded(path)
-        dlog("[DesktopWallpaperManager] setWallpaper path=\(path) width=\(width) height=\(height) screen=\(screen ?? -1)")
+        let screenIdx = screen ?? 0
+        dlog("[DesktopWallpaperManager] setWallpaper path=\(path) width=\(width) height=\(height) screen=\(screenIdx)")
 
         lastErrorMessage = nil
 
         // 提前检测并拦截不支持的类型
-        isWebMode = isWebWallpaper(path: path)
-        if !isWebMode {
+        let webMode = isWebWallpaper(path: path)
+        if !webMode {
             if let type = detectWallpaperProjectType(path: path) {
                 let lower = type.lowercased()
                 if !["web", "scene", "video"].contains(lower) {
@@ -1987,38 +1843,48 @@ private final class DesktopWallpaperManager {
             }
         }
 
-        // Save original desktop wallpaper once
-        if !isRunning {
+        // 先停掉该屏幕上已有的壁纸（不影响其它屏幕）
+        if screenStates[screenIdx]?.isRunning == true {
+            stopWallpaper(screen: screenIdx)
+        }
+
+        // Save original desktop wallpaper once (first wallpaper across all screens)
+        if activeScreenCount == 0 {
             saveOriginalWallpaper()
         }
 
-        // 清掉旧截图与桌面用副本，切换 scene/web 时避免继续显示上一张
-        try? FileManager.default.removeItem(atPath: PRIMARY_CAPTURE_PATH)
-        try? FileManager.default.removeItem(atPath: DESK_CAPTURE_PATH_0)
-        try? FileManager.default.removeItem(atPath: DESK_CAPTURE_PATH_1)
-        desktopCaptureSlot = 0
+        // 清掉该屏幕的旧截图与桌面用副本
+        let capPath = primaryCapturePath(for: screenIdx)
+        try? FileManager.default.removeItem(atPath: capPath)
+        try? FileManager.default.removeItem(atPath: deskCapturePath(for: screenIdx, slot: 0))
+        try? FileManager.default.removeItem(atPath: deskCapturePath(for: screenIdx, slot: 1))
 
-        currentWallpaperPath = path
-        currentScreen = screen
-        isRunning = true
-        isPaused = false
+        // 初始化该屏幕的壁纸状态
+        var state = ScreenState()
+        state.wallpaperPath = path
+        state.isWebMode = webMode
+        state.isRunning = true
+        state.isPaused = false
+        state.desktopCaptureSlot = 0
+        screenStates[screenIdx] = state
+        activeScreenCount += 1
 
-        if isWebMode {
-            WebRendererBridge.shared.loadWallpaper(path: path, width: width, height: height, screen: screen) { [weak self] success in
+        if webMode {
+            WebRendererBridge.shared.loadWallpaper(path: path, width: width, height: height, screen: screenIdx) { [weak self] success in
                 guard let self = self else { return }
-                print("[DesktopWallpaperManager] Web wallpaper load result: \(success)")
+                print("[DesktopWallpaperManager] Web wallpaper load result: \(success) screen=\(screenIdx)")
                 if !success {
                     let msg = "Web 壁纸渲染引擎加载失败，可能因资源不完整或浏览器引擎初始化错误"
                     dlog("[DesktopWallpaperManager] Web wallpaper load failed: \(msg)")
                     self.lastErrorMessage = msg
-                    self.isRunning = false
-                    self.isWebMode = false
-                    self.currentWallpaperPath = nil
-                    self.currentScreen = nil
-                    self.restoreOriginalWallpaper()
+                    self.screenStates[screenIdx] = nil
+                    self.activeScreenCount -= 1
+                    if self.activeScreenCount == 0 {
+                        self.restoreOriginalWallpaper()
+                    }
                 } else {
-                    // 首帧截图推送系统桌面（锁屏/调度中心等），之后由 desktopWindow 层级的动态窗口直接渲染
-                    self.applyCaptureAsDesktopWallpaper(screen: screen)
+                    // 首帧截图推系统桌面（锁屏/调度中心等），之后由 desktopWindow 层级的动态窗口直接渲染
+                    self.applyCaptureAsDesktopWallpaper(screen: screenIdx)
                 }
                 NSApp.setActivationPolicy(.prohibited)
                 completion?(success)
@@ -2026,76 +1892,82 @@ private final class DesktopWallpaperManager {
             return
         }
 
-        sceneLoadGeneration += 1
-        let loadGen = sceneLoadGeneration
+        // Scene 壁纸
+        screenStates[screenIdx]?.sceneLoadGeneration += 1
+        let loadGen = screenStates[screenIdx]?.sceneLoadGeneration ?? 0
 
-        RendererBridge.shared.loadWallpaper(path: path, width: width, height: height)
-        if let s = screen {
-            RendererBridge.shared.setScreen(s)
-        }
-        RendererBridge.shared.setDesktopWindow(true)
-        RendererBridge.shared.showWindow()
-        fixupRendererWindow(screen: screen)
+        RendererBridge.shared.loadWallpaper(path: path, width: width, height: height, screen: screenIdx)
+        RendererBridge.shared.setScreen(screenIdx, screen: screenIdx)
+        RendererBridge.shared.setDesktopWindow(true, screen: screenIdx)
+        RendererBridge.shared.showWindow(screen: screenIdx)
+        fixupRendererWindow(screen: screenIdx)
 
-        beginSceneFirstCapture(path: path, loadGen: loadGen, screen: screen, completion: completion)
+        beginSceneFirstCapture(path: path, loadGen: loadGen, screen: screenIdx, completion: completion)
     }
 
     /// Scene：自适应首帧截图时机（主线程；依赖 OpenGL 读回）
-    private func beginSceneFirstCapture(path: String, loadGen: UInt64, screen: Int?, completion: ((Bool) -> Void)?) {
+    /// Scene：自适应首帧截图时机（主线程；依赖 OpenGL 读回）
+    private func beginSceneFirstCapture(path: String, loadGen: UInt64, screen: Int, completion: ((Bool) -> Void)?) {
         final class SceneSettleState {
             var lastThumb: [UInt8]?
             var stablePasses = 0
             var consecutiveNonBlack = 0
         }
-        let state = SceneSettleState()
+        let settleState = SceneSettleState()
         let t0 = Date()
+        let screenIdx = screen
+        let capPath = primaryCapturePath(for: screenIdx)
 
         func complete(success: Bool) {
-            guard loadGen == sceneLoadGeneration, currentWallpaperPath == path else {
-                if !success { lastErrorMessage = "场景渲染期间壁纸路径或加载批次已变更" }
+            guard loadGen == self.screenStates[screenIdx]?.sceneLoadGeneration,
+                  self.screenStates[screenIdx]?.wallpaperPath == path else {
+                if !success { self.lastErrorMessage = "场景渲染期间壁纸路径或加载批次已变更" }
                 completion?(false)
                 return
             }
             if success {
-                print("[DesktopWallpaperManager] Scene first capture OK → \(PRIMARY_CAPTURE_PATH)")
-                applyCaptureAsDesktopWallpaper(screen: screen)
+                print("[DesktopWallpaperManager] Scene first capture OK screen=\(screenIdx) → \(capPath)")
+                self.applyCaptureAsDesktopWallpaper(screen: screenIdx)
                 // 不再持续推送：scene 由 OpenGL 窗口直接渲染，锁屏/静态桌面只保留首帧
             } else {
-                lastErrorMessage = "场景渲染器超时或截图失败，可能是 GPU/内存资源不足或壁纸资源损坏"
-                dlog("[DesktopWallpaperManager] Scene first capture failed: \(lastErrorMessage ?? "")")
-                isRunning = false
-                isWebMode = false
-                currentWallpaperPath = nil
-                currentScreen = nil
-                restoreOriginalWallpaper()
+                self.lastErrorMessage = "场景渲染器超时或截图失败，可能是 GPU/内存资源不足或壁纸资源损坏"
+                dlog("[DesktopWallpaperManager] Scene first capture failed: \(self.lastErrorMessage ?? "")")
+                self.screenStates[screenIdx] = nil
+                self.activeScreenCount -= 1
+                if self.activeScreenCount == 0 {
+                    self.restoreOriginalWallpaper()
+                }
             }
             NSApp.setActivationPolicy(.prohibited)
             completion?(success)
         }
 
         func scheduleStep() {
-            guard loadGen == sceneLoadGeneration, currentWallpaperPath == path, isRunning, !isWebMode else {
+            guard loadGen == self.screenStates[screenIdx]?.sceneLoadGeneration,
+                  self.screenStates[screenIdx]?.wallpaperPath == path,
+                  self.screenStates[screenIdx]?.isRunning == true,
+                  self.screenStates[screenIdx]?.isWebMode == false else {
                 completion?(false)
                 return
             }
 
             let elapsed = Date().timeIntervalSince(t0)
             if elapsed >= SceneFirstFramePolicy.maxElapsed {
-                let url = URL(fileURLWithPath: PRIMARY_CAPTURE_PATH)
-                let ok = RendererBridge.shared.saveCapture(to: url)
+                let url = URL(fileURLWithPath: capPath)
+                let ok = RendererBridge.shared.saveCapture(to: url, screen: screenIdx)
                 dlog("[DesktopWallpaperManager] Scene first capture timeout elapsed=\(String(format: "%.2f", elapsed))s saveOk=\(ok)")
                 complete(success: ok)
                 return
             }
 
-            let rw = RendererBridge.shared.renderWidth
-            let rh = RendererBridge.shared.renderHeight
+            let rw = RendererBridge.shared.renderWidth(screen: screenIdx)
+            let rh = RendererBridge.shared.renderHeight(screen: screenIdx)
             if rw < SceneFirstFramePolicy.minRenderSize || rh < SceneFirstFramePolicy.minRenderSize {
                 DispatchQueue.main.asyncAfter(deadline: .now() + SceneFirstFramePolicy.pollInterval) { scheduleStep() }
                 return
             }
 
-            guard let cg = RendererBridge.shared.captureFrame(),
+            guard let cg = RendererBridge.shared.captureFrame(screen: screenIdx),
                   let thumb = waifuXGrayscaleThumb(from: cg, dimension: 48) else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + SceneFirstFramePolicy.pollInterval) { scheduleStep() }
                 return
@@ -2104,27 +1976,27 @@ private final class DesktopWallpaperManager {
             let luma = Double(thumb.reduce(0) { $0 + Int($1) }) / Double(thumb.count * 255)
             let notBlack = luma >= SceneFirstFramePolicy.minMeanLuma
             if notBlack {
-                state.consecutiveNonBlack += 1
+                settleState.consecutiveNonBlack += 1
             } else {
-                state.consecutiveNonBlack = 0
+                settleState.consecutiveNonBlack = 0
             }
 
-            if let prev = state.lastThumb, elapsed >= SceneFirstFramePolicy.minElapsedBeforeCapture {
+            if let prev = settleState.lastThumb, elapsed >= SceneFirstFramePolicy.minElapsedBeforeCapture {
                 let diff = waifuXMeanAbsDiffGrayscale(prev, thumb)
                 if diff < SceneFirstFramePolicy.stableDiffThreshold, notBlack {
-                    state.stablePasses += 1
+                    settleState.stablePasses += 1
                 } else {
-                    state.stablePasses = 0
+                    settleState.stablePasses = 0
                 }
             }
-            state.lastThumb = thumb
+            settleState.lastThumb = thumb
 
-            let url = URL(fileURLWithPath: PRIMARY_CAPTURE_PATH)
+            let url = URL(fileURLWithPath: capPath)
             var shouldSave = false
-            if state.stablePasses >= SceneFirstFramePolicy.stablePassesRequired, notBlack {
+            if settleState.stablePasses >= SceneFirstFramePolicy.stablePassesRequired, notBlack {
                 shouldSave = true
                 dlog("[DesktopWallpaperManager] Scene first capture: stable (diff settled) elapsed=\(String(format: "%.2f", elapsed))s")
-            } else if state.consecutiveNonBlack >= SceneFirstFramePolicy.consecutiveNonBlackFrames,
+            } else if settleState.consecutiveNonBlack >= SceneFirstFramePolicy.consecutiveNonBlackFrames,
                       elapsed >= SceneFirstFramePolicy.minElapsedBeforeCapture, notBlack {
                 shouldSave = true
                 dlog("[DesktopWallpaperManager] Scene first capture: consecutive non-black elapsed=\(String(format: "%.2f", elapsed))s")
@@ -2134,7 +2006,7 @@ private final class DesktopWallpaperManager {
             }
 
             if shouldSave {
-                if RendererBridge.shared.saveCapture(to: url) {
+                if RendererBridge.shared.saveCapture(to: url, screen: screenIdx) {
                     complete(success: true)
                 } else {
                     DispatchQueue.main.asyncAfter(deadline: .now() + SceneFirstFramePolicy.pollInterval) { scheduleStep() }
@@ -2148,88 +2020,108 @@ private final class DesktopWallpaperManager {
         DispatchQueue.main.asyncAfter(deadline: .now() + SceneFirstFramePolicy.initialDelay) { scheduleStep() }
     }
 
-    func pauseWallpaper() {
-        guard isRunning, !isPaused else { return }
-        if isWebMode {
-            WebRendererBridge.shared.pause()
+    func pauseWallpaper(screen: Int = 0) {
+        guard let state = screenStates[screen], state.isRunning, !state.isPaused else { return }
+        if state.isWebMode {
+            WebRendererBridge.shared.pause(screen: screen)
             // 暂停后截取一帧推送系统桌面（动态窗口已隐藏，桌面需要静态图兜底）
-            WebRendererBridge.shared.captureFrame { [weak self] success in
+            WebRendererBridge.shared.captureFrame(screen: screen) { [weak self] success in
                 if success {
-                    self?.applyCaptureAsDesktopWallpaper(screen: self?.currentScreen)
+                    self?.applyCaptureAsDesktopWallpaper(screen: screen)
                 }
             }
         } else {
-            RendererBridge.shared.pauseSceneRendering()
-            let url = URL(fileURLWithPath: PRIMARY_CAPTURE_PATH)
-            if RendererBridge.shared.saveCapture(to: url) {
-                applyCaptureAsDesktopWallpaper(screen: currentScreen)
+            RendererBridge.shared.pauseSceneRendering(screen: screen)
+            let url = URL(fileURLWithPath: primaryCapturePath(for: screen))
+            if RendererBridge.shared.saveCapture(to: url, screen: screen) {
+                applyCaptureAsDesktopWallpaper(screen: screen)
             }
         }
-        isPaused = true
+        screenStates[screen]?.isPaused = true
     }
 
-    func resumeWallpaper() {
-        guard isRunning, isPaused else { return }
-        if isWebMode {
-            WebRendererBridge.shared.resume()
+    func resumeWallpaper(screen: Int = 0) {
+        guard let state = screenStates[screen], state.isRunning, state.isPaused else { return }
+        if state.isWebMode {
+            WebRendererBridge.shared.resume(screen: screen)
         } else {
-            RendererBridge.shared.resumeSceneRendering()
-            fixupRendererWindow()
+            RendererBridge.shared.resumeSceneRendering(screen: screen)
+            fixupRendererWindow(screen: screen)
         }
-        isPaused = false
+        screenStates[screen]?.isPaused = false
     }
 
     @discardableResult
-    func applyWebWallpaperProperties(_ jsonString: String) -> Bool {
-        guard isRunning, isWebMode else { return false }
-        return WebRendererBridge.shared.applyUserProperties(jsonString: jsonString)
+    func applyWebWallpaperProperties(_ jsonString: String, screen: Int = 0) -> Bool {
+        guard let state = screenStates[screen], state.isRunning, state.isWebMode else { return false }
+        return WebRendererBridge.shared.applyUserProperties(jsonString: jsonString, screen: screen)
     }
 
     /// 设置 Web 壁纸的音频控制（静音/音量）
-    func setWebAudioControl(muted: Bool?, volume: Double?) {
-        guard isRunning, isWebMode else { return }
-        WebRendererBridge.shared.setAudioControl(muted: muted, volume: volume)
+    /// screen 为 nil 时广播到所有正在运行 web 壁纸的屏幕
+    func setWebAudioControl(muted: Bool?, volume: Double?, screen: Int? = nil) {
+        if let screen = screen {
+            guard let state = screenStates[screen], state.isRunning, state.isWebMode else { return }
+            WebRendererBridge.shared.setAudioControl(muted: muted, volume: volume, screen: screen)
+        } else {
+            // 广播到所有 web 壁纸屏幕
+            for (screenIdx, state) in screenStates where state.isRunning && state.isWebMode {
+                WebRendererBridge.shared.setAudioControl(muted: muted, volume: volume, screen: screenIdx)
+            }
+        }
     }
 
-    /// 透传 WE 音频频谱给 web renderer。仅在当前壁纸为 web 时有效；否则静默丢帧。
+    /// 透传 WE 音频频谱给 web renderer。推送到所有正在运行的 web 壁纸屏幕。
     /// 参数为 WE 标准 128 frame：0..63 = L, 64..127 = R。
     func pushWebAudioFrame(_ spectrum: [Float]) {
-        guard isRunning, isWebMode else { return }
         guard spectrum.count == 128 else { return }
+        // 推送到所有已加载的 web 壁纸屏幕（WebRendererBridge 内部会过滤）
         WebRendererBridge.shared.pushAudioFrame(spectrum)
     }
 
-    func stopWallpaper() {
-        if isWebMode {
-            WebRendererBridge.shared.stop()
+    func stopWallpaper(screen: Int = 0) {
+        guard let state = screenStates[screen] else { return }
+        if state.isWebMode {
+            WebRendererBridge.shared.stop(screen: screen)
         } else {
-            RendererBridge.shared.stop()
-            RendererBridge.shared.hideWindow()
-            RendererBridge.shared.destroy()
+            RendererBridge.shared.stop(screen: screen)
+            RendererBridge.shared.hideWindow(screen: screen)
+            RendererBridge.shared.destroy(screen: screen)
         }
-        isWebMode = false
-        try? FileManager.default.removeItem(atPath: PRIMARY_CAPTURE_PATH)
-        try? FileManager.default.removeItem(atPath: DESK_CAPTURE_PATH_0)
-        try? FileManager.default.removeItem(atPath: DESK_CAPTURE_PATH_1)
-        currentWallpaperPath = nil
-        currentScreen = nil
-        isRunning = false
-        isPaused = false
-        restoreOriginalWallpaper()
+        // 清理该屏幕的截图文件
+        try? FileManager.default.removeItem(atPath: primaryCapturePath(for: screen))
+        try? FileManager.default.removeItem(atPath: deskCapturePath(for: screen, slot: 0))
+        try? FileManager.default.removeItem(atPath: deskCapturePath(for: screen, slot: 1))
+        screenStates[screen] = nil
+        activeScreenCount -= 1
+        if activeScreenCount == 0 {
+            restoreOriginalWallpaper()
+        }
+    }
+
+    /// 停止所有屏幕上的壁纸
+    func stopAllWallpapers() {
+        for screenIdx in Array(screenStates.keys) {
+            stopWallpaper(screen: screenIdx)
+        }
     }
 
     // MARK: - Desktop Wallpaper Capture Updates
 
     /// 将主截图复制到交替路径再设为桌面图，避免系统因固定路径缓存上一张壁纸（锁屏/静态桌面不更新）
-    private func applyCaptureAsDesktopWallpaper(screen: Int? = nil) {
-        guard FileManager.default.fileExists(atPath: PRIMARY_CAPTURE_PATH) else { return }
+    private func applyCaptureAsDesktopWallpaper(screen: Int) {
+        let capPath = primaryCapturePath(for: screen)
+        guard FileManager.default.fileExists(atPath: capPath) else { return }
         guard !isDynamicLockScreenEnabledForCurrentLaunch() else {
             dlog("[DesktopWallpaperManager] Dynamic lock screen enabled; skip static capture desktop apply")
             return
         }
-        let src = URL(fileURLWithPath: PRIMARY_CAPTURE_PATH)
-        desktopCaptureSlot = 1 - desktopCaptureSlot
-        let dstPath = desktopCaptureSlot == 0 ? DESK_CAPTURE_PATH_0 : DESK_CAPTURE_PATH_1
+        let src = URL(fileURLWithPath: capPath)
+        // 交替 slot 避免系统缓存
+        let currentSlot = screenStates[screen]?.desktopCaptureSlot ?? 0
+        let newSlot = 1 - currentSlot
+        screenStates[screen]?.desktopCaptureSlot = newSlot
+        let dstPath = deskCapturePath(for: screen, slot: newSlot)
         let dst = URL(fileURLWithPath: dstPath)
         let fm = FileManager.default
         try? fm.removeItem(at: dst)
@@ -2242,25 +2134,19 @@ private final class DesktopWallpaperManager {
 
         let workspace = NSWorkspace.shared
         let screens = NSScreen.screens
-        let targetScreens: [NSScreen]
-        if let s = screen, s >= 0, s < screens.count {
-            targetScreens = [screens[s]]
-        } else {
-            targetScreens = screens
-        }
+        guard screen >= 0, screen < screens.count else { return }
+        let targetScreen = screens[screen]
 
-        for targetScreen in targetScreens {
-            do {
-                // 使用 "充满屏幕" 缩放模式，与 App 内其他壁纸设置行为一致
-                try workspace.setDesktopImageURLForAllSpaces(dst, for: targetScreen, options: [
-                    .imageScaling: NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue),
-                    .allowClipping: true
-                ])
-            } catch {
-                print("[DesktopWallpaperManager] Failed to set desktop image: \(error)")
-            }
+        do {
+            // 使用 "充满屏幕" 缩放模式，与 App 内其他壁纸设置行为一致
+            try workspace.setDesktopImageURLForAllSpaces(dst, for: targetScreen, options: [
+                .imageScaling: NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue),
+                .allowClipping: true
+            ])
+        } catch {
+            print("[DesktopWallpaperManager] Failed to set desktop image: \(error)")
         }
-        dlog("[DesktopWallpaperManager] Applied capture as desktop wallpaper for \(targetScreens.count) screen(s) via \(dstPath)")
+        dlog("[DesktopWallpaperManager] Applied capture as desktop wallpaper for screen \(screen) via \(dstPath)")
     }
 
     // （已移除 startPeriodicCapture：不再持续截图推送系统桌面）
@@ -2614,7 +2500,7 @@ private final class Daemon: NSObject, NSApplicationDelegate {
                 dlog("[Daemon] Received signal \(sig), exiting...")
                 // 同步清掉壁纸窗口、socket、PID 文件（这是 applicationWillTerminate 的核心逻辑），
                 // 然后 _exit 跳过会崩溃的 C++ 静态析构。
-                DesktopWallpaperManager.shared.stopWallpaper()
+                DesktopWallpaperManager.shared.stopAllWallpapers()
                 if self.serverSocket >= 0 {
                     close(self.serverSocket)
                     self.serverSocket = -1
@@ -2637,7 +2523,7 @@ private final class Daemon: NSObject, NSApplicationDelegate {
         prohibitionTimer = nil
         for src in signalSources { src.cancel() }
         signalSources.removeAll()
-        DesktopWallpaperManager.shared.stopWallpaper()
+        DesktopWallpaperManager.shared.stopAllWallpapers()
         if serverSocket >= 0 {
             close(serverSocket)
         }
@@ -2748,28 +2634,32 @@ private final class Daemon: NSObject, NSApplicationDelegate {
                         sendResponse("NO_PATH")
                     }
                 case .pause:
-                    DesktopWallpaperManager.shared.pauseWallpaper()
+                    DesktopWallpaperManager.shared.pauseWallpaper(screen: msg.screen ?? 0)
                     sendResponse("OK")
                 case .resume:
-                    DesktopWallpaperManager.shared.resumeWallpaper()
+                    DesktopWallpaperManager.shared.resumeWallpaper(screen: msg.screen ?? 0)
                     sendResponse("OK")
                 case .stop:
-                    DesktopWallpaperManager.shared.stopWallpaper()
+                    if let screen = msg.screen {
+                        DesktopWallpaperManager.shared.stopWallpaper(screen: screen)
+                    } else {
+                        DesktopWallpaperManager.shared.stopAllWallpapers()
+                    }
                     sendResponse("OK")
                 case .applyProperties:
                     if let propertiesJSON = msg.propertiesJSON {
-                        let applied = DesktopWallpaperManager.shared.applyWebWallpaperProperties(propertiesJSON)
-                        dlog("[Daemon] applyProperties applied=\(applied)")
+                        let applied = DesktopWallpaperManager.shared.applyWebWallpaperProperties(propertiesJSON, screen: msg.screen ?? 0)
+                        dlog("[Daemon] applyProperties applied=\(applied) screen=\(msg.screen ?? 0)")
                         if applied {
                             sendResponse("OK")
                         } else {
-                            sendResponse("ERROR:当前没有运行中的 Web 壁纸可应用属性")
+                            sendResponse("ERROR:当前屏幕没有运行中的 Web 壁纸可应用属性")
                         }
                     } else {
                         sendResponse("ERROR:缺少 propertiesJSON")
                     }
                 case .audioControl:
-                    DesktopWallpaperManager.shared.setWebAudioControl(muted: msg.muted, volume: msg.volume)
+                    DesktopWallpaperManager.shared.setWebAudioControl(muted: msg.muted, volume: msg.volume, screen: msg.screen)
                     sendResponse("OK")
                 case .audioData:
                     if let spec = msg.spectrum, spec.count == 128 {
@@ -2994,8 +2884,8 @@ private func sceneBakePerform(_ cfg: SceneOfflineBakeConfig) throws {
         var progress: Float = 0
         sceneBakeOnMain {
             let ok = RendererBridge.shared.tickOnce()
-            progress = RendererBridge.shared.bakeProgress
-            if !ok || !RendererBridge.shared.isBaking {
+            progress = RendererBridge.shared.bakeProgress()
+            if !ok || !RendererBridge.shared.isBaking() {
                 done = true
             }
         }
@@ -3409,17 +3299,18 @@ struct WallpaperEngineCLI {
             }
 
             if command == "set" {
-                // 总是先清理旧 daemon 并启动新版本，避免旧版本残留导致行为不一致
-                stopDaemonIfRunning()
-                startDaemonProcess()
-                var attempts = 0
-                while !isDaemonRunning() && attempts < 30 {
-                    Thread.sleep(forTimeInterval: 0.1)
-                    attempts += 1
-                }
-                guard isDaemonRunning() else {
-                    print("Failed to start daemon.")
-                    exit(1)
+                // 复用已有 daemon（支持多屏各自独立壁纸）；仅在 daemon 未运行时启动新的
+                if !isDaemonRunning() {
+                    startDaemonProcess()
+                    var attempts = 0
+                    while !isDaemonRunning() && attempts < 30 {
+                        Thread.sleep(forTimeInterval: 0.1)
+                        attempts += 1
+                    }
+                    guard isDaemonRunning() else {
+                        print("Failed to start daemon.")
+                        exit(1)
+                    }
                 }
             } else {
                 guard isDaemonRunning() else {
@@ -3446,16 +3337,37 @@ struct WallpaperEngineCLI {
             case "apply-properties":
                 let applyArgs = Array(remainingArgs.dropFirst())
                 guard !applyArgs.isEmpty else {
-                    print("Usage: wallpaperengine-cli apply-properties <json>")
+                    print("Usage: wallpaperengine-cli apply-properties <json> [screen_index]")
                     exit(1)
                 }
-                msg = IPCMessage(command: .applyProperties, path: nil, screen: nil, propertiesJSON: applyArgs.joined(separator: " "))
+                var jsonStr = applyArgs.joined(separator: " ")
+                var applyScreen: Int? = nil
+                if applyArgs.count > 1, let s = Int(applyArgs.last!) {
+                    applyScreen = s
+                    jsonStr = applyArgs.dropLast().joined(separator: " ")
+                }
+                msg = IPCMessage(command: .applyProperties, path: nil, screen: applyScreen, propertiesJSON: jsonStr)
             case "pause":
-                msg = IPCMessage(command: .pause, path: nil, screen: nil)
+                let pauseArgs = Array(remainingArgs.dropFirst())
+                var pauseScreen: Int? = nil
+                if let s = pauseArgs.first, let screenIdx = Int(s) {
+                    pauseScreen = screenIdx
+                }
+                msg = IPCMessage(command: .pause, path: nil, screen: pauseScreen)
             case "resume":
-                msg = IPCMessage(command: .resume, path: nil, screen: nil)
+                let resumeArgs = Array(remainingArgs.dropFirst())
+                var resumeScreen: Int? = nil
+                if let s = resumeArgs.first, let screenIdx = Int(s) {
+                    resumeScreen = screenIdx
+                }
+                msg = IPCMessage(command: .resume, path: nil, screen: resumeScreen)
             case "stop", "exit":
-                msg = IPCMessage(command: .stop, path: nil, screen: nil)
+                let stopArgs = Array(remainingArgs.dropFirst())
+                var stopScreen: Int? = nil
+                if let s = stopArgs.first, let screenIdx = Int(s) {
+                    stopScreen = screenIdx
+                }
+                msg = IPCMessage(command: .stop, path: nil, screen: stopScreen)
             default:
                 print("Unknown command: \(command)")
                 exit(1)

@@ -637,7 +637,9 @@ final class GuessYouLikeService {
                 imageURL: m.thumbnailURL.absoluteString,
                 destination: m.pageURL.absoluteString,
                 contentType: .video,
-                sourceName: RecommendationSource.dongtai.displayName
+                sourceName: RecommendationSource.dongtai.displayName,
+                previewVideoURL: m.previewVideoURL?.absoluteString,
+                downloadOptions: m.downloadOptions
             )
         }
     }
@@ -670,7 +672,9 @@ final class GuessYouLikeService {
                     imageURL: m.coverImageURL.absoluteString,
                     destination: m.pageURL.absoluteString,
                     contentType: .video,
-                    sourceName: RecommendationSource.wallsflow.displayName
+                    sourceName: RecommendationSource.wallsflow.displayName,
+                    previewVideoURL: m.previewVideoURL?.absoluteString,
+                    downloadOptions: m.downloadOptions
                 )
             }
         } catch {

@@ -26,6 +26,7 @@ private struct WebDaemonAudioMessage: Codable {
     let command: String
     let muted: Bool?
     let volume: Double?
+    let screen: Int?
 }
 
 /// 与 wallpaperengine-cli daemon IPC 的音频频谱数据消息。
@@ -363,19 +364,30 @@ final class WallpaperEngineXBridge: ObservableObject {
         let shouldStopWebForTargets = !targetWebStates.isEmpty
             || (screenRenderStates.isEmpty && activeRenderKind == .web)
 
-        // 如果目标屏幕原先由旧 Web daemon 管理，需要停掉 daemon；不要误伤其他屏幕的 Web 壁纸。
+        // 如果目标屏幕原先有 Web 壁纸，通过 daemon IPC 停掉这些屏幕的 web 壁纸（不影响其它屏幕）
         if renderKind != .web && shouldStopWebForTargets {
-            await Self.killLegacyDaemonIfRunning(waitForExit: true)
+            print("[WallpaperEngineXBridge] 目标屏幕原有 Web 壁纸，通过 daemon IPC 逐屏停止")
+            for state in targetWebStates {
+                // 通过 daemon 的 stop 命令按屏幕停止 web 壁纸
+                let screenIdx = NSScreen.screens.firstIndex(where: { $0.wallpaperScreenIdentifier == state.screenID }) ?? 0
+                try? await Self.runLegacyCLIClientCommand(["stop", String(screenIdx)])
+            }
             webRenderer.stop()
-            screenRenderStates = screenRenderStates.filter { $0.value.renderKind != .web }
+            for state in targetWebStates {
+                screenRenderStates.removeValue(forKey: state.screenID)
+            }
         }
 
-        // 切到 Web 壁纸前，必须停掉所有正在运行的 scene (wallpaper-wgpu) 进程。
-        // CLI daemon 是全局单壁纸模型（每次 set 都重启 daemon），无法与 wallpaper-wgpu 共存；
-        // 残留的 scene 进程会在桌面上留下无人管理的 Metal 渲染窗口。
-        if renderKind == .web && !screenProcesses.isEmpty {
-            print("[WallpaperEngineXBridge] 切换到 Web 壁纸，清理全部 \(screenProcesses.count) 个 scene 渲染进程")
-            await stopRenderProcessBeforeLaunch()
+        // 切到 Web 壁纸前，停掉目标屏幕上正在运行的 scene (wallpaper-wgpu) 进程（不影响其它屏幕）
+        if renderKind == .web {
+            let targetScreenIDs = Set(effectiveScreens.map(\.wallpaperScreenIdentifier))
+            let sceneScreenIDsToStop = screenProcesses.keys.filter { targetScreenIDs.contains($0) }
+            if !sceneScreenIDsToStop.isEmpty {
+                print("[WallpaperEngineXBridge] 切换到 Web 壁纸，清理目标屏幕 \(sceneScreenIDsToStop.count) 个 scene 渲染进程")
+                for screenID in sceneScreenIDsToStop {
+                    await stopScreenProcess(screenID)
+                }
+            }
         }
 
         if renderKind == .web {
@@ -881,9 +893,9 @@ final class WallpaperEngineXBridge: ObservableObject {
     }
 
     /// 通过 Unix Socket 直接向 wallpaperengine-cli daemon 发送音频控制 IPC
-    private func sendAudioControlToWebDaemon(muted: Bool?, volume: Double?) {
+    private func sendAudioControlToWebDaemon(muted: Bool?, volume: Double?, screen: Int? = nil) {
         let socketPath = "/tmp/wallpaperengine-cli.sock"
-        let msg = WebDaemonAudioMessage(command: "audioControl", muted: muted, volume: volume)
+        let msg = WebDaemonAudioMessage(command: "audioControl", muted: muted, volume: volume, screen: screen)
         guard let data = try? JSONEncoder().encode(msg) else { return }
 
         // 整段 socket I/O 丢到后台队列：
@@ -1246,7 +1258,7 @@ final class WallpaperEngineXBridge: ObservableObject {
         // 初始化 Web 壁纸的音频状态（同步当前 mute/volume）
         let isMuted = VideoWallpaperManager.shared.isMuted
         let volume = VideoWallpaperManager.shared.volume
-        sendAudioControlToWebDaemon(muted: isMuted, volume: isMuted ? nil : volume)
+        sendAudioControlToWebDaemon(muted: isMuted, volume: isMuted ? nil : volume, screen: screenIndex)
     }
 
     private func syncWebStaticFrameToLockScreenIfNeeded(imageURL: URL?, targetScreens: [NSScreen]?) async {

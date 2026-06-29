@@ -74,16 +74,14 @@ final class WallpaperState: Sendable {
         )
     }
 
-    /// 清除缓存的 URL，使下次查找重新评估当前库。
-    /// 同时清理 pendingVideoSwitches，避免 App 库变化后 pending URL 指向已删除/重命名的视频。
+    /// 清除库级别的缓存 URL，使下次查找重新评估当前库。
+    /// 不清理 pendingVideoSwitches 和 per-display 热切换缓存（cachedVideoURLs/cachedImageURLs），
+    /// 这些是 socket 命令级别的状态，不应因 prefs 变化通知而丢失。
     func clearCaches() {
         lock.withLock { state in
             state.cachedVideoURL = nil
             state.cachedImageURL = nil
             state.cachedThumbnailURL = nil
-            state.cachedVideoURLs.removeAll()
-            state.cachedImageURLs.removeAll()
-            state.pendingVideoSwitches.removeAll()
         }
     }
 
@@ -203,20 +201,18 @@ final class WallpaperState: Sendable {
 
     func updateContextDisplayID(wallpaperID: String, displayID: UInt32) {
         lock.withLock { state in
-            guard let pair = state.activeContexts.first(where: { $0.value.wallpaperID == wallpaperID }),
-                  pair.value.displayID != displayID else {
-                return
+            let matching = state.activeContexts.filter { $0.value.wallpaperID == wallpaperID && $0.value.displayID != displayID }
+            for (key, old) in matching {
+                state.activeContexts[key] = ActiveWallpaper(
+                    caContext: old.caContext,
+                    rootLayer: old.rootLayer,
+                    renderer: old.renderer,
+                    displayID: displayID,
+                    videoID: old.videoID,
+                    contextId: old.contextId,
+                    wallpaperID: old.wallpaperID
+                )
             }
-            let old = pair.value
-            state.activeContexts[pair.key] = ActiveWallpaper(
-                caContext: old.caContext,
-                rootLayer: old.rootLayer,
-                renderer: old.renderer,
-                displayID: displayID,
-                videoID: old.videoID,
-                contextId: pair.key,
-                wallpaperID: old.wallpaperID
-            )
         }
     }
 

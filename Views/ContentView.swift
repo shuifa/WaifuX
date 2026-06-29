@@ -585,12 +585,12 @@ struct ContentView: View {
             resolutionLabel: item.subtitle,
             collectionTitle: item.sourceName,
             summary: nil,
-            previewVideoURL: nil,
+            previewVideoURL: item.previewVideoURL.flatMap { URL(string: $0) },
             posterURL: URL(string: item.imageURL),
             tags: [],
             exactResolution: nil,
             durationSeconds: nil,
-            downloadOptions: [],
+            downloadOptions: item.downloadOptions,
             sourceName: sourceName,
             isAnimatedImage: nil
         )

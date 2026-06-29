@@ -18,6 +18,7 @@ final class WebPropertyEditorPanelController {
     private var currentType: WallpaperEditorType = .scene
     private var currentTitle: String = "设计场景"
     private var applyTask: Task<Void, Never>?
+    private var pendingInject: String?
 
     private init() {}
 
@@ -92,6 +93,7 @@ final class WebPropertyEditorPanelController {
         userContentController.add(handler, name: "closePanel")
         userContentController.add(handler, name: "resetAll")
         userContentController.add(handler, name: "selectFile")
+        userContentController.add(handler, name: "editorReady")
 
         config.userContentController = userContentController
 
@@ -132,10 +134,8 @@ final class WebPropertyEditorPanelController {
             let type = currentType
             let path = wallpaperPath
             if type == .sceneConfig {
-                // SceneConfigOverrideService is @MainActor, load directly
                 result = try Self.loadSceneConfigData(for: path)
             } else {
-                // loadPropertyData calls @MainActor services, so run on main actor
                 result = try Self.loadPropertyData(for: path, type: type)
             }
         } catch {
@@ -143,14 +143,7 @@ final class WebPropertyEditorPanelController {
             return
         }
 
-        // Load HTML
-        webView.loadHTMLString(htmlContent, baseURL: nil)
-
-        // Wait for DOM ready
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        guard !Task.isCancelled else { return }
-
-        // Serialize and inject
+        // Build injection script (will be executed when HTML signals DOM ready)
         let propertiesJSON = try? JSONSerialization.data(
             withJSONObject: result.properties.map { $0.toDict() },
             options: []
@@ -173,7 +166,29 @@ final class WebPropertyEditorPanelController {
         if (typeof initFromData === 'function') initFromData();
         """
 
-        webView.evaluateJavaScript(injectScript) { _, error in
+        pendingInject = injectScript
+
+        // Load HTML — the page will post "editorReady" when DOM is ready
+        webView.loadHTMLString(htmlContent, baseURL: nil)
+
+        // Safety timeout: if editorReady never arrives (e.g. JS error), inject after 3s
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        guard !Task.isCancelled else { return }
+        if let script = pendingInject {
+            pendingInject = nil
+            webView.evaluateJavaScript(script) { _, error in
+                if let error = error {
+                    print("[WebPropertyEditor] JS fallback inject failed: \(error)")
+                }
+            }
+        }
+    }
+
+    /// Called when HTML page signals DOM is ready
+    func handleEditorReady() {
+        guard let webView = webView, let script = pendingInject else { return }
+        pendingInject = nil
+        webView.evaluateJavaScript(script) { _, error in
             if let error = error {
                 print("[WebPropertyEditor] JS inject failed: \(error)")
             }
@@ -696,6 +711,8 @@ private final class ScriptMessageHandlerProxy: NSObject, WKScriptMessageHandler 
                     let isDirectory = body["isDirectory"] as? Bool ?? false
                     target.handleSelectFile(key: key, isDirectory: isDirectory)
                 }
+            case "editorReady":
+                target.handleEditorReady()
             default:
                 break
             }

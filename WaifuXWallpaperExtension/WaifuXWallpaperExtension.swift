@@ -102,12 +102,30 @@ struct WallpaperExtensionConfiguration: AppExtensionConfiguration {
         connection.invalidationHandler = { [weak handler] in
             handler?.agentProxy = nil
             let removed = WallpaperState.shared.removeAllContexts()
-            if !removed.isEmpty {
-                WallpaperPrefs.shared.setActive(false)
-                extLog("XPC invalidated — cleaned up \(removed.count) active context(s)")
-            } else {
+            guard !removed.isEmpty else {
+                // Benign teardown: no live contexts (settings-only connection, or
+                // we were already inactive). Nothing rendering, nothing to recover.
                 extLog("XPC invalidated")
+                return
             }
+            // Abnormal path: the host connection died while we still held live
+            // rendering contexts. Deep standby/hibernation tears the XPC connection
+            // down after hours asleep (it can also drop spontaneously during normal
+            // use). removeAllContexts() has freed the now-dead CAContexts, but the
+            // wallpaper is still the user's selection and WindowServer does NOT
+            // re-acquire on its own — it keeps compositing the dead surface, leaving
+            // the desktop grey/black until the wallpaper is reselected.
+            //
+            // Normal teardown (switching wallpaper, a display being removed) arrives
+            // as invalidate(withId:), which clears each context first — so `removed`
+            // is empty there and we never reach this branch. Exiting only on a
+            // mid-render disconnect lets the framework relaunch the extension fresh;
+            // the agent then re-acquires every display. This is the recovery path
+            // verified empirically by killing the extension out from under a live
+            // WallpaperAgent (it relaunched and re-acquired immediately).
+            WallpaperPrefs.shared.setActive(false)
+            extLog("XPC invalidated mid-render — freed \(removed.count) context(s); exiting to force re-acquire")
+            exit(0)
         }
 
         connection.resume()
@@ -289,21 +307,8 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
     /// 监听电源状态变化（热状态、电池、亮度）并重新计算播放策略
     private func observePowerStateChanges() {
         Task {
-            for await powerState in PowerMonitor.shared.stateChanges() {
-                let state = WallpaperState.shared
-                let prefs = WallpaperPrefs.shared
-                let policy = PlaybackPolicy.compute(
-                    presentationMode: state.presentationMode,
-                    activityState: state.activityState,
-                    userPaused: prefs.userPaused,
-                    alwaysPauseDesktop: prefs.alwaysPauseDesktop,
-                    pauseWhenOccluded: false,
-                    desktopOccluded: false,
-                    powerState: powerState
-                )
-                WallpaperState.shared.forEachRenderer { renderer in
-                    renderer.applyPolicy(policy)
-                }
+            for await _ in PowerMonitor.shared.stateChanges() {
+                WaifuXWallpaperExtension.recomputeAndApplyPolicy()
             }
         }
     }
@@ -440,7 +445,6 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                         for active in contextsWithRenderer {
                             guard let renderer = active.renderer else { continue }
                             renderer.replaceVideo(with: url)
-                            WallpaperPrefs.shared.updateCurrentVideo()
                             WallpaperXPCHandler.writeSnapshotCacheIfPossible(videoURL: url, videoID: videoID, rootLayer: active.rootLayer)
                             // 更新 context 的 videoID（保留原 wallpaperID 不变）
                             let updated = ActiveWallpaper(
@@ -454,6 +458,8 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                             )
                             _ = WallpaperState.shared.replaceContextById(contextId: active.contextId, context: updated)
                         }
+                        // 所有 context 更新完后统一写一次状态文件 + Darwin 通知，避免循环内重复 IO
+                        WallpaperPrefs.shared.updateCurrentVideo()
                         extLog("[Commands] ✅ 已热切换显示器 \(displayID) 到视频: \(videoID) (\(contextsWithRenderer.count) 个 context)")
                     }
 
@@ -467,8 +473,8 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
                         FrameChannel.shared.unregisterCallback(displayID: displayID)
                     }
                     for active in contextsWithoutRenderer {
-                        // handleSocketCommand 始终在主线程调用，rootLayer 在此之后
-                        // 不会被其他线程修改，使用 nonisolated(unsafe) 绕过严格的 Sendable 检查。
+                        // handleSocketCommand 在 wallpaperCommandQueue（后台串行队列）上调用，
+                        // rootLayer 修改需要派发到主线程（@MainActor Task 已处理）。
                         let rootLayer = active.rootLayer
                         // ⚠️ 必须 @MainActor：AVSampleBufferDisplayLayer 的创建和添加到 rootLayer
                         // 需要在主线程执行，否则视频不会动画（displayLayer 无帧输出）。
@@ -556,6 +562,9 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
     /// 重新计算播放策略并应用到所有渲染器。
     /// 处理锁屏时的竞争条件：当屏幕已锁定但 WallpaperAgent 尚未更新 presentationMode 时，
     /// 使用 "locked" 防止陈旧的桌面模式策略阻止锁屏播放。
+    ///
+    /// Per-display awareness：检查每个显示器是否有独立的暂停设置，
+    /// 避免全局 policy 覆盖用户对某一显示器的单独暂停。
     static func recomputeAndApplyPolicy() {
         let state = WallpaperState.shared
         let prefs = WallpaperPrefs.shared
@@ -565,7 +574,7 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             ? "locked"
             : state.presentationMode
 
-        let policy = PlaybackPolicy.compute(
+        let basePolicy = PlaybackPolicy.compute(
             presentationMode: effectiveMode,
             activityState: state.activityState,
             userPaused: prefs.userPaused,
@@ -574,8 +583,22 @@ final class WaifuXWallpaperExtension: NSObject, AppExtension {
             desktopOccluded: false,
             powerState: power
         )
-        WallpaperState.shared.forEachRenderer { renderer in
-            renderer.applyPolicy(policy)
+
+        // Per-display policy：检查每个显示器是否有独立的暂停设置
+        let displayIDs = state.uniqueDisplayIDs()
+        if displayIDs.isEmpty {
+            // 无 per-display 信息（向后兼容），全局应用
+            state.forEachRenderer { renderer in
+                renderer.applyPolicy(basePolicy)
+            }
+        } else {
+            for displayID in displayIDs {
+                let isDisplayPaused = prefs.isDisplayPaused(displayID)
+                let effectivePolicy: PlaybackPolicy = isDisplayPaused ? .paused : basePolicy
+                state.forRenderers(displayID: displayID) { renderer in
+                    renderer.applyPolicy(effectivePolicy)
+                }
+            }
         }
     }
 }

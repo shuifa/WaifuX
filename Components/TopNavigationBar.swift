@@ -232,7 +232,7 @@ struct HelpPopoverView: View {
                 Image(systemName: "book.closed.fill")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
-                Text("使用教程")
+                Text(t("tutorial.title"))
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
                 Spacer()
@@ -260,79 +260,82 @@ struct HelpPopoverView: View {
                     // 第1节：网络与数据源
                     tutorialSection(
                         icon: "globe",
-                        title: "网络与数据源",
+                        title: t("tutorial.network.title"),
                         lines: [
-                            "中国大陆地区需要科学上网才能正常访问。",
-                            "壁纸探索页 = 静态壁纸数据。",
-                            "媒体探索页 = 动态壁纸数据。",
-                            "点击地球仪旁边的源名称可切换数据源。"
+                            t("tutorial.network.l1"),
+                            t("tutorial.network.l2"),
+                            t("tutorial.network.l3"),
+                            t("tutorial.network.l4")
                         ]
                     )
 
                     // 第2节：壁纸引擎
                     tutorialSection(
                         icon: "rectangle.and.text.magnifyingglass",
-                        title: "壁纸引擎",
+                        title: t("tutorial.we.title"),
                         lines: [
-                            "需在 设置 > 壁纸引擎 登录自己的 Steam 账号。",
-                            "必须入库壁纸引擎软件，否则无法下载。"
+                            t("tutorial.we.l1"),
+                            t("tutorial.we.l2")
                         ]
                     )
 
                     // 第3节：设置功能
                     tutorialSection(
                         icon: "gearshape.2",
-                        title: "设置功能",
+                        title: t("tutorial.settings.title"),
                         lines: [
-                            "设置内有自动切换、锁屏壁纸同步等开关，",
-                            "请自行摸索，建议完整查看设置里所有功能。"
+                            t("tutorial.settings.l1"),
+                            t("tutorial.settings.l2")
                         ]
                     )
 
                     // 第4节：我的库与导入
                     tutorialSection(
                         icon: "tray.and.arrow.down.fill",
-                        title: "我的库与导入",
+                        title: t("tutorial.library.title"),
                         lines: [
-                            "自己的资源（含壁纸引擎资源）可在「我的库」导入。",
-                            "同步订阅：我的库 > 点击更多按钮 > 同步订阅，",
-                            "需额外登录 Web Steam，",
-                            "点击右下角按钮前往订阅页并确认同步，",
-                            "等待获取订阅数据后勾选需要同步的数据。",
-                            "如需知道源文件储存在哪里，点击打开文件夹即可。"
+                            t("tutorial.library.l1"),
+                            t("tutorial.library.l2"),
+                            t("tutorial.library.l3"),
+                            t("tutorial.library.l4"),
+                            t("tutorial.library.l5"),
+                            t("tutorial.library.l6")
                         ]
                     )
 
                     // 第5节：壁纸详情
                     tutorialSection(
                         icon: "doc.text.magnifyingglass",
-                        title: "壁纸 / 媒体详情",
+                        title: t("tutorial.detail.title"),
                         lines: [
-                            "详情页作者标签可点击，弹出该作者作品列表",
-                            "（WallHaven 与壁纸引擎源均支持）。",
-                            "点击更多（…）按钮有更多操作选项。",
-                            "如有壁纸渲染问题，复制链接反馈即可。"
+                            t("tutorial.detail.l1"),
+                            t("tutorial.detail.l2"),
+                            t("tutorial.detail.l3"),
+                            t("tutorial.detail.l4"),
+                            t("tutorial.detail.l5")
                         ]
                     )
 
                     // 第6节：场景/Web壁纸编辑
                     tutorialSection(
                         icon: "pencil.and.outline",
-                        title: "场景 / Web 壁纸",
+                        title: t("tutorial.sceneWeb.title"),
                         lines: [
-                            "在菜单栏操作编辑场景与 Web 壁纸。",
-                            "可控制壁纸静音、比例设置等功能。",
-                            "请按照显示器实际情况调整参数。"
+                            t("tutorial.sceneWeb.l1"),
+                            t("tutorial.sceneWeb.l2"),
+                            t("tutorial.sceneWeb.l3")
                         ]
                     )
 
                     // 第7节：动态锁屏
                     tutorialSection(
                         icon: "lock.display",
-                        title: "动态锁屏",
+                        title: t("tutorial.lockScreen.title"),
                         lines: [
-                            "仅支持 macOS 26 及以上版本，以下版本不支持。",
-                            "后续是否支持取决于苹果是否保留此私有 API。"
+                            t("tutorial.lockScreen.l1"),
+                            t("tutorial.lockScreen.l2"),
+                            t("tutorial.lockScreen.l3"),
+                            t("tutorial.lockScreen.l4")
                         ]
                     )
                 }
@@ -343,7 +346,7 @@ struct HelpPopoverView: View {
 
             // 底部提示
             VStack(spacing: 4) {
-                Text("点击外部任意区域关闭")
+                Text(t("tutorial.closeHint"))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.35))
             }
