@@ -1261,8 +1261,8 @@ final class WallpaperEngineXBridge: ObservableObject {
             try? await applyWebWallpaperProperties(propertiesJSON)
         }
 
-        let captureURL = await captureWebFallbackFrameForLockScreenIfNeeded()
-        await syncWebStaticFrameToLockScreenIfNeeded(imageURL: captureURL, targetScreens: targetScreens)
+        let captureURLs = await captureWebFallbackFramesForLockScreenIfNeeded(targetScreens: targetScreens)
+        await syncWebStaticFramesToLockScreenIfNeeded(imageURLs: captureURLs, targetScreens: targetScreens)
 
         // 初始化 Web 壁纸的音频状态（同步当前 mute/volume）
         let isMuted = VideoWallpaperManager.shared.isMuted
@@ -1270,50 +1270,68 @@ final class WallpaperEngineXBridge: ObservableObject {
         sendAudioControlToWebDaemon(muted: isMuted, volume: isMuted ? nil : volume, screen: screenIndex)
     }
 
-    private func syncWebStaticFrameToLockScreenIfNeeded(imageURL: URL?, targetScreens: [NSScreen]?) async {
+    private func syncWebStaticFramesToLockScreenIfNeeded(imageURLs: [UInt32: URL], targetScreens: [NSScreen]?) async {
         guard #available(macOS 26.0, *) else { return }
         guard VideoWallpaperManager.shared.isLockScreenEnabled else { return }
         guard UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true else { return }
-        guard let imageURL, FileManager.default.fileExists(atPath: imageURL.path) else {
+        guard !imageURLs.isEmpty else {
             print("[WallpaperEngineXBridge] ⚠️ Web 锁屏静态帧未生成，跳过扩展静态图同步")
             return
         }
 
-        let screens = targetScreens?.isEmpty == false ? targetScreens! : NSScreen.screens
-        let displayIDs = screens.compactMap { screen -> UInt32? in
-            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
-        }
-        guard !displayIDs.isEmpty else {
-            print("[WallpaperEngineXBridge] ⚠️ 未找到目标显示器，Web 锁屏静态帧同步已跳过")
-            return
-        }
-
-        do {
-            try await LockScreenWallpaperService.shared.cacheStaticImageSource(imageURL: imageURL, displayIDs: displayIDs)
-            print("[WallpaperEngineXBridge] 🖼️ 已将 Web 首帧按静态图同步到锁屏扩展 display=\(displayIDs)")
-        } catch {
-            print("[WallpaperEngineXBridge] ⚠️ Web 锁屏静态帧同步失败: \(error.localizedDescription)")
+        for (displayID, imageURL) in imageURLs {
+            guard FileManager.default.fileExists(atPath: imageURL.path) else {
+                print("[WallpaperEngineXBridge] ⚠️ Web 锁屏静态帧不存在 display=\(displayID) path=\(imageURL.path)")
+                continue
+            }
+            do {
+                try await LockScreenWallpaperService.shared.cacheStaticImageSource(imageURL: imageURL, displayIDs: [displayID])
+                print("[WallpaperEngineXBridge] 🖼️ 已将 Web 首帧按静态图同步到锁屏扩展 display=\(displayID)")
+            } catch {
+                print("[WallpaperEngineXBridge] ⚠️ Web 锁屏静态帧同步失败 display=\(displayID): \(error.localizedDescription)")
+            }
         }
     }
 
-    private func captureWebFallbackFrameForLockScreenIfNeeded() async -> URL? {
-        guard #available(macOS 26.0, *) else { return nil }
-        guard VideoWallpaperManager.shared.isLockScreenEnabled else { return nil }
-        guard UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true else { return nil }
+    private func captureWebFallbackFramesForLockScreenIfNeeded(targetScreens: [NSScreen]?) async -> [UInt32: URL] {
+        guard #available(macOS 26.0, *) else { return [:] }
+        guard VideoWallpaperManager.shared.isLockScreenEnabled else { return [:] }
+        guard UserDefaults.standard.object(forKey: "dynamic_lock_screen_enabled") as? Bool ?? true else { return [:] }
 
-        if FileManager.default.fileExists(atPath: legacyCLIWebCapturePath) {
-            return URL(fileURLWithPath: legacyCLIWebCapturePath)
-        }
+        let screens = targetScreens?.isEmpty == false ? targetScreens! : NSScreen.screens
+        var result: [UInt32: URL] = [:]
 
-        let deadline = Date().addingTimeInterval(3.0)
-        while Date() < deadline {
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            if FileManager.default.fileExists(atPath: legacyCLIWebCapturePath) {
-                return URL(fileURLWithPath: legacyCLIWebCapturePath)
+        for screen in screens {
+            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
+            let displayID = screenNumber.uint32Value
+            let screenIdx = NSScreen.screens.firstIndex(of: screen) ?? 0
+            let capturePath = legacyCLICapturePath(for: screenIdx)
+
+            if FileManager.default.fileExists(atPath: capturePath) {
+                result[displayID] = URL(fileURLWithPath: capturePath)
+                continue
+            }
+
+            let deadline = Date().addingTimeInterval(3.0)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                if FileManager.default.fileExists(atPath: capturePath) {
+                    result[displayID] = URL(fileURLWithPath: capturePath)
+                    break
+                }
             }
         }
 
-        return nil
+        // 兜底：检查 legacy 单屏路径（兼容旧版 CLI daemon）
+        if result.isEmpty && FileManager.default.fileExists(atPath: legacyCLIWebCapturePath) {
+            let screens2 = targetScreens?.isEmpty == false ? targetScreens! : NSScreen.screens
+            for screen in screens2 {
+                guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
+                result[screenNumber.uint32Value] = URL(fileURLWithPath: legacyCLIWebCapturePath)
+            }
+        }
+
+        return result
     }
 
     /// 启动旧 `wallpaperengine-cli` 的客户端子命令（set/pause/resume/stop）。

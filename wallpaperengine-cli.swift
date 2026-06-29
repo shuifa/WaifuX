@@ -1329,6 +1329,16 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
         screenStates[screenIdx] = ScreenState()
         screenStates[screenIdx]?.pendingCompletion = completion
 
+        // 超时安全网：30 秒后如果 pendingCompletion 仍在，强制回调防止 IPC 响应永远不发回
+        // （与 App 侧 WallpaperEngineXBridge 的 30s 超时对齐）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, let state = self.screenStates[screenIdx],
+                  state.pendingCompletion != nil else { return }
+            dlog("[WebRendererBridge] ⚠️ loadWallpaper 30s timeout, forcing completion for screen \(screenIdx)")
+            state.pendingCompletion?(false)
+            self.screenStates[screenIdx]?.pendingCompletion = nil
+        }
+
         guard let (baseURL, indexFile) = resolveWebWallpaperEntry(path: path) else {
             dlog("[WebRendererBridge] Failed to resolve web wallpaper entry for \(path)")
             completion?(false)
@@ -1586,6 +1596,9 @@ private final class WebRendererBridge: NSObject, WKNavigationDelegate {
     func stop(screen: Int = 0) {
         guard var state = screenStates[screen] else { return }
         state.firstFrameSettleGeneration &+= 1
+        // 必须先调用 pendingCompletion 再置 nil，否则 IPC 响应永远不会发回给 CLI client
+        // （CLI client 的 recv() 会一直阻塞直到 35s 超时）
+        state.pendingCompletion?(false)
         state.pendingCompletion = nil
         state.webView?.stopLoading()
         state.webView?.navigationDelegate = nil
