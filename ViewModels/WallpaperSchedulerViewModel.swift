@@ -132,6 +132,7 @@ class WallpaperSchedulerViewModel: ObservableObject {
     func intervalLabel(for minutes: Int) -> String {
         switch minutes {
         case 1: return "1 min"
+        case 3: return "3 min"
         case 5: return "5 min"
         case 15: return "15 min"
         case 30: return "30 min"

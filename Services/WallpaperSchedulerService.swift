@@ -604,6 +604,10 @@ class WallpaperSchedulerService: ObservableObject {
 
     private func changeWallpaperIfNeeded() {
         guard !isScreenLocked else { return }
+        guard !WallpaperEngineXBridge.shared.isSettingWallpaper else {
+            print("\(logTag) Skipping: manual wallpaper setting in progress")
+            return
+        }
         let screens = NSScreen.screens
         let now = Date()
 

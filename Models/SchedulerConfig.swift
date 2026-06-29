@@ -128,7 +128,7 @@ struct SchedulerConfig: Codable {
         displayConfigs: [:]
     )
 
-    static let intervalOptions: [Int] = [1, 5, 15, 30, 60, 360, 1440]
+    static let intervalOptions: [Int] = [1, 3, 5, 15, 30, 60, 360, 1440]
 
     private enum CodingKeys: String, CodingKey {
         case isEnabled

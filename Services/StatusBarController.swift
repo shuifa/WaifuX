@@ -829,6 +829,10 @@ final class StatusBarController: NSObject {
                     LockScreenWallpaperService.shared.setDisplayMuted(newMuted, forDisplayID: displayID)
                 }
             }
+            // 同步到 wallpaper-wgpu 渲染进程（音频控制文件）
+            if weBridge.isControllingExternalEngine {
+                weBridge.setMuted(newMuted)
+            }
             return
         }
 

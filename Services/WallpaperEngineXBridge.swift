@@ -90,6 +90,10 @@ private struct ScreenProcessInfo {
     /// `--wallpaper-control` JSON 文件路径（wgpu 每 200ms 轮询，热切换壁纸/更新属性）。
     /// 首次启动时传入此参数，后续切换壁纸只写此文件，不杀进程。
     let wallpaperControlURL: URL?
+    /// 进程启动时的屏幕尺寸（points）。热切换时与当前 NSScreen.frame 比对，
+    /// 若不一致（旋转/分辨率变化）则跳过热切换、走重启路径以更新 --screen 参数。
+    let launchedScreenWidth: Int
+    let launchedScreenHeight: Int
 }
 
 private struct RendererAudioControlState: Codable {
@@ -189,7 +193,7 @@ final class WallpaperEngineXBridge: ObservableObject {
     // MARK: - 防重复启动锁
 
     /// 正在设置壁纸中（防止 `restoreIfNeeded` 等场景重复调用 `setWallpaper`）
-    private var isSettingWallpaper = false
+    private(set) var isSettingWallpaper = false
 
     // MARK: - 持久化状态
 
@@ -303,6 +307,21 @@ final class WallpaperEngineXBridge: ObservableObject {
     ///   - forceRestart: 强制重启进程（例如屏幕分辨率变化时），默认 false 走热切换
     func setWallpaper(path: String, assetsPath: String? = nil, targetScreens: [NSScreen]? = nil, userProperties: String? = nil, forceRestart: Bool = false) async throws {
         print("[WallpaperEngineXBridge] >>> setWallpaper START path=\(path)")
+        let lockScreenInfo: String
+        if #available(macOS 26.0, *) {
+            lockScreenInfo = "isLockScreenEnabled=\(VideoWallpaperManager.shared.isLockScreenEnabled) isLockScreenExtensionActive=\(VideoWallpaperManager.shared.isLockScreenExtensionActive)"
+        } else {
+            lockScreenInfo = "N/A"
+        }
+        AppLogger.error(.wallpaper, "setWallpaper 开始", metadata: [
+            "path": path,
+            "targetScreens": targetScreens == nil ? "nil(全部)" : "\(targetScreens!.count)屏",
+            "isControllingExternalEngine": isControllingExternalEngine,
+            "screenProcesses": screenProcesses.count,
+            "screenRenderStates": screenRenderStates.count,
+            "isExternalPaused": isExternalPaused,
+            "lockScreen": lockScreenInfo
+        ])
 
         // 记录当前焦点应用，渲染器启动后恢复焦点（避免新进程窗口抢焦点）
         let previousApp = NSWorkspace.shared.frontmostApplication
@@ -312,8 +331,8 @@ final class WallpaperEngineXBridge: ObservableObject {
 
         // 防重复启动：恢复桌面时可能多次触发，串行化处理
         guard !isSettingWallpaper else {
-            print("[WallpaperEngineXBridge] ⚠️ 已有壁纸设置任务进行中，跳过")
-            return
+            AppLogger.error(.wallpaper, "setWallpaper 被防重入拦截: 已有壁纸设置任务进行中", metadata: ["path": path])
+            throw WallpaperEngineError.executionFailed("已有壁纸设置任务进行中，请稍后重试")
         }
         isSettingWallpaper = true
         defer {
@@ -414,6 +433,7 @@ final class WallpaperEngineXBridge: ObservableObject {
             resolvedAssets = embedded
         } else {
             resolvedAssets = ""
+            AppLogger.error(.wallpaper, "内嵌 assets 解压失败或超时，wallpaper-wgpu 可能无法正常渲染")
         }
 
         // 4. 准备 wallpaper-wgpu 二进制路径
@@ -471,8 +491,11 @@ final class WallpaperEngineXBridge: ObservableObject {
             let screenID = screen.wallpaperScreenIdentifier
 
             // ── 情况 A：已有活跃进程且非强制重启 → 写控制文件热切换（不杀进程） ──
+            // 若屏幕尺寸已变化（旋转/分辨率切换），跳过热切换，走重启路径更新 --screen。
             if !forceRestart, let existingInfo = screenProcesses[screenID],
-               let wcURL = existingInfo.wallpaperControlURL {
+               let wcURL = existingInfo.wallpaperControlURL,
+               screenW == existingInfo.launchedScreenWidth,
+               screenH == existingInfo.launchedScreenHeight {
                 print("[WallpaperEngineXBridge] 屏幕 \(screenID) 已有活跃进程 (pid=\(existingInfo.pid))，通过控制文件热切换")
 
                 // ── 调试：打印热切换完整参数 ──
@@ -504,12 +527,22 @@ final class WallpaperEngineXBridge: ObservableObject {
                     userProperties: userProperties
                 )
 
-                // 写壁纸控制文件触发热切换
+                // 写壁纸控制文件触发热切换（包含超分辨率/性能模式参数）
+                let upscalingEnabled = UserDefaults.standard.bool(forKey: "upscaling_enabled")
+                let upscalingPercentValue: Int? = upscalingEnabled ? {
+                    let percent = UserDefaults.standard.double(forKey: "upscaling_percent")
+                    return percent > 0 ? max(30, min(100, Int(percent))) : 70
+                }() : nil
+                let effectReductionEnabled = upscalingEnabled ? UserDefaults.standard.bool(forKey: "effect_reduction_enabled") : false
+
                 writeWallpaperControl(
                     url: wcURL,
                     setWallpaper: resolvedPath,
                     assets: resolvedAssets.isEmpty ? nil : resolvedAssets,
-                    setProperties: effectiveUserProperties
+                    setProperties: effectiveUserProperties,
+                    upscaling: upscalingEnabled,
+                    upscalingPercent: upscalingPercentValue,
+                    effectReduction: effectReductionEnabled
                 )
 
                 // 热切换时必须重置 crop-control 文件
@@ -570,6 +603,10 @@ final class WallpaperEngineXBridge: ObservableObject {
             }
 
             // ── 情况 B：首次启动该屏幕 → 清理旧状态后启动新进程 ──
+            if let existingInfo = screenProcesses[screenID],
+               (screenW != existingInfo.launchedScreenWidth || screenH != existingInfo.launchedScreenHeight) {
+                print("[WallpaperEngineXBridge] 屏幕 \(screenID) 尺寸已变化 (\(existingInfo.launchedScreenWidth)x\(existingInfo.launchedScreenHeight) → \(screenW)x\(screenH))，跳过热切换，重启进程")
+            }
             print("[WallpaperEngineXBridge] 屏幕 \(screenID) 无活跃进程，准备首次启动")
 
             // ── 调试：打印首次启动完整参数 ──
@@ -665,7 +702,9 @@ final class WallpaperEngineXBridge: ObservableObject {
                     audioControlURL: audioControlURL,
                     cropControlURL: cropControlURL,
                     canvasSizeURL: canvasSizeURL,
-                    wallpaperControlURL: wallpaperControlURL
+                    wallpaperControlURL: wallpaperControlURL,
+                    launchedScreenWidth: screenW,
+                    launchedScreenHeight: screenH
                 )
                 screenRenderStates[screenID] = ScreenRenderState(
                     screenID: screenID,
@@ -676,6 +715,7 @@ final class WallpaperEngineXBridge: ObservableObject {
                 )
                 _deinitPIDs.insert(launchedPID)
                 print("[WallpaperEngineXBridge] ✅ 屏幕 \(screenID) wallpaper-wgpu 已启动 (pid=\(launchedPID))")
+                AppLogger.error(.wallpaper, "wallpaper-wgpu 进程已启动", metadata: ["screenID": screenID, "pid": launchedPID, "renderKind": renderKind.rawValue, "screenProcesses": screenProcesses.count])
 
                 // 异步等待 canvas_size 就绪后重算 crop
                 if cropSettings.shouldApplyCrop {
@@ -733,6 +773,12 @@ final class WallpaperEngineXBridge: ObservableObject {
 
         updateControlStateFromScreenStates(preferredPath: resolvedPath, preferredKind: renderKind)
         persistState()
+        AppLogger.error(.wallpaper, "setWallpaper 完成", metadata: [
+            "isControllingExternalEngine": isControllingExternalEngine,
+            "activeRenderKind": activeRenderKind?.rawValue ?? "nil",
+            "screenProcesses": screenProcesses.count,
+            "screenRenderStates": screenRenderStates.keys.sorted().joined(separator: ",")
+        ])
         // 清除旧的前台暂停状态，避免 reevaluateCurrentState() 对新启动的渲染器误发 SIGSTOP。
         // 用户之后切走应用时，NSWorkspace app activation 通知会重新施加前台暂停。
         DynamicWallpaperAutoPauseManager.shared.clearForegroundPauseForWallpaperSwitch()
@@ -1078,6 +1124,7 @@ final class WallpaperEngineXBridge: ObservableObject {
     /// 切换为**非** wallpaper-wgpu 壁纸时必须调用
     func ensureStoppedForNonCLIWallpaper() {
         let processCount = screenProcesses.count
+        AppLogger.error(.wallpaper, "ensureStoppedForNonCLIWallpaper(全局)", metadata: ["processCount": processCount])
         print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper: 开始清理 \(processCount) 个渲染进程")
         if #available(macOS 26.0, *) {
             LockScreenWallpaperService.shared.clearRealtimeSourceIfNeeded()
@@ -1108,17 +1155,17 @@ final class WallpaperEngineXBridge: ObservableObject {
     /// 切换指定屏幕为非 wallpaper-wgpu 壁纸时调用，避免误杀其他屏幕的实时渲染。
     func ensureStoppedForNonCLIWallpaper(for targetScreen: NSScreen?) {
         guard let targetScreen else {
-            print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper(for:): targetScreen 为 nil，转为全量清理")
+            AppLogger.error(.wallpaper, "ensureStoppedForNonCLIWallpaper(for:): targetScreen 为 nil，转为全量清理")
             ensureStoppedForNonCLIWallpaper()
             return
         }
 
         let screenID = targetScreen.wallpaperScreenIdentifier
         guard isManaging(screen: targetScreen) else {
-            print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper(for:): 屏幕 \(screenID) 不受外部引擎管理，跳过")
+            AppLogger.error(.wallpaper, "ensureStoppedForNonCLIWallpaper(for:): 屏幕不受外部引擎管理，跳过", metadata: ["screenID": screenID])
             return
         }
-        print("[WallpaperEngineXBridge] ensureStoppedForNonCLIWallpaper(for:): 清理屏幕 \(screenID) 的渲染进程")
+        AppLogger.error(.wallpaper, "ensureStoppedForNonCLIWallpaper(for:)", metadata: ["screenID": screenID, "screenProcesses": screenProcesses.count])
 
         if #available(macOS 26.0, *) {
             LockScreenWallpaperService.shared.clearRealtimeSourceIfNeeded()
@@ -1744,6 +1791,9 @@ final class WallpaperEngineXBridge: ObservableObject {
 
             let icon = isError ? "❌" : "✅"
             print("[WallpaperEngineXBridge] \(icon) wallpaper-wgpu 进程已退出 屏幕 \(screenID) (pid=\(event.pid), 退出原因: \(reasonDesc))")
+            if isError {
+                AppLogger.error(.wallpaper, "wallpaper-wgpu 进程异常退出", metadata: ["screenID": screenID, "pid": event.pid, "reason": reasonDesc])
+            }
 
             // 异常退出时回读渲染器日志尾部内容，输出到主日志方便排障
             if isError {
@@ -1941,7 +1991,15 @@ final class WallpaperEngineXBridge: ObservableObject {
 
     /// 写入 `--wallpaper-control` JSON 文件，通知 wallpaper-wgpu 热切换壁纸或更新属性。
     /// setWallpaper=nil 时不切换壁纸，只更新属性。assets=nil 时 wgpu 自动 fallback。
-    private func writeWallpaperControl(url: URL, setWallpaper: String?, assets: String?, setProperties: String?) {
+    private func writeWallpaperControl(
+        url: URL,
+        setWallpaper: String?,
+        assets: String?,
+        setProperties: String?,
+        upscaling: Bool? = nil,
+        upscalingPercent: Int? = nil,
+        effectReduction: Bool? = nil
+    ) {
         var dict: [String: Any] = [:]
         if let sw = setWallpaper {
             dict["setWallpaper"] = sw
@@ -1954,10 +2012,28 @@ final class WallpaperEngineXBridge: ObservableObject {
            let props = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             dict["setProperties"] = props
         }
+        // 超分辨率 / 性能模式参数
+        if let upscaling = upscaling {
+            dict["upscaling"] = upscaling
+        }
+        if let upscalingPercent = upscalingPercent {
+            dict["upscaling_percent"] = upscalingPercent
+        }
+        if let effectReduction = effectReduction {
+            dict["effect_reduction"] = effectReduction
+        }
         do {
             let data = try JSONSerialization.data(withJSONObject: dict, options: [])
             try data.write(to: url, options: .atomic)
-            print("[WallpaperEngineXBridge] 已写入壁纸控制文件: \(setWallpaper != nil ? "切换壁纸" : "仅更新属性")")
+            let desc: String
+            if setWallpaper != nil {
+                desc = "切换壁纸"
+            } else if upscaling != nil || effectReduction != nil {
+                desc = "更新渲染设置"
+            } else {
+                desc = "仅更新属性"
+            }
+            print("[WallpaperEngineXBridge] 已写入壁纸控制文件: \(desc)")
         } catch {
             print("[WallpaperEngineXBridge] ⚠️ 写入壁纸控制文件失败: \(error.localizedDescription)")
         }

@@ -221,6 +221,10 @@ final class VideoWallpaperManager: ObservableObject {
     private var lastAppliedScreenConfigurations: [ScreenConfigurationSignature] = []
 
     private init() {
+        // 恢复静音偏好（独立于视频壁纸状态，场景/Web 壁纸同样生效）
+        if UserDefaults.standard.object(forKey: "wallpaper_is_muted") != nil {
+            isMuted = UserDefaults.standard.bool(forKey: "wallpaper_is_muted")
+        }
         setupNotificationObservers()
         configureAudioSession()
     }
@@ -625,6 +629,10 @@ final class VideoWallpaperManager: ObservableObject {
         targetScreen: NSScreen? = nil,
         animatedTransition: Bool = false
     ) throws {
+        AppLogger.error(.wallpaper, "applyVideoWallpaper 开始", metadata: [
+            "video": localFileURL.lastPathComponent,
+            "targetScreen": targetScreen?.localizedName ?? "nil(全部)"
+        ])
         guard localFileURL.isFileURL else {
             throw NSError(domain: "VideoWallpaper", code: 1001, userInfo: [NSLocalizedDescriptionKey: "动态壁纸必须使用本地视频文件。"])
         }
@@ -742,6 +750,7 @@ final class VideoWallpaperManager: ObservableObject {
 
     func setMuted(_ muted: Bool) {
         isMuted = muted
+        UserDefaults.standard.set(muted, forKey: "wallpaper_is_muted")
         for (screenID, player) in players {
             let screenVolume = volumeByScreen[screenID] ?? volume
             // 工具栏静音需要同时处理播放器音量和已排队 item 的音频轨，避免只静音音量仍唤醒 AirPods。
@@ -1105,6 +1114,12 @@ final class VideoWallpaperManager: ObservableObject {
     /// 仅拆掉本机 AVPlayer 视频壁纸，**不**调用 `WallpaperEngineXBridge.stopWallpaper()`。
     /// 在即将通过 CLI 设置 scene / web 等 WE 壁纸前调用，否则会误停 CLI 且把 `isControllingExternalEngine` 清掉，菜单栏暂停恢复会走错视频分支。
     func stopNativeVideoWallpaperOnly(for targetScreen: NSScreen? = nil) {
+        AppLogger.error(.wallpaper, "stopNativeVideoWallpaperOnly", metadata: [
+            "targetScreen": targetScreen?.localizedName ?? "nil(全部)",
+            "windows": windows.count,
+            "players": players.count,
+            "isLockScreenExtensionActive": isLockScreenExtensionActive
+        ])
         guard let targetScreen = targetScreen else {
             // 全局停止（原有逻辑）
             teardownAllWindows()
@@ -1149,7 +1164,9 @@ final class VideoWallpaperManager: ObservableObject {
 
             if videoURLByScreen.isEmpty {
                 if #available(macOS 26.0, *) {
-                    LockScreenWallpaperService.shared.clearMirroringSourceCache()
+                    if !isLockScreenEnabled {
+                        LockScreenWallpaperService.shared.clearMirroringSourceCache()
+                    }
                 }
                 currentVideoURL = nil
                 currentPosterURL = nil

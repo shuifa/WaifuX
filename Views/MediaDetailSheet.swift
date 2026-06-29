@@ -2319,7 +2319,12 @@ struct MediaDetailSheet: View {
 
         switch contentType {
         case .scene:
-            if UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled") {
+            let isRealtime = UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled")
+            AppLogger.error(.wallpaper, "applyWorkshopWallpaperFromLocalURL 路由: scene", metadata: [
+                "realtime": isRealtime,
+                "contentRoot": contentRoot.lastPathComponent
+            ])
+            if isRealtime {
                 // 实时渲染模式：直接用 wallpaper-wgpu 渲染桌面，后台烘焙推锁屏
                 applyWorkshopRendererWallpaper(
                     path: contentRoot.path,
@@ -2360,6 +2365,12 @@ struct MediaDetailSheet: View {
     private func applySceneWallpaperPreferringBake(sceneContentRoot: URL, cliPath: String) {
         let itemID = resolvedItem.id
         let fm = FileManager.default
+        let hasBakeArtifact = currentDownloadRecord?.sceneBakeArtifact != nil
+            && currentDownloadRecord?.sceneBakeArtifact?.analysisId == currentDownloadRecord?.sceneBakeEligibility?.analysisId
+        AppLogger.error(.wallpaper, "applySceneWallpaperPreferringBake", metadata: [
+            "contentRoot": sceneContentRoot.lastPathComponent,
+            "hasBakeArtifact": hasBakeArtifact
+        ])
 
         // 1. 已有烘焙产物 → 直接应用
         if let record = currentDownloadRecord,
@@ -3308,7 +3319,11 @@ struct MediaDetailSheet: View {
                 do {
                     let isRealtime = UserDefaults.standard.bool(forKey: "scene_realtime_rendering_enabled")
                     let userProps = isRealtime ? SceneWallpaperPropertiesService.propertiesOverrideJSON(for: path) : nil
-                    print("[MediaDetailSheet] 调用 WallpaperEngineXBridge.setWallpaper (realtime=\(isRealtime))...")
+                    AppLogger.error(.wallpaper, "MediaDetailSheet 开始设置壁纸", metadata: [
+                        "path": path,
+                        "selectedScreen": selectedScreen?.localizedName ?? "全部",
+                        "realtime": isRealtime
+                    ])
                     try await WallpaperEngineXBridge.shared.setWallpaper(
                         path: path,
                         targetScreens: selectedScreen.map { [$0] },
@@ -3326,7 +3341,7 @@ struct MediaDetailSheet: View {
                         )
                     }
                 } catch {
-                    print("[MediaDetailSheet] ❌ 设置壁纸失败: \(error.localizedDescription)")
+                    AppLogger.error(.wallpaper, "MediaDetailSheet 设置壁纸失败", metadata: ["path": path, "error": error.localizedDescription])
                     errorMessage = Self.truncateErrorMessage(error.localizedDescription)
                     showError = true
                 }

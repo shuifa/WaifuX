@@ -1123,6 +1123,7 @@ private struct SchedulerSettingsTab: View {
         }
         switch minutes {
         case 1: return "1 \(t("minutes"))"
+        case 3: return "3 \(t("minutes"))"
         case 5: return "5 \(t("minutes"))"
         case 15: return "15 \(t("minutes"))"
         case 30: return "30 \(t("minutes"))"
