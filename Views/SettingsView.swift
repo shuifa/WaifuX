@@ -442,7 +442,7 @@ private struct GeneralSettingsTab: View {
                 if viewModel.pauseWhenWindowCoverage {
                     MacSettingsRow(
                         title: t("windowCoverageThreshold"),
-                        showDivider: true
+                        showDivider: false
                     ) {
                         HStack(spacing: 8) {
                             Text("\(Int(viewModel.windowCoveragePauseThreshold))%")
@@ -466,7 +466,7 @@ private struct GeneralSettingsTab: View {
                         MacSettingsRow(
                             title: t("windowCoverageAccessibilityRequired"),
                             subtitle: t("windowCoverageAccessibilityDesc"),
-                            showDivider: false
+                            showDivider: true
                         ) {
                             Button {
                                 openAccessibilitySettings()

@@ -10,6 +10,10 @@ struct GuessYouLikeItem: Identifiable {
     let destination: String
     let contentType: ContentType
     let sourceName: String
+    /// 预览视频 URL（DongTai / Wallsflow 预填充，避免详情页重复请求）
+    let previewVideoURL: String?
+    /// 下载选项（DongTai / Wallsflow 预填充）
+    let downloadOptions: [MediaDownloadOption]
 
     /// 运行时生成的渐变色（不参与编解码）
     var gradientColors: [Color] {
@@ -30,7 +34,7 @@ struct GuessYouLikeItem: Identifiable {
         return palettes[abs(id.hashValue) % palettes.count]
     }
 
-    init(id: String, title: String, subtitle: String, imageURL: String, destination: String, contentType: ContentType, sourceName: String) {
+    init(id: String, title: String, subtitle: String, imageURL: String, destination: String, contentType: ContentType, sourceName: String, previewVideoURL: String? = nil, downloadOptions: [MediaDownloadOption] = []) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
@@ -38,6 +42,8 @@ struct GuessYouLikeItem: Identifiable {
         self.destination = destination
         self.contentType = contentType
         self.sourceName = sourceName
+        self.previewVideoURL = previewVideoURL
+        self.downloadOptions = downloadOptions
     }
 }
 
@@ -63,6 +69,6 @@ extension GuessYouLikeItem {
 
 extension GuessYouLikeItem: Codable {
     enum CodingKeys: String, CodingKey {
-        case id, title, subtitle, imageURL, destination, contentType, sourceName
+        case id, title, subtitle, imageURL, destination, contentType, sourceName, previewVideoURL, downloadOptions
     }
 }

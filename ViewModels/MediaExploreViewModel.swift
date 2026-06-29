@@ -1114,8 +1114,7 @@ final class MediaExploreViewModel: ObservableObject {
            let localVideoURL = findLocalWorkshopVideo(for: item) {
             print("[MediaExploreViewModel] Using downloaded Workshop video: \(localVideoURL.path)")
             let posterURL = await VideoThumbnailCache.shared.lockScreenPosterURL(forLocalVideo: localVideoURL, fallbackPosterURL: item.posterURL)
-            let optimizedURL = await VideoTranscodeService.ensureSeekFriendly(localVideoURL)
-            try videoWallpaperManager.applyVideoWallpaper(from: optimizedURL, posterURL: posterURL, muted: muted, targetScreens: targetScreen.map { [$0] })
+            try videoWallpaperManager.applyVideoWallpaper(from: localVideoURL, posterURL: posterURL, muted: muted, targetScreens: targetScreen.map { [$0] })
             return
         }
 
@@ -1125,8 +1124,7 @@ final class MediaExploreViewModel: ObservableObject {
             if localURL.isFileURL && FileManager.default.fileExists(atPath: localURL.path) {
                 print("[MediaExploreViewModel] Using local media file: \(localURL.path)")
                 let posterURL = await VideoThumbnailCache.shared.lockScreenPosterURL(forLocalVideo: localURL, fallbackPosterURL: item.posterURL)
-                let optimizedURL = await VideoTranscodeService.ensureSeekFriendly(localURL)
-                try videoWallpaperManager.applyVideoWallpaper(from: optimizedURL, posterURL: posterURL, muted: muted, targetScreens: targetScreen.map { [$0] })
+                try videoWallpaperManager.applyVideoWallpaper(from: localURL, posterURL: posterURL, muted: muted, targetScreens: targetScreen.map { [$0] })
                 return
             }
         }
@@ -1138,8 +1136,7 @@ final class MediaExploreViewModel: ObservableObject {
             saveToDownloads: false
         )
         let posterURL = await VideoThumbnailCache.shared.lockScreenPosterURL(forLocalVideo: localVideoURL, fallbackPosterURL: item.posterURL)
-        let optimizedURL = await VideoTranscodeService.ensureSeekFriendly(localVideoURL)
-        try videoWallpaperManager.applyVideoWallpaper(from: optimizedURL, posterURL: posterURL, muted: muted, targetScreens: targetScreen.map { [$0] })
+        try videoWallpaperManager.applyVideoWallpaper(from: localVideoURL, posterURL: posterURL, muted: muted, targetScreens: targetScreen.map { [$0] })
     }
 
     /// Workshop 内容类型

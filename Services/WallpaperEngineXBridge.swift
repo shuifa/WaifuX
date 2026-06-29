@@ -370,6 +370,14 @@ final class WallpaperEngineXBridge: ObservableObject {
             screenRenderStates = screenRenderStates.filter { $0.value.renderKind != .web }
         }
 
+        // 切到 Web 壁纸前，必须停掉所有正在运行的 scene (wallpaper-wgpu) 进程。
+        // CLI daemon 是全局单壁纸模型（每次 set 都重启 daemon），无法与 wallpaper-wgpu 共存；
+        // 残留的 scene 进程会在桌面上留下无人管理的 Metal 渲染窗口。
+        if renderKind == .web && !screenProcesses.isEmpty {
+            print("[WallpaperEngineXBridge] 切换到 Web 壁纸，清理全部 \(screenProcesses.count) 个 scene 渲染进程")
+            await stopRenderProcessBeforeLaunch()
+        }
+
         if renderKind == .web {
             try await setWebWallpaper(path: resolvedPath, targetScreens: targetScreens)
             recordRenderState(path: resolvedPath, renderKind: renderKind, screens: effectiveScreens, userProperties: userProperties)

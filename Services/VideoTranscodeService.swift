@@ -1,11 +1,13 @@
 import AVFoundation
 import Foundation
 
-/// B 帧视频自动转码服务
+/// B 帧视频转码服务
 ///
 /// 有 B 帧 + 高码率的视频 seek 时需要逐帧解码导致卡顿。
 /// 使用 AVAssetWriter 转码为无 B 帧格式，seek 直接跳到最近 I 帧。
 /// 转码结果直接覆盖原文件。
+///
+/// - 注意：不再自动触发，需通过 UI 手动调用。
 enum VideoTranscodeService {
 
     /// 码率阈值：低于此值即使有 B 帧也不会卡
@@ -13,7 +15,20 @@ enum VideoTranscodeService {
 
     // MARK: - Public
 
-    /// 检查视频是否需要转码（有 B 帧且高码率），需要则转码并覆盖原文件。
+    /// 分析视频是否需要转码。
+    /// - 烘焙产物（SceneBakes）始终跳过，已是 H.265 优化编码。
+    static func needsTranscode(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        // SceneBakes 烘焙产物跳过
+        if url.path.contains("/SceneBakes/") {
+            return false
+        }
+        let info = analyze(url)
+        return info.needsTranscode
+    }
+
+    /// 转码视频为 seek-friendly 格式，直接覆盖原文件。
+    /// 调用前应先通过 `needsTranscode(_:)` 确认是否需要。
     static func ensureSeekFriendly(_ videoURL: URL, progress: (@Sendable (Double) -> Void)? = nil) async -> URL {
         guard videoURL.isFileURL else { return videoURL }
 

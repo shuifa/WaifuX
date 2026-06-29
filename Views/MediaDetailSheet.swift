@@ -75,6 +75,8 @@ struct MediaDetailSheet: View {
     @State private var showMoreOptionsPopover = false
     @State private var showDeleteBakeConfirm = false
     @State private var isDeletingBake = false
+    @State private var isTranscodingVideo = false
+    @State private var transcodeVideoProgress: Double = 0
 
     // 挤压动画配置
     private let squeezeThreshold: CGFloat = 80
@@ -1420,6 +1422,37 @@ struct MediaDetailSheet: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isBakingScene || isDeletingBake)
+            }
+
+            // 视频转码（检测到 B 帧+高码率时显示，转码后自动消失）
+            if isAlreadyDownloaded,
+               let localURL = currentDownloadRecord?.localFileURL,
+               localURL.isFileURL,
+               ["mp4", "mov", "m4v"].contains(localURL.pathExtension.lowercased()),
+               VideoTranscodeService.needsTranscode(localURL) {
+                Button {
+                    showMoreOptionsPopover = false
+                    Task {
+                        isTranscodingVideo = true
+                        transcodeVideoProgress = 0
+                        _ = await VideoTranscodeService.ensureSeekFriendly(localURL) { progress in
+                            Task { @MainActor in
+                                transcodeVideoProgress = progress
+                            }
+                        }
+                        isTranscodingVideo = false
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: isTranscodingVideo ? "arrow.triangle.2.circlepath" : "film")
+                        Text(isTranscodingVideo ? "转码中 \(Int(transcodeVideoProgress * 100))%" : "视频转码")
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                .disabled(isTranscodingVideo)
             }
 
             // 复制静态图片
@@ -3172,10 +3205,8 @@ struct MediaDetailSheet: View {
                     )
                     let posterURL = posterFromVideo ?? preferredWorkshopPosterForVideo
                     do {
-                        // 高码率/B帧视频自动转码，解决 seek 卡顿根本问题
-                        let optimizedURL = await VideoTranscodeService.ensureSeekFriendly(videoURL)
                         try wallpaperManager.applyVideoWallpaper(
-                            from: optimizedURL,
+                            from: videoURL,
                             posterURL: posterURL,
                             muted: isMuted,
                             targetScreens: selectedScreen.map { [$0] }
@@ -3199,10 +3230,8 @@ struct MediaDetailSheet: View {
                 )
                 let posterURL = posterFromVideo ?? preferredWorkshopPosterForVideo
                 do {
-                    // 高码率/B帧视频自动转码，解决 seek 卡顿根本问题
-                    let optimizedURL = await VideoTranscodeService.ensureSeekFriendly(videoURL)
                     try wallpaperManager.applyVideoWallpaper(
-                        from: optimizedURL,
+                        from: videoURL,
                         posterURL: posterURL,
                         muted: isMuted
                     )

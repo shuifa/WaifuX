@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Wallpaper Property Editor</title>
-<script src="https://cdn.tailwindcss.com"></script>
 <style>
   :root {
     --bg-primary: #1a1d2e;
@@ -318,20 +317,39 @@
   .reset-btn:hover { background: var(--accent-dim); }
 
   .hidden-prop { display: none !important; }
+
+  /* Utility classes (replacing TailwindCSS CDN) */
+  .u-flex { display: flex; }
+  .u-flex-1 { flex: 1 1 0%; min-width: 0; }
+  .u-items-start { align-items: flex-start; }
+  .u-items-center { align-items: center; }
+  .u-justify-center { justify-content: center; }
+  .u-gap-3 { gap: 12px; }
+  .u-min-w-0 { min-width: 0; }
+  .u-title { font-size: 15px; font-weight: 700; line-height: 1.25; }
+  .u-subtitle { font-size: 10px; color: var(--text-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .u-close-btn {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: rgba(255,255,255,0.06);
+    display: flex; align-items: center; justify-content: center;
+    border: none; cursor: pointer; color: var(--text-secondary);
+    transition: background 0.15s;
+  }
+  .u-close-btn:hover { background: rgba(255,255,255,0.12); }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <div class="flex items-start gap-3">
+  <div class="u-flex u-items-start u-gap-3">
     <div class="header-icon">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
     </div>
-    <div class="flex-1 min-w-0">
-      <div id="panelTitle" class="text-[15px] font-bold leading-tight">设计场景</div>
-      <div id="wallpaperName" class="text-[10px] text-[var(--text-muted)] mt-1 truncate">Loading...</div>
+    <div class="u-flex-1">
+      <div id="panelTitle" class="u-title">设计场景</div>
+      <div id="wallpaperName" class="u-subtitle">Loading...</div>
     </div>
-    <button onclick="window.webkit.messageHandlers.closePanel.postMessage(null)" class="w-[22px] h-[22px] rounded-md bg-white/[0.06] flex items-center justify-center hover:bg-white/[0.12] transition-colors">
+    <button onclick="window.webkit.messageHandlers.closePanel.postMessage(null)" class="u-close-btn">
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
   </div>
@@ -725,7 +743,7 @@ function renderSliderControl(prop, wrap) {
   valueDisplay.className = 'slider-value';
   valueDisplay.textContent = precision > 0 ? numVal.toFixed(precision) : String(Math.round(numVal));
   const spacer = document.createElement('div');
-  spacer.className = 'flex-1';
+  spacer.className = 'u-flex-1';
   header.appendChild(spacer);
   header.appendChild(valueDisplay);
 
